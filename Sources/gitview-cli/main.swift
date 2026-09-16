@@ -16,6 +16,13 @@ guard let command = arguments.first else {
       scan    parse a repository's history and report summary statistics
       units   extract every code unit from a checkout and print its metrics
       churn   join units against history and report which change most often
+      risk    rank units by risk (complexity x recency-weighted churn)
+
+    risk options:
+      --limit <n>          rows to print (default 20)
+      --half-life <days>   decay half-life (default 90)
+      --exclude <substr>   drop units whose path contains this (repeatable)
+      --compare            also show the ranking by raw commit count
 
     units options:
       --file <substring>   only files whose path contains this
@@ -220,6 +227,88 @@ case "churn":
     print("hunks in .swift   \(totalHunks) (" + String(format: "%.1f%%", matchRate) + " landed inside a unit)")
     print("hunks elsewhere   \(churn.unresolvedPaths) (non-Swift files, or deleted since)")
     print(String(format: "timing            history %.2fs  parse %.2fs  join %.2fs", tHistory, tParse, tJoin))
+
+case "risk":
+    guard arguments.count >= 2 else { fail("risk requires a repository path") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    var limit = 20
+    var halfLifeDays = 90.0
+    var excludes: [String] = []
+    var compare = false
+    var index = 2
+    while index < arguments.count {
+        switch arguments[index] {
+        case "--limit":     index += 1; limit = Int(arguments[index]) ?? 20
+        case "--half-life": index += 1; halfLifeDays = Double(arguments[index]) ?? 90
+        case "--exclude":   index += 1; excludes.append(arguments[index])
+        case "--compare":   compare = true
+        default: fail("unknown option '\(arguments[index])'")
+        }
+        index += 1
+    }
+
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let root: URL
+    do { root = try repo.validate() } catch { fail("\(error)") }
+
+    let commits: [Commit]
+    do { commits = try GitRepository(url: root).loadHistory() } catch { fail("\(error)") }
+    let report: SourceScanner.Report
+    do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
+
+    var units = report.units
+    for pattern in excludes { units = units.filter { !$0.filePath.contains(pattern) } }
+    let churn = ChurnJoiner.join(units: units, commits: commits)
+
+    let now = Date()
+    let model = RiskModel(halfLife: halfLifeDays * 86_400)
+    let ranked = model.rank(units: units, churn: churn, now: now)
+
+    func pad(_ v: String, _ w: Int) -> String {
+        v.count >= w ? v : v + String(repeating: " ", count: w - v.count)
+    }
+    func lead(_ v: String, _ w: Int) -> String {
+        v.count >= w ? v : String(repeating: " ", count: w - v.count) + v
+    }
+    let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
+
+    let newest = commits.map(\.date).max() ?? now
+    print("repository   \(root.lastPathComponent)   half-life \(Int(halfLifeDays))d"
+          + "   newest commit \(day.string(from: newest))")
+    if now.timeIntervalSince(newest) > 180 * 86_400 {
+        print("WARNING: newest commit is over 6 months old; every score is decayed against"
+              + " wall-clock now, so the whole table is compressed.")
+    }
+    print()
+    print(lead("#", 4) + lead("score", 8) + lead("cx", 5) + lead("recency", 9)
+          + lead("commits", 9) + lead("authors", 9) + "  " + pad("last", 12) + "unit")
+    print(String(repeating: "-", count: 128))
+    for (position, item) in ranked.prefix(limit).enumerated() {
+        print(lead("\(position + 1)", 4)
+              + lead(String(format: "%.2f", item.score), 8)
+              + lead("\(item.unit.complexity)", 5)
+              + lead(String(format: "%.2f", item.recency), 9)
+              + lead("\(item.commitCount)", 9)
+              + lead("\(item.authorCount)", 9) + "  "
+              + pad(item.lastTouched.map { day.string(from: $0) } ?? "-", 12)
+              + "\(item.unit.filePath):\(item.unit.name)")
+    }
+    print(String(repeating: "-", count: 128))
+    print("\(ranked.count) units with history, of \(units.count) parsed")
+
+    if compare {
+        print()
+        print("For comparison — ranked by RAW commit count (the metric the -L validation")
+        print("showed is only ~47% accurate all-time):")
+        print(String(repeating: "-", count: 128))
+        let byRaw = ranked.sorted { $0.commitCount > $1.commitCount }
+        for (position, item) in byRaw.prefix(limit).enumerated() {
+            print(lead("\(position + 1)", 4) + lead("\(item.commitCount)", 9)
+                  + lead("cx \(item.unit.complexity)", 8) + "  "
+                  + pad(item.lastTouched.map { day.string(from: $0) } ?? "-", 12)
+                  + "\(item.unit.filePath):\(item.unit.name)")
+        }
+    }
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against
