@@ -43,12 +43,15 @@ public struct Commit: Hashable, Sendable {
     public let sha: String
     public let author: String
     public let date: Date
+    /// First line of the commit message.
+    public let subject: String
     public let fileChanges: [FileChange]
 
-    public init(sha: String, author: String, date: Date, fileChanges: [FileChange]) {
+    public init(sha: String, author: String, date: Date, subject: String = "", fileChanges: [FileChange]) {
         self.sha = sha
         self.author = author
         self.date = date
+        self.subject = subject
         self.fileChanges = fileChanges
     }
 }

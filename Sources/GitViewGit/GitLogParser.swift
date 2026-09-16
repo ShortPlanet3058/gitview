@@ -17,6 +17,7 @@ public struct GitLogParser {
     private var sha: String?
     private var author: String = ""
     private var date: Date = .distantPast
+    private var subject: String = ""
     private var fileChanges: [FileChange] = []
 
     // Current file within the commit
@@ -38,6 +39,7 @@ public struct GitLogParser {
             sha = header.sha
             author = header.author
             date = header.date
+            subject = header.subject
             return
         }
 
@@ -107,36 +109,40 @@ public struct GitLogParser {
             sha = nil
             author = ""
             date = .distantPast
+            subject = ""
             fileChanges = []
         }
         guard let sha else { return }
-        commits.append(Commit(sha: sha, author: author, date: date, fileChanges: fileChanges))
+        commits.append(Commit(sha: sha, author: author, date: date, subject: subject, fileChanges: fileChanges))
     }
 
     // MARK: - Header parsing
 
-    struct Header { let sha: String; let author: String; let date: Date }
+    struct Header { let sha: String; let author: String; let date: Date; let subject: String }
 
-    /// Parses `@@@<sha>|<author>|<iso8601 date>`.
+    /// Field separator in the commit header: ASCII unit separator, emitted by `%x1f`.
+    static let fieldSeparator: Character = "\u{1F}"
+
+    /// Parses `@@@<sha> US <author> US <iso8601 date> [US <subject>]`.
     ///
-    /// Split on the *first* and *last* separator, not by splitting on every `|`: author
-    /// names are arbitrary text and can legitimately contain a pipe, while the sha and the
-    /// fixed-width date cannot.
+    /// Author names and subjects are arbitrary text — pipes, colons and tabs all occur in
+    /// real histories — so no printable separator is safe. 0x1F is a control character git
+    /// never emits inside these fields. The subject is split with `maxSplits` so a stray
+    /// separator inside it cannot shift fields.
     static func parseCommitHeader(_ line: ArraySlice<UInt8>) -> Header? {
         let body = line.dropFirst(3).decoded
-        guard let first = body.firstIndex(of: "|"),
-              let last = body.lastIndex(of: "|"),
-              first < last else { return nil }
+        let fields = body.split(separator: fieldSeparator, maxSplits: 3, omittingEmptySubsequences: false)
+        guard fields.count >= 3 else { return nil }
 
-        let sha = String(body[body.startIndex..<first])
+        let sha = String(fields[0])
         // A sha is 40 (or 64) hex characters. Requiring that stops a diff body line
         // beginning with "@@@" from being mistaken for a commit boundary.
         guard sha.count == 40 || sha.count == 64,
               sha.allSatisfy({ $0.isHexDigit }) else { return nil }
 
-        let author = String(body[body.index(after: first)..<last])
-        guard let date = ISO8601.parse(String(body[body.index(after: last)...])) else { return nil }
-        return Header(sha: sha, author: author, date: date)
+        guard let date = ISO8601.parse(String(fields[2])) else { return nil }
+        let subject = fields.count > 3 ? String(fields[3]) : ""
+        return Header(sha: sha, author: String(fields[1]), date: date, subject: subject)
     }
 
     // MARK: - Path handling

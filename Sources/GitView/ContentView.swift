@@ -8,9 +8,24 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
+        } content: {
+            content
+                .navigationSplitViewColumnWidth(min: 480, ideal: 700)
         } detail: {
-            detail
+            if let unit = model.selectedUnit, model.selectedRow != nil {
+                // `.id` forces a fresh view per unit so `.task(id:)` and scroll position reset.
+                UnitDetailView(unit: unit).id(unit.id)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "sidebar.right")
+                        .font(.largeTitle)
+                        .foregroundStyle(.tertiary)
+                    Text(model.analysis == nil ? "Details appear here" : "Select a unit")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .navigationTitle(model.analysis?.root.lastPathComponent ?? "GitView")
         .onAppear(perform: openRepositoryFromLaunchArguments)
@@ -21,8 +36,14 @@ struct ContentView: View {
     /// skips the `-NSDocumentRevisionsDebugMode YES` pair Xcode injects.
     private func openRepositoryFromLaunchArguments() {
         guard case .idle = model.state else { return }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        // `--select <name>` preselects a unit once ranked. Used to drive verification
+        // without a pointer; harmless otherwise.
+        if let flag = arguments.firstIndex(of: "--select"), flag + 1 < arguments.count {
+            model.pendingSelection = arguments[flag + 1]
+        }
         var isDirectory: ObjCBool = false
-        for argument in CommandLine.arguments.dropFirst()
+        for argument in arguments
         where FileManager.default.fileExists(atPath: argument, isDirectory: &isDirectory)
             && isDirectory.boolValue {
             model.open(url: URL(fileURLWithPath: argument))
@@ -31,7 +52,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var detail: some View {
+    private var content: some View {
         switch model.state {
         case .idle:
             EmptyStateView()

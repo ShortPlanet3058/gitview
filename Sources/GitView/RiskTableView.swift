@@ -4,7 +4,6 @@ import GitViewCore
 struct RiskTableView: View {
     @EnvironmentObject private var model: AnalysisModel
     @State private var sortOrder = [KeyPathComparator(\RiskRow.score, order: .reverse)]
-    @State private var selection: RiskRow.ID?
     /// Sorted copy held in state rather than computed in `body`. Re-sorting inside `body`
     /// replaces the table's data while NSTableView is still inside the header-click
     /// delegate callback, which AppKit reports as a reentrant delegate operation.
@@ -12,7 +11,7 @@ struct RiskTableView: View {
     @State private var topScore: Double = 0
 
     var body: some View {
-        Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
+        Table(sortedRows, selection: $model.selectedUnitID, sortOrder: $sortOrder) {
             TableColumn("Score", value: \.score) { row in
                 Text(row.score, format: .number.precision(.fractionLength(2)))
                     .monospacedDigit()
@@ -34,7 +33,7 @@ struct RiskTableView: View {
                 }
                 .help("\(row.name)\n\(row.location)")
             }
-            .width(min: 240, ideal: 420)
+            .width(min: 200, ideal: 380)
 
             TableColumn("Kind", value: \.kind.rawValue) { row in
                 Text(row.kind.rawValue)

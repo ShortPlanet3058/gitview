@@ -17,6 +17,7 @@ guard let command = arguments.first else {
       units   extract every code unit from a checkout and print its metrics
       churn   join units against history and report which change most often
       risk    rank units by risk (complexity x recency-weighted churn)
+      history <repo> <name>   complexity of one unit at every revision that touched it
 
     risk options:
       --limit <n>          rows to print (default 20)
@@ -313,6 +314,53 @@ case "risk":
                   + "\(item.unit.filePath):\(item.unit.name)")
         }
     }
+
+case "history":
+    guard arguments.count >= 3 else { fail("history requires a repository path and a unit name") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    let wanted = arguments[2]
+
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let root: URL
+    do { root = try repo.validate() } catch { fail("\(error)") }
+    let commits: [Commit]
+    do { commits = try GitRepository(url: root).loadHistory() } catch { fail("\(error)") }
+    let report: SourceScanner.Report
+    do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
+
+    let units = report.units.filter { $0.kind != .class && !PathClassifier.isTest(path: $0.filePath) }
+    guard let unit = units.first(where: { $0.name == wanted })
+            ?? units.first(where: { $0.name.hasSuffix("." + wanted) })
+            ?? units.first(where: { $0.name.contains(wanted) }) else {
+        fail("no unit matching '\(wanted)'")
+    }
+    let churn = ChurnJoiner.join(units: units, commits: commits)
+
+    let service = UnitHistoryService { sha, filePath in
+        try GitProcess.capture(arguments: ["show", "\(sha):\(filePath)"], in: root)
+    }
+    let started = DispatchTime.now()
+    let points = await service.complexityHistory(for: unit, churn: churn)
+    let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
+
+    func pad(_ v: String, _ w: Int) -> String {
+        v.count >= w ? v : v + String(repeating: " ", count: w - v.count)
+    }
+    let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
+    print("\(unit.name)   \(unit.filePath):\(unit.lineRange.lowerBound)-\(unit.lineRange.upperBound)")
+    print()
+    print(pad("date", 12) + pad("sha", 9) + pad("cx", 5) + pad("lines", 7) + "subject")
+    print(String(repeating: "-", count: 100))
+    for point in points {
+        let cx = point.complexity.map(String.init) ?? "—"
+        let lines = point.lineCount.map(String.init) ?? "—"
+        print(pad(day.string(from: point.date), 12) + pad(String(point.sha.prefix(7)), 9)
+              + pad(cx, 5) + pad(lines, 7) + point.subject)
+    }
+    print(String(repeating: "-", count: 100))
+    let missing = points.filter { $0.complexity == nil }.count
+    print("\(points.count - 1) revisions (\(missing) where the unit was not found — likely drift), "
+          + String(format: "%.2fs", elapsed))
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against

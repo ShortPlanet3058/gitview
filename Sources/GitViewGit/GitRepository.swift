@@ -32,7 +32,9 @@ public struct GitRepository: Sendable {
             "--unified=0",       // every @@ header covers exactly the changed lines
             "--no-color",
             "--find-renames",
-            "--pretty=format:@@@%H|%an|%aI",
+            // Fields are separated by 0x1F (ASCII unit separator, `%x1f`) rather than `|`:
+            // author names and subjects both contain pipes in real histories.
+            "--pretty=format:@@@%H%x1f%an%x1f%aI%x1f%s",
             "-p",
         ]
 

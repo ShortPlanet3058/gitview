@@ -77,7 +77,8 @@ public enum ChurnJoiner {
             touchesByUnit: touches,
             unresolvedPaths: unresolved,
             unmatchedHunks: unmatched,
-            matchedHunks: matched
+            matchedHunks: matched,
+            historicalPathToCurrent: currentPath
         )
     }
 }

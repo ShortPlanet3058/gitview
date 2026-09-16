@@ -15,7 +15,7 @@ final class GitLogParserTests: XCTestCase {
 
     func testSingleCommitWithTwoFiles() {
         let commits = parse("""
-        @@@0123456789abcdef0123456789abcdef01234567|Ada Lovelace|2024-03-01T09:30:00+01:00
+        @@@0123456789abcdef0123456789abcdef01234567\u{1F}Ada Lovelace\u{1F}2024-03-01T09:30:00+01:00
         diff --git a/Sources/A.swift b/Sources/A.swift
         index 1111111..2222222 100644
         --- a/Sources/A.swift
@@ -50,14 +50,14 @@ final class GitLogParserTests: XCTestCase {
         // The whole reason for the @@@ sentinel: patch bodies contain "@@" lines,
         // and added lines can themselves begin with "@@@".
         let commits = parse("""
-        @@@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|Dev|2024-01-01T00:00:00Z
+        @@@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1F}Dev\u{1F}2024-01-01T00:00:00Z
         diff --git a/doc.md b/doc.md
         --- a/doc.md
         +++ b/doc.md
         @@ -1,0 +2,2 @@
         +@@ -1,1 +1,1 @@
         +@@@not a commit header
-        @@@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|Dev|2024-01-02T00:00:00Z
+        @@@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u{1F}Dev\u{1F}2024-01-02T00:00:00Z
         diff --git a/doc.md b/doc.md
         --- a/doc.md
         +++ b/doc.md
@@ -74,7 +74,7 @@ final class GitLogParserTests: XCTestCase {
 
     func testRenamePopulatesOldPath() {
         let commits = parse("""
-        @@@cccccccccccccccccccccccccccccccccccccccc|Dev|2024-02-02T12:00:00Z
+        @@@cccccccccccccccccccccccccccccccccccccccc\u{1F}Dev\u{1F}2024-02-02T12:00:00Z
         diff --git a/Old/Name.swift b/New/Name.swift
         similarity index 94%
         rename from Old/Name.swift
@@ -94,7 +94,7 @@ final class GitLogParserTests: XCTestCase {
 
     func testUnchangedPathDoesNotReportAsRename() {
         let commits = parse("""
-        @@@dddddddddddddddddddddddddddddddddddddddd|Dev|2024-02-02T12:00:00Z
+        @@@dddddddddddddddddddddddddddddddddddddddd\u{1F}Dev\u{1F}2024-02-02T12:00:00Z
         diff --git a/Same.swift b/Same.swift
         --- a/Same.swift
         +++ b/Same.swift
@@ -109,7 +109,7 @@ final class GitLogParserTests: XCTestCase {
     func testDeletedFileIsDropped() {
         // No counterpart in the current checkout, so no units can ever match it.
         let commits = parse("""
-        @@@eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|Dev|2024-02-03T12:00:00Z
+        @@@eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\u{1F}Dev\u{1F}2024-02-03T12:00:00Z
         diff --git a/Dead.swift b/Dead.swift
         deleted file mode 100644
         --- a/Dead.swift
@@ -125,8 +125,8 @@ final class GitLogParserTests: XCTestCase {
     func testMergeCommitWithNoDiffIsKept() {
         // git log -p emits no patch for merges. The commit is real; it just has no churn.
         let commits = parse("""
-        @@@ffffffffffffffffffffffffffffffffffffffff|Dev|2024-02-04T12:00:00Z
-        @@@1111111111111111111111111111111111111111|Dev|2024-02-05T12:00:00Z
+        @@@ffffffffffffffffffffffffffffffffffffffff\u{1F}Dev\u{1F}2024-02-04T12:00:00Z
+        @@@1111111111111111111111111111111111111111\u{1F}Dev\u{1F}2024-02-05T12:00:00Z
         diff --git a/A.swift b/A.swift
         --- a/A.swift
         +++ b/A.swift
@@ -140,9 +140,25 @@ final class GitLogParserTests: XCTestCase {
         XCTAssertEqual(commits[1].fileChanges.count, 1)
     }
 
+    func testSubjectIsCapturedAndMayContainSeparators() {
+        let commits = parse("""
+        @@@5555555555555555555555555555555555555555\u{1F}Dev\u{1F}2024-02-08T12:00:00Z\u{1F}Fix a | b: handle "x"\u{1F}tail
+        """)
+        XCTAssertEqual(commits[0].subject, "Fix a | b: handle \"x\"\u{1F}tail")
+        XCTAssertEqual(commits[0].author, "Dev")
+    }
+
+    func testMissingSubjectIsEmptyNotFailure() {
+        let commits = parse("""
+        @@@6666666666666666666666666666666666666666\u{1F}Dev\u{1F}2024-02-08T12:00:00Z
+        """)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits[0].subject, "")
+    }
+
     func testAuthorNameContainingPipe() {
         let commits = parse("""
-        @@@2222222222222222222222222222222222222222|Weird | Name|2024-02-06T12:00:00Z
+        @@@2222222222222222222222222222222222222222\u{1F}Weird | Name\u{1F}2024-02-06T12:00:00Z
         diff --git a/A.swift b/A.swift
         --- a/A.swift
         +++ b/A.swift
@@ -158,7 +174,7 @@ final class GitLogParserTests: XCTestCase {
         // The reader hands us arbitrary byte chunks, not lines. Splitting a hunk header
         // across two chunks must not lose it.
         let text = """
-        @@@3333333333333333333333333333333333333333|Dev|2024-02-07T12:00:00Z
+        @@@3333333333333333333333333333333333333333\u{1F}Dev\u{1F}2024-02-07T12:00:00Z
         diff --git a/A.swift b/A.swift
         --- a/A.swift
         +++ b/A.swift
@@ -182,7 +198,7 @@ final class GitLogParserTests: XCTestCase {
 
     func testDateParsingWithOffset() {
         let commits = parse("""
-        @@@4444444444444444444444444444444444444444|Dev|2024-03-01T09:30:00+01:00
+        @@@4444444444444444444444444444444444444444\u{1F}Dev\u{1F}2024-03-01T09:30:00+01:00
         """)
         // 09:30+01:00 == 08:30 UTC
         XCTAssertEqual(commits[0].date, Date(timeIntervalSince1970: 1_709_281_800))
