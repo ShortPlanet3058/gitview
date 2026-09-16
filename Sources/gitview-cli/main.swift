@@ -22,6 +22,7 @@ guard let command = arguments.first else {
       --limit <n>          rows to print (default 20)
       --half-life <days>   decay half-life (default 90)
       --exclude <substr>   drop units whose path contains this (repeatable)
+      --include-tests      keep test code (excluded by default)
       --compare            also show the ranking by raw commit count
 
     units options:
@@ -234,6 +235,7 @@ case "risk":
     var limit = 20
     var halfLifeDays = 90.0
     var excludes: [String] = []
+    var includeTests = false
     var compare = false
     var index = 2
     while index < arguments.count {
@@ -241,6 +243,7 @@ case "risk":
         case "--limit":     index += 1; limit = Int(arguments[index]) ?? 20
         case "--half-life": index += 1; halfLifeDays = Double(arguments[index]) ?? 90
         case "--exclude":   index += 1; excludes.append(arguments[index])
+        case "--include-tests": includeTests = true
         case "--compare":   compare = true
         default: fail("unknown option '\(arguments[index])'")
         }
@@ -257,6 +260,7 @@ case "risk":
     do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
 
     var units = report.units
+    if !includeTests { units = units.filter { !PathClassifier.isTest(path: $0.filePath) } }
     for pattern in excludes { units = units.filter { !$0.filePath.contains(pattern) } }
     let churn = ChurnJoiner.join(units: units, commits: commits)
 
