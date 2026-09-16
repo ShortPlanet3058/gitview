@@ -21,6 +21,14 @@ public struct BranchInfo: Hashable, Sendable, Identifiable {
 
 /// What is in the working tree, counted over *tracked* files only so build products and
 /// dependencies do not inflate the numbers.
+/// One language's share of the tracked files.
+public struct LanguageShare: Hashable, Sendable, Identifiable {
+    public var id: String { language.name }
+    public let language: KnownLanguage
+    public let bytes: Int64
+    public let files: Int
+}
+
 public struct FileInventory: Hashable, Sendable {
     public struct LargeFile: Hashable, Sendable, Identifiable {
         public var id: String { path }
@@ -42,6 +50,11 @@ public struct FileInventory: Hashable, Sendable {
     public let files: [TrackedFile]
     /// "Source code", "Assets", "Documents", "Other" — by extension.
     public let bytesByCategory: [String: Int64]
+    /// Bytes and file counts per recognised language, the way GitHub's language bar works.
+    public let bytesByLanguage: [String: Int64]
+    public let filesByLanguage: [String: Int]
+    /// Languages present, largest first, with their Linguist colour.
+    public let languages: [LanguageShare]
     public let largeFiles: [LargeFile]
     public let lastModified: Date?
 
@@ -223,11 +236,16 @@ extension GitRepository {
 
     static func inventory(in root: URL) -> FileInventory {
         guard let listing = try? GitProcess.capture(arguments: ["ls-files", "-z"], in: root) else {
-            return FileInventory(fileCount: 0, totalBytes: 0, files: [], bytesByCategory: [:], largeFiles: [], lastModified: nil)
+            return FileInventory(fileCount: 0, totalBytes: 0, files: [], bytesByCategory: [:],
+                                 bytesByLanguage: [:], filesByLanguage: [:], languages: [],
+                                 largeFiles: [], lastModified: nil)
         }
         var count = 0
         var total: Int64 = 0
         var byCategory: [String: Int64] = [:]
+        var byLanguage: [String: Int64] = [:]
+        var countByLanguage: [String: Int] = [:]
+        var known: [String: KnownLanguage] = [:]
         var large: [FileInventory.LargeFile] = []
         var files: [FileInventory.TrackedFile] = []
         var newest: Date?
@@ -240,11 +258,23 @@ extension GitRepository {
             count += 1
             total += bytes
             byCategory[FileInventory.category(forExtension: url.pathExtension), default: 0] += bytes
+            if let language = LanguageCatalog.language(forPath: path) {
+                byLanguage[language.name, default: 0] += bytes
+                countByLanguage[language.name, default: 0] += 1
+                known[language.name] = language
+            }
             files.append(.init(path: path, bytes: bytes, modified: values.contentModificationDate))
             if bytes >= FileInventory.largeFileThreshold { large.append(.init(path: path, bytes: bytes)) }
             if let modified = values.contentModificationDate, newest.map({ modified > $0 }) ?? true { newest = modified }
         }
+        let ranked = byLanguage
+            .compactMap { name, bytes -> LanguageShare? in
+                guard let language = known[name] else { return nil }
+                return LanguageShare(language: language, bytes: bytes, files: countByLanguage[name] ?? 0)
+            }
+            .sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.language.name < $1.language.name }
         return FileInventory(fileCount: count, totalBytes: total, files: files, bytesByCategory: byCategory,
+                             bytesByLanguage: byLanguage, filesByLanguage: countByLanguage, languages: ranked,
                              largeFiles: large.sorted { $0.bytes > $1.bytes }, lastModified: newest)
     }
 }

@@ -239,14 +239,14 @@ case "churn":
     print("units             \(report.units.count) (\(touched) with history, "
           + String(format: "%.0f%%", Double(touched) / Double(max(report.units.count, 1)) * 100) + ")")
     print("hunks in code   \(totalHunks) (" + String(format: "%.1f%%", matchRate) + " landed inside a unit)")
-    print("hunks elsewhere   \(churn.unresolvedPaths) (non-Swift files, or deleted since)")
+    print("hunks elsewhere   \(churn.unresolvedPaths) (files with no grammar, or deleted since)")
     print(String(format: "timing            history %.2fs  parse %.2fs  join %.2fs", tHistory, tParse, tJoin))
 
 case "risk":
     guard arguments.count >= 2 else { fail("risk requires a repository path") }
     let path = (arguments[1] as NSString).expandingTildeInPath
     var limit = 20
-    var halfLifeDays = 90.0
+    var halfLifeDays = 365.0
     var excludes: [String] = []
     var includeTests = false
     var compare = false
@@ -274,6 +274,7 @@ case "risk":
 
     var units = report.units
     if !includeTests { units = units.filter { !PathClassifier.isTest(path: $0.filePath) } }
+    units = units.filter { !report.generatedFiles.contains($0.filePath) }
     for pattern in excludes { units = units.filter { !$0.filePath.contains(pattern) } }
     let churn = ChurnJoiner.join(units: units, commits: commits)
 

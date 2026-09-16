@@ -13,7 +13,9 @@ struct StatisticsScreen: View {
                     StatCard(icon: "timer", tint: .blue, value: String(format: "%.1fs", analysis.historyDuration + analysis.parseDuration),
                              label: "Analysis time", delta: String(format: "history %.1fs · parse & facts %.1fs", analysis.historyDuration, analysis.parseDuration))
                     StatCard(icon: "doc.text.magnifyingglass", tint: .aqua, value: analysis.filesParsed.formatted(), label: "Files parsed",
-                             delta: analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")
+                             delta: analysis.generatedFiles.isEmpty
+                                ? (analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")
+                                : "\(analysis.generatedFiles.count) vendored or generated")
                     StatCard(icon: "function", tint: .violet, value: analysis.allUnits.count.formatted(), label: "Functions found",
                              delta: "\(model.rows.count.formatted()) ranked with the current filters")
                     StatCard(icon: "arrow.left.arrow.right", tint: .orange,
@@ -35,6 +37,12 @@ struct StatisticsScreen: View {
                             Text("Bands are relative to this repository: top 2% critical, next 8% high, next 20% elevated, "
                                  + "with an activity floor so a quiet repository does not always show a critical function.")
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).fixedSize(horizontal: false, vertical: true)
+                            if model.excludedUnitCount > 0 {
+                                Text("\(model.excludedUnitCount.formatted()) units are excluded by the current filters "
+                                     + "(tests, vendored and generated code, ignored paths).")
+                                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             Button("Change parameters…") { model.showSettings = true }.buttonStyle(SecondaryButtonStyle())
                         }
                     }

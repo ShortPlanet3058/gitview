@@ -7,6 +7,9 @@ public struct SourceScanner: Sendable {
         public var units: [CodeUnit]
         public var filesParsed: Int
         public var filesFailed: [String]
+        /// Paths recognised as vendored or machine-generated. Their units are still
+        /// extracted — the caller decides whether to rank them.
+        public var generatedFiles: Set<String> = []
     }
 
     /// Directories that never contain source worth analysing, and would otherwise
@@ -41,7 +44,8 @@ public struct SourceScanner: Sendable {
 
     /// Parses every Swift file under `root`, returning paths relative to it so they
     /// line up with the paths git reports.
-    public func scan(root: URL) async throws -> Report {
+    /// - Parameter detectGenerated: read the head of each file to spot generated markers.
+    public func scan(root: URL, detectGenerated: Bool = true) async throws -> Report {
         let files = parsableFiles(in: root)
         // Compile each language's grammar and query once, not once per file.
         let present = Set(files.map { $0.pathExtension.lowercased() })
@@ -55,7 +59,9 @@ public struct SourceScanner: Sendable {
         let rootPath = root.standardizedFileURL.path
         let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
 
-        return try await withThrowingTaskGroup(of: (units: [CodeUnit], failure: String?).self) { group in
+        return try await withThrowingTaskGroup(
+            of: (units: [CodeUnit], failure: String?, generated: String?).self
+        ) { group in
             for file in files {
                 group.addTask {
                     let relative = file.standardizedFileURL.path.hasPrefix(prefix)
@@ -64,11 +70,18 @@ public struct SourceScanner: Sendable {
                     do {
                         // A file that is not valid UTF-8, or that the grammar chokes on,
                         // must not take the whole scan down with it.
-                        guard let extractor = extractors[file.pathExtension.lowercased()] else { return ([], nil) }
+                        guard let extractor = extractors[file.pathExtension.lowercased()] else {
+                            return ([], nil, nil)
+                        }
                         let source = try String(contentsOf: file, encoding: .utf8)
-                        return (try extractor.extract(source: source, filePath: relative), nil)
+                        let units = try extractor.extract(source: source, filePath: relative)
+                        let generated = PathClassifier.isVendored(path: relative)
+                            || (detectGenerated && PathClassifier.looksGenerated(header: source))
+                            // A file holding a function no human would write by hand.
+                            || units.contains { $0.complexity >= PathClassifier.implausibleComplexity }
+                        return (units, nil, generated ? relative : nil)
                     } catch {
-                        return ([], relative)
+                        return ([], relative, nil)
                     }
                 }
             }
@@ -80,6 +93,7 @@ public struct SourceScanner: Sendable {
                 } else {
                     report.filesParsed += 1
                     report.units.append(contentsOf: result.units)
+                    if let generated = result.generated { report.generatedFiles.insert(generated) }
                 }
             }
             report.units.sort {

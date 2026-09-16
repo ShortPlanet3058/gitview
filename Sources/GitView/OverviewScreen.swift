@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 import GitViewCore
 import GitViewGit
+import GitViewParse
 
 struct OverviewScreen: View {
     @EnvironmentObject private var model: AnalysisModel
@@ -20,6 +21,8 @@ struct OverviewScreen: View {
                 ProjectCard(analysis: analysis)
 
                 statTiles(analysis)
+
+                LanguagesCard(inventory: analysis.info.inventory)
 
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     RecentActivityCard(commits: Array(analysis.commits.prefix(5)))
@@ -482,3 +485,113 @@ struct TopChangedFilesCard: View {
 }
 
 
+
+
+/// GitHub-style language bar. Colours come from Linguist and identify a language rather
+/// than encoding a value, so every segment is also named with its share in the legend.
+struct LanguagesCard: View {
+    let inventory: FileInventory
+
+    /// Languages GitView can parse for function-level risk, matched by display name.
+    private static let analysable: Set<String> = Set(LanguageSupport.all.map(\.displayName))
+
+    var body: some View {
+        let shares = inventory.languages
+        let total = max(shares.reduce(Int64(0)) { $0 + $1.bytes }, 1)
+        let shown = Array(shares.prefix(8))
+        let otherBytes = shares.dropFirst(8).reduce(Int64(0)) { $0 + $1.bytes }
+        let analysedCount = shares.filter { Self.analysable.contains($0.language.name) }.count
+
+        return Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Languages",
+                           subtitle: "\(shares.count) in this repository",
+                           info: "Share of tracked bytes per language, identified the same way GitHub does — "
+                               + "by filename and extension — but computed locally, so it works offline and on "
+                               + "repositories that are not on GitHub. Risk analysis needs a parser as well, and "
+                               + "only applies to languages that have functions.")
+                if shares.isEmpty {
+                    Text("No recognised source files.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                } else {
+                    GeometryReader { geometry in
+                        HStack(spacing: 2) {
+                            ForEach(shown) { share in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(color(share.language))
+                                    .frame(width: max(3, geometry.size.width * CGFloat(share.bytes) / CGFloat(total)))
+                            }
+                            if otherBytes > 0 {
+                                RoundedRectangle(cornerRadius: 2).fill(Theme.inkMuted)
+                                    .frame(width: max(3, geometry.size.width * CGFloat(otherBytes) / CGFloat(total)))
+                            }
+                        }
+                    }
+                    .frame(height: 10)
+                    FlowRow(spacing: Theme.Space.l) {
+                        ForEach(shown) { share in
+                            HStack(spacing: 5) {
+                                Circle().fill(color(share.language)).frame(width: 8, height: 8)
+                                Text(share.language.name).font(Theme.Text.caption).foregroundStyle(Theme.ink)
+                                Text(percent(share.bytes, of: total))
+                                    .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                                if Self.analysable.contains(share.language.name) {
+                                    Image(systemName: "flame.fill").font(.system(size: 8)).foregroundStyle(Theme.serious)
+                                }
+                            }
+                        }
+                        if otherBytes > 0 {
+                            HStack(spacing: 5) {
+                                Circle().fill(Theme.inkMuted).frame(width: 8, height: 8)
+                                Text("Other").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                                Text(percent(otherBytes, of: total))
+                                    .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                            }
+                        }
+                    }
+                    Text(analysedCount == 0
+                         ? "None of these can be ranked for function-level risk yet."
+                         : "\u{1F525} marks the \(analysedCount) language\(analysedCount == 1 ? "" : "s") GitView also ranks by risk.")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                }
+            }
+        }
+    }
+
+    private func color(_ language: KnownLanguage) -> Color {
+        language.colorHex.map { Color(hex: $0) } ?? Theme.inkMuted
+    }
+
+    private func percent(_ bytes: Int64, of total: Int64) -> String {
+        let value = Double(bytes) / Double(total) * 100
+        return value < 1 ? String(format: "%.1f%%", value) : "\(Int(value.rounded()))%"
+    }
+}
+
+/// Wraps its children onto as many lines as needed — the legend has a variable number of
+/// entries and a fixed grid would either clip or leave holes.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += lineHeight + 6; lineHeight = 0 }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: proposal.width ?? x, height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += lineHeight + 6; lineHeight = 0 }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}

@@ -2,7 +2,7 @@ import SwiftUI
 import GitViewCore
 import GitViewGit
 
-/// Tracked-file tree with an info card; Swift files show their hotspots.
+/// Tracked-file tree with an info card; files in a supported language show their hotspots.
 struct FilesScreen: View {
     @EnvironmentObject private var model: AnalysisModel
     @State private var expanded: Set<String> = [""]

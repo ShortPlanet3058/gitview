@@ -30,6 +30,8 @@ struct RepositoryAnalysis: Sendable {
     let allUnits: [CodeUnit]
     let filesParsed: Int
     let filesFailed: [String]
+    /// Paths recognised as vendored or machine-generated.
+    let generatedFiles: Set<String>
     let historyDuration: TimeInterval
     let parseDuration: TimeInterval
     let attribution: AttributionStats
@@ -80,6 +82,7 @@ enum AnalysisService {
             allUnits: report.units,
             filesParsed: report.filesParsed,
             filesFailed: report.filesFailed,
+            generatedFiles: report.generatedFiles,
             historyDuration: historyDuration,
             parseDuration: parseDuration,
             attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,

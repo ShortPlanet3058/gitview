@@ -24,7 +24,6 @@ struct AppShell: View {
         }
         .background(Theme.page)
         .ignoresSafeArea()
-        .onAppear(perform: applyLaunchArguments)
         .sheet(isPresented: $model.showSettings) { SettingsSheet().environmentObject(model) }
     }
 
@@ -67,42 +66,6 @@ struct AppShell: View {
         return nil
     }
 
-    /// `GitView --repo <path> [--screen <name>] [--mode standard|advanced] [--view list|graph]
-    /// [--select <unit>] [--select-pair <name>]`.
-    ///
-    /// Every flag takes a value, on purpose. AppKit pairs `-key value` from argv; a valueless
-    /// flag followed by another pair leaves a token it treats as a bare argument (a document
-    /// to open), and SwiftUI then withholds the WindowGroup's default window — the app runs
-    /// with no window at all. Measured by bisecting: `--simple --screen overview` is
-    /// windowless, `--screen overview --simple` is not.
-    private func applyLaunchArguments() {
-        guard case .idle = model.state else { return }
-        DebugScreenshot.scheduleIfRequested(model: model)
-        let arguments = Array(CommandLine.arguments.dropFirst())
-        if let flag = arguments.firstIndex(of: "--select"), flag + 1 < arguments.count {
-            model.pendingSelection = arguments[flag + 1]
-        }
-        if let flag = arguments.firstIndex(of: "--select-pair"), flag + 1 < arguments.count {
-            model.pendingPairSelection = arguments[flag + 1]
-        }
-        if let flag = arguments.firstIndex(of: "--screen"), flag + 1 < arguments.count,
-           let screen = AnalysisModel.Screen(rawValue: arguments[flag + 1]) {
-            model.screen = screen
-        }
-        if let flag = arguments.firstIndex(of: "--mode"), flag + 1 < arguments.count {
-            model.advanced = arguments[flag + 1] == "advanced"
-        }
-        if let flag = arguments.firstIndex(of: "--view"), flag + 1 < arguments.count {
-            model.couplingViewMode = arguments[flag + 1] == "graph" ? .graph : .list
-        }
-        if let flag = arguments.firstIndex(of: "--repo"), flag + 1 < arguments.count {
-            let path = (arguments[flag + 1] as NSString).expandingTildeInPath
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
-                model.open(url: URL(fileURLWithPath: path))
-            }
-        }
-    }
 }
 
 // MARK: - Top bar
@@ -412,6 +375,14 @@ struct SettingsSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Space.m) {
                     CardHeader(title: "What counts")
                     Toggle("Exclude test code from hotspots", isOn: $model.excludeTests).toggleStyle(.switch)
+                    Toggle("Exclude vendored and generated code", isOn: $model.excludeGenerated).toggleStyle(.switch)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Also ignore paths containing").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                        TextField("CNIOLLHTTP, Generated", text: $model.ignoredPaths)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Comma separated. For vendored code that carries no generated marker.")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    }
                     Stepper("Ignore functions with fewer than \(model.minimumCommits) commit\(model.minimumCommits == 1 ? "" : "s")",
                             value: $model.minimumCommits, in: 1...25)
                     Stepper("Pairs need at least \(model.minSharedCommits) shared commits",

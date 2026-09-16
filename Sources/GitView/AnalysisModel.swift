@@ -56,6 +56,17 @@ final class AnalysisModel: ObservableObject {
     // Model parameters. Changing any of these re-derives the ranking without touching git.
     @Published var halfLifeDays: Double = 365 { didSet { rebuild() } }
     @Published var excludeTests = true { didSet { rebuild() } }
+    /// Vendored and machine-generated code is excluded by default: nobody in this
+    /// repository is going to refactor it, and generated parsers are large enough to
+    /// dominate the hotspot list (swift-nio's bundled llhttp scores 1298).
+    @Published var excludeGenerated: Bool = UserDefaults.standard.object(forKey: "excludeGenerated") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(excludeGenerated, forKey: "excludeGenerated"); rebuild() }
+    }
+    /// Extra path fragments to ignore, for vendored code that carries no marker.
+    @Published var ignoredPaths: String = UserDefaults.standard.string(forKey: "ignoredPaths") ?? "" {
+        didSet { UserDefaults.standard.set(ignoredPaths, forKey: "ignoredPaths"); rebuild() }
+    }
+    @Published private(set) var excludedUnitCount = 0
     @Published var kindFilter: KindFilter = .all { didSet { rebuild() } }
     @Published var minimumCommits = 1 { didSet { rebuild() } }
     @Published var searchText = "" { didSet { rebuild() } }
@@ -141,6 +152,39 @@ final class AnalysisModel: ObservableObject {
         return false
     }
 
+    init() {
+        applyLaunchArguments()
+    }
+
+    /// `GitView --repo <path> [--screen <name>] [--mode standard|advanced] [--view list|graph]
+    /// [--select <unit>] [--select-pair <name>]`.
+    ///
+    /// Applied here rather than from a view's `onAppear`, because a window opened in the
+    /// background may never appear and the arguments would silently do nothing.
+    ///
+    /// Every flag takes a value on purpose: AppKit pairs `-key value` from argv, so a
+    /// valueless flag followed by a key/value pair leaves a token it treats as a document
+    /// to open — and SwiftUI then withholds the WindowGroup's default window entirely.
+    private func applyLaunchArguments() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        func value(_ flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+        pendingSelection = value("--select")
+        pendingPairSelection = value("--select-pair")
+        if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
+        if let mode = value("--mode") { advanced = mode == "advanced" }
+        if let view = value("--view") { couplingViewMode = view == "graph" ? .graph : .list }
+        DebugScreenshot.scheduleIfRequested(model: self)
+        if let path = value("--repo").map({ ($0 as NSString).expandingTildeInPath }) {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+                open(url: URL(fileURLWithPath: path))
+            }
+        }
+    }
+
     var selectedUnit: CodeUnit? { selectedUnitID.flatMap { unitsByID[$0] } }
     var selectedRow: RiskRow? { selectedUnitID.flatMap { rowsByID[$0] } }
     var selectedPair: CouplingRow? { selectedPairID.flatMap { couplingRowsByID[$0] } }
@@ -178,10 +222,20 @@ final class AnalysisModel: ObservableObject {
     private func rebuild() {
         guard let analysis else { return }
 
+        let before = analysis.allUnits.count
         var units = analysis.allUnits
         if excludeTests {
             units = units.filter { !PathClassifier.isTest(path: $0.filePath) }
         }
+        if excludeGenerated {
+            units = units.filter { !analysis.generatedFiles.contains($0.filePath) }
+        }
+        let fragments = ignoredPaths.split(whereSeparator: { $0 == "," || $0 == "\n" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !fragments.isEmpty {
+            units = units.filter { unit in !fragments.contains { unit.filePath.contains($0) } }
+        }
+        excludedUnitCount = before - units.count
         units = units.filter { kindFilter.matches($0.kind) }
 
         // The join must see the filtered set: a unit excluded here must not keep a slot.
