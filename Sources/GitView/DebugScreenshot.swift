@@ -26,10 +26,15 @@ enum DebugScreenshot {
     }
 
     static func render(model: AnalysisModel, to path: String) {
+        var height: CGFloat = 820
+        let arguments = CommandLine.arguments
+        if let h = arguments.firstIndex(of: "--screenshot-height"), h + 1 < arguments.count, let value = Double(arguments[h + 1]) {
+            height = CGFloat(value)   // taller renders show below-the-fold cards
+        }
         let content = AppShell()
             .environmentObject(model)
             .environment(\.staticRendering, true)
-            .frame(width: 1380, height: 820)
+            .frame(width: 1380, height: height)
             .background(Theme.page)
         let appearance = NSApplication.shared.effectiveAppearance
         let scheme: ColorScheme = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light

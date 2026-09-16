@@ -480,27 +480,3 @@ struct TopChangedFilesCard: View {
 }
 
 
-/// Expert model card (Statistics page).
-struct AdvancedModelCard: View {
-    @EnvironmentObject private var model: AnalysisModel
-    var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                CardHeader(title: "Risk model", subtitle: "score = log1p(complexity) × log1p(recency-weighted churn)")
-                if let analysis = model.analysis {
-                    HStack(spacing: Theme.Space.xl) {
-                        Text(String(format: "history %.1fs · parse %.1fs", analysis.historyDuration, analysis.parseDuration))
-                        Text("\(analysis.filesParsed) files parsed" + (analysis.filesFailed.isEmpty ? "" : ", \(analysis.filesFailed.count) failed"))
-                        if let churn = model.churn {
-                            let total = churn.matchedHunks + churn.unmatchedHunks
-                            Text(String(format: "%.0f%% of Swift hunks landed inside a unit",
-                                        total > 0 ? Double(churn.matchedHunks) / Double(total) * 100 : 0))
-                        }
-                        Text("half-life \(Int(model.halfLifeDays)) days")
-                    }
-                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                }
-            }
-        }
-    }
-}

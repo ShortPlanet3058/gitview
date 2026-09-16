@@ -27,12 +27,13 @@ struct CouplingScreen: View {
                     }
                 }
             }
-            .padding(.horizontal, Theme.Space.xxl)
+            .padding(.horizontal, Theme.Space.xl)
+            .padding(.top, Theme.Space.xl)
             .padding(.bottom, Theme.Space.l)
 
             if model.couplingViewMode == .graph {
                 graph
-                    .padding(.horizontal, Theme.Space.xxl)
+                    .padding(.horizontal, Theme.Space.xl)
                     .padding(.bottom, Theme.Space.xl)
             } else {
             ScrollColumn {
@@ -47,9 +48,10 @@ struct CouplingScreen: View {
                             .font(Theme.Text.body).foregroundStyle(Theme.inkMuted).padding(.top, Theme.Space.xl)
                     }
                 }
-                .padding(.horizontal, Theme.Space.xxl)
+                .padding(.horizontal, Theme.Space.xl)
                 .padding(.bottom, Theme.Space.xxl)
-                .frame(maxWidth: 980, alignment: .leading)
+                .frame(maxWidth: 1180, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             }
         }

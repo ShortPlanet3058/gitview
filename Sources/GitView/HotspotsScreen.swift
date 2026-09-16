@@ -17,12 +17,13 @@ struct HotspotsScreen: View {
                              subtitle: "Functions ranked by how complex they are and how much they've changed in \(model.recentWindowLabel).")
                 controls
             }
-            .padding(.horizontal, Theme.Space.xxl)
+            .padding(.horizontal, Theme.Space.xl)
+            .padding(.top, Theme.Space.xl)
             .padding(.bottom, Theme.Space.l)
 
             if model.advanced {
                 RiskTableView(rows: shown)
-                    .padding(.horizontal, Theme.Space.xxl)
+                    .padding(.horizontal, Theme.Space.xl)
                     .padding(.bottom, Theme.Space.xl)
             } else {
                 ScrollColumn {

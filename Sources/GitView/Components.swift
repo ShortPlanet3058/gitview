@@ -454,10 +454,12 @@ struct ScrollColumn<Content: View>: View {
             // An explicit minHeight matters: without it the frame grows to the child's height
             // and nothing is clipped.
             VStack(spacing: 0) { content }
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
         } else {
-            ScrollView(showsIndicators: showsIndicators) { content }
+            ScrollView(showsIndicators: showsIndicators) {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
@@ -467,7 +469,8 @@ extension Int64 {
     var byteString: String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+        formatter.allowsNonnumericFormatting = false   // "0 bytes", not "Zero KB"
         return formatter.string(fromByteCount: self)
     }
 }
