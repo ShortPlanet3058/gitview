@@ -10,6 +10,14 @@ struct StatisticsScreen: View {
             Page {
                 ScreenHeader(title: "Statistics",
                              subtitle: "How this analysis was produced, and the model behind the risk scores.")
+                // The dashboard shows the score and whatever is failing; the whole
+                // five-check breakdown belongs somewhere it can be read properly.
+                if let health = model.health {
+                    HStack(alignment: .top, spacing: Theme.Space.l) {
+                        HealthCard(health: health).frame(maxWidth: .infinity)
+                        RepositoryInfoCard(analysis: analysis, contributors: model.contributors.count).frame(maxWidth: .infinity)
+                    }
+                }
                 Text(analysis.source.summary + ". History is cached per repository and extended incrementally; "
                      + "source files are re-parsed whenever the working tree has changed.")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)

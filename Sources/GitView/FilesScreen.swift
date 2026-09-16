@@ -69,8 +69,28 @@ struct FilesScreen: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    FileInfoCard(node: chosen.flatMap { tree.node(at: $0) } ?? tree.root, root: analysis.root)
-                        .frame(width: 320)
+                    // The dashboard's language strip and size number both point here, so
+                    // this column carries the breakdown behind them alongside whatever file
+                    // is selected.
+                    // The column leads with whatever was asked for. Arriving from the
+                    // dashboard's language strip there is no file selected, so the language
+                    // breakdown is on top; select a file in the tree and its details take
+                    // that place instead of sitting under two cards about the whole project.
+                    ScrollColumn {
+                        VStack(alignment: .leading, spacing: Theme.Space.l) {
+                            if chosen == nil {
+                                LanguagesCard(inventory: analysis.info.inventory)
+                                RepositorySizeCard(info: analysis.info)
+                                FileInfoCard(node: tree.root, root: analysis.root)
+                            } else {
+                                FileInfoCard(node: chosen.flatMap { tree.node(at: $0) } ?? tree.root,
+                                             root: analysis.root)
+                                LanguagesCard(inventory: analysis.info.inventory)
+                                RepositorySizeCard(info: analysis.info)
+                            }
+                        }
+                    }
+                    .frame(width: 320)
                 }
                 .padding(.horizontal, Theme.Space.xl).padding(.bottom, Theme.Space.xl)
             }

@@ -41,6 +41,7 @@ struct ActivityScreen: View {
                         ActivityBars(buckets: buckets, granularity: granularity).frame(height: 170)
                     }
                 }
+                TopChangedFilesCard(commits: analysis.commits)
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     Card {
                         VStack(alignment: .leading, spacing: Theme.Space.m) {
