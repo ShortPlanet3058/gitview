@@ -15,6 +15,15 @@ final class AnalysisModel: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    enum Screen: Hashable { case overview, hotspots, coupling }
+    @Published var screen: Screen = .overview
+
+    /// Progressive disclosure: off shows plain-language cards; on adds every metric, the
+    /// sortable table, the half-life slider and model notes. Persisted across launches.
+    @Published var advanced: Bool = UserDefaults.standard.bool(forKey: "advancedMode") {
+        didSet { UserDefaults.standard.set(advanced, forKey: "advancedMode") }
+    }
+
     // Model parameters. Changing any of these re-derives the ranking without touching git.
     @Published var halfLifeDays: Double = 365 { didSet { rebuild() } }
     @Published var excludeTests = true { didSet { rebuild() } }
@@ -24,6 +33,34 @@ final class AnalysisModel: ObservableObject {
 
     @Published private(set) var rows: [RiskRow] = []
     @Published private(set) var rowsByID: [UUID: RiskRow] = [:]
+    @Published private(set) var levelCounts: [RiskLevel: Int] = [:]
+    /// Prose for the window "recent changes" are counted in: two half-lives, so it tracks
+    /// the model. "the last 2 years" at the default 365-day half-life.
+    @Published private(set) var recentWindowLabel = "the last 2 years"
+    /// Summed risk per directory (top two path components), highest first.
+    @Published private(set) var directoryRisk: [(directory: String, score: Double, units: Int)] = []
+
+    // Coupling
+    @Published var couplingScope: CouplingScope = .crossDirectory { didSet { rebuildCoupling() } }
+    @Published var minSharedCommits = 3 { didSet { rebuildCoupling() } }
+    @Published private(set) var coupling: CouplingIndex?
+    @Published private(set) var couplingRows: [CouplingRow] = []
+    @Published private(set) var couplingRowsByID: [String: CouplingRow] = [:]
+    @Published var selectedPairID: String?
+
+    enum CouplingScope: String, CaseIterable, Identifiable {
+        case crossDirectory = "Across folders"
+        case crossFile = "Across files"
+        case all = "All"
+        var id: String { rawValue }
+        func matches(_ pair: CouplingPair) -> Bool {
+            switch self {
+            case .crossDirectory: return pair.crossDirectory
+            case .crossFile: return pair.crossFile
+            case .all: return true
+            }
+        }
+    }
     @Published private(set) var churn: ChurnIndex?
     private(set) var unitsByID: [UUID: CodeUnit] = [:]
 
@@ -33,6 +70,7 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var loadingHistories: Set<UUID> = []
     /// Name fragment from `--select`, applied once the first ranking is built.
     var pendingSelection: String?
+    var pendingPairSelection: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -64,12 +102,17 @@ final class AnalysisModel: ObservableObject {
 
     var selectedUnit: CodeUnit? { selectedUnitID.flatMap { unitsByID[$0] } }
     var selectedRow: RiskRow? { selectedUnitID.flatMap { rowsByID[$0] } }
+    var selectedPair: CouplingRow? { selectedPairID.flatMap { couplingRowsByID[$0] } }
 
     func open(url: URL) {
         state = .loading("Reading history…")
         rows = []
         rowsByID = [:]
         churn = nil
+        coupling = nil
+        couplingRows = []
+        couplingRowsByID = [:]
+        selectedPairID = nil
         selectedUnitID = nil
         histories = [:]
         loadingHistories = []
@@ -101,12 +144,45 @@ final class AnalysisModel: ObservableObject {
 
         // The join must see the filtered set: a unit excluded here must not keep a slot.
         let index = ChurnJoiner.join(units: units, commits: analysis.commits)
+        let now = Date()
         let model = RiskModel(halfLife: halfLifeDays * 86_400)
-        var ranked = model.rank(units: units, churn: index, now: Date())
+        var ranked = model.rank(units: units, churn: index, now: now)
         ranked = ranked.filter { $0.commitCount >= minimumCommits }
 
         totalRanked = ranked.count
-        var built = ranked.map(RiskRow.init)
+        let levels = RiskLevel.assign(to: ranked)
+
+        // Complexity percentile: share of ranked units strictly less complex.
+        let complexities = ranked.map(\.unit.complexity).sorted()
+        func percentile(_ complexity: Int) -> Double {
+            guard !complexities.isEmpty else { return 0 }
+            var low = 0, high = complexities.count
+            while low < high { let mid = (low + high) / 2; if complexities[mid] < complexity { low = mid + 1 } else { high = mid } }
+            return Double(low) / Double(complexities.count)
+        }
+        let windowDays = halfLifeDays * 2
+        let windowStart = now.addingTimeInterval(-windowDays * 86_400)
+        let windowLabel = RiskExplanation.windowLabel(days: windowDays)
+        recentWindowLabel = windowLabel
+        var built = ranked.map { risked in
+            RiskRow(risked,
+                    level: levels[risked.unit.id] ?? .low,
+                    recentCommits: index.commits(for: risked.unit).filter { $0.date >= windowStart }.count,
+                    complexityPercentile: percentile(risked.unit.complexity),
+                    window: windowLabel,
+                    now: now)
+        }
+        levelCounts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
+
+        var byDirectory: [String: (score: Double, units: Int)] = [:]
+        for row in built where row.level != .low {
+            let parts = row.filePath.split(separator: "/")
+            let key = parts.count > 2 ? parts.prefix(2).joined(separator: "/") : row.directory
+            byDirectory[key, default: (0, 0)].score += row.score
+            byDirectory[key, default: (0, 0)].units += 1
+        }
+        directoryRisk = byDirectory.map { ($0.key, $0.value.score, $0.value.units) }
+            .sorted { $0.1 > $1.1 }
 
         let query = searchText.trimmingCharacters(in: .whitespaces)
         if !query.isEmpty {
@@ -129,6 +205,35 @@ final class AnalysisModel: ObservableObject {
             selectedUnitID = built.first { $0.name == fragment }?.id
                 ?? built.first { $0.name.hasSuffix("." + fragment) }?.id
                 ?? built.first { $0.name.localizedCaseInsensitiveContains(fragment) }?.id
+        }
+        rebuildCoupling()
+    }
+
+    /// Coupling is derived from the same join; it only needs recomputing when the join
+    /// or its own parameters change.
+    private func rebuildCoupling() {
+        guard let churn, analysis != nil else { return }
+        let analyzer = CouplingAnalyzer(maxUnitsPerCommit: 50, minSharedCommits: minSharedCommits,
+                                        halfLife: halfLifeDays * 86_400)
+        let unitsInJoin = rows.map(\.id).compactMap { unitsByID[$0] }
+        let index = analyzer.analyze(units: unitsInJoin, churn: churn, now: Date())
+        coupling = index
+
+        let built: [CouplingRow] = index.pairs.filter(couplingScope.matches).compactMap { pair in
+            guard let a = unitsByID[pair.a], let b = unitsByID[pair.b] else { return nil }
+            let commitsA = churn.commitCount(for: a), commitsB = churn.commitCount(for: b)
+            let anchor = commitsA <= commitsB ? a : b
+            return CouplingRow(id: pair.id, pair: pair,
+                               nameA: a.name, locationA: "\(a.filePath):\(a.lineRange.lowerBound)",
+                               nameB: b.name, locationB: "\(b.filePath):\(b.lineRange.lowerBound)",
+                               anchorName: anchor.name, anchorCommits: min(commitsA, commitsB))
+        }
+        couplingRows = built
+        couplingRowsByID = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
+        if let selected = selectedPairID, couplingRowsByID[selected] == nil { selectedPairID = nil }
+        if let fragment = pendingPairSelection {
+            pendingPairSelection = nil
+            selectedPairID = built.first { $0.nameA.contains(fragment) || $0.nameB.contains(fragment) }?.id ?? built.first?.id
         }
     }
 

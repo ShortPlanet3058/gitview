@@ -18,6 +18,16 @@ guard let command = arguments.first else {
       churn   join units against history and report which change most often
       risk    rank units by risk (complexity x recency-weighted churn)
       history <repo> <name>   complexity of one unit at every revision that touched it
+      coupling <repo>         pairs of units that change together, cross-directory first
+
+    coupling options:
+      --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
+      --max-units <n> (default 50)  --half-life <days>  --include-tests
+      coupling <repo>         pairs of units that change together, cross-directory first
+
+    coupling options:
+      --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
+      --max-units <n> (default 50)  --half-life <days>  --include-tests
 
     risk options:
       --limit <n>          rows to print (default 20)
@@ -361,6 +371,141 @@ case "history":
     let missing = points.filter { $0.complexity == nil }.count
     print("\(points.count - 1) revisions (\(missing) where the unit was not found — likely drift), "
           + String(format: "%.2fs", elapsed))
+
+case "coupling":
+    guard arguments.count >= 2 else { fail("coupling requires a repository path") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    var limit = 25, minShared = 3, maxUnits = 50, halfLifeDays = 365.0
+    var scope = "directory", includeTests = false
+    var index = 2
+    while index < arguments.count {
+        switch arguments[index] {
+        case "--limit":      index += 1; limit = Int(arguments[index]) ?? 25
+        case "--min-shared": index += 1; minShared = Int(arguments[index]) ?? 3
+        case "--max-units":  index += 1; maxUnits = Int(arguments[index]) ?? 50
+        case "--half-life":  index += 1; halfLifeDays = Double(arguments[index]) ?? 365
+        case "--scope":      index += 1; scope = arguments[index]
+        case "--include-tests": includeTests = true
+        default: fail("unknown option '\(arguments[index])'")
+        }
+        index += 1
+    }
+
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let root: URL
+    do { root = try repo.validate() } catch { fail("\(error)") }
+    let commits: [Commit]
+    do { commits = try GitRepository(url: root).loadHistory() } catch { fail("\(error)") }
+    let report: SourceScanner.Report
+    do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
+
+    var units = report.units
+    if !includeTests { units = units.filter { !PathClassifier.isTest(path: $0.filePath) } }
+    let churn = ChurnJoiner.join(units: units, commits: commits)
+    let byID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0) })
+
+    let started = DispatchTime.now()
+    let analyzer = CouplingAnalyzer(maxUnitsPerCommit: maxUnits, minSharedCommits: minShared,
+                                    halfLife: halfLifeDays * 86_400)
+    let coupling = analyzer.analyze(units: units, churn: churn, now: Date())
+    let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
+
+    let shown = coupling.pairs.filter {
+        switch scope {
+        case "all": return true
+        case "file": return $0.crossFile
+        default: return $0.crossDirectory
+        }
+    }
+
+    func lead(_ v: String, _ w: Int) -> String {
+        v.count >= w ? v : String(repeating: " ", count: w - v.count) + v
+    }
+    let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
+    print("scope \(scope)   min shared \(minShared)   max units/commit \(maxUnits)   half-life \(Int(halfLifeDays))d")
+    print()
+    print(lead("#", 4) + lead("shared", 8) + lead("strength", 10) + lead("weight", 8) + "  " + "last        pair")
+    print(String(repeating: "-", count: 120))
+    for (position, pair) in shown.prefix(limit).enumerated() {
+        guard let a = byID[pair.a], let b = byID[pair.b] else { continue }
+        print(lead("\(position + 1)", 4) + lead("\(pair.sharedCommits)", 8)
+              + lead(String(format: "%.0f%%", pair.strength * 100), 10)
+              + lead(String(format: "%.2f", pair.weight), 8) + "  "
+              + day.string(from: pair.lastShared) + "  "
+              + "\(a.filePath):\(a.name)")
+        print(String(repeating: " ", count: 44) + "\(b.filePath):\(b.name)")
+    }
+    print(String(repeating: "-", count: 120))
+    print("\(coupling.pairs.count) pairs with >= \(minShared) shared commits (\(shown.count) in scope); "
+          + "\(coupling.pairingCommits) commits produced pairs, \(coupling.skippedCommits) skipped as sweeps; "
+          + String(format: "%.3fs", elapsed))
+
+case "coupling":
+    guard arguments.count >= 2 else { fail("coupling requires a repository path") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    var limit = 25, minShared = 3, maxUnits = 50, halfLifeDays = 365.0
+    var scope = "directory", includeTests = false
+    var index = 2
+    while index < arguments.count {
+        switch arguments[index] {
+        case "--limit":      index += 1; limit = Int(arguments[index]) ?? 25
+        case "--min-shared": index += 1; minShared = Int(arguments[index]) ?? 3
+        case "--max-units":  index += 1; maxUnits = Int(arguments[index]) ?? 50
+        case "--half-life":  index += 1; halfLifeDays = Double(arguments[index]) ?? 365
+        case "--scope":      index += 1; scope = arguments[index]
+        case "--include-tests": includeTests = true
+        default: fail("unknown option '\(arguments[index])'")
+        }
+        index += 1
+    }
+
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let root: URL
+    do { root = try repo.validate() } catch { fail("\(error)") }
+    let commits: [Commit]
+    do { commits = try GitRepository(url: root).loadHistory() } catch { fail("\(error)") }
+    let report: SourceScanner.Report
+    do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
+
+    var units = report.units
+    if !includeTests { units = units.filter { !PathClassifier.isTest(path: $0.filePath) } }
+    let churn = ChurnJoiner.join(units: units, commits: commits)
+    let byID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0) })
+
+    let started = DispatchTime.now()
+    let analyzer = CouplingAnalyzer(maxUnitsPerCommit: maxUnits, minSharedCommits: minShared,
+                                    halfLife: halfLifeDays * 86_400)
+    let coupling = analyzer.analyze(units: units, churn: churn, now: Date())
+    let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
+
+    let shown = coupling.pairs.filter {
+        switch scope {
+        case "all": return true
+        case "file": return $0.crossFile
+        default: return $0.crossDirectory
+        }
+    }
+
+    func lead(_ v: String, _ w: Int) -> String {
+        v.count >= w ? v : String(repeating: " ", count: w - v.count) + v
+    }
+    let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
+    print("scope \(scope)   min shared \(minShared)   max units/commit \(maxUnits)   half-life \(Int(halfLifeDays))d")
+    print()
+    print(lead("#", 4) + lead("shared", 8) + lead("strength", 10) + lead("weight", 8) + "  last        pair")
+    print(String(repeating: "-", count: 120))
+    for (position, pair) in shown.prefix(limit).enumerated() {
+        guard let a = byID[pair.a], let b = byID[pair.b] else { continue }
+        print(lead("\(position + 1)", 4) + lead("\(pair.sharedCommits)", 8)
+              + lead(String(format: "%.0f%%", pair.strength * 100), 10)
+              + lead(String(format: "%.2f", pair.weight), 8) + "  "
+              + day.string(from: pair.lastShared) + "  \(a.filePath):\(a.name)")
+        print(String(repeating: " ", count: 44) + "\(b.filePath):\(b.name)")
+    }
+    print(String(repeating: "-", count: 120))
+    print("\(coupling.pairs.count) pairs with >= \(minShared) shared commits (\(shown.count) in scope); "
+          + "\(coupling.pairingCommits) commits produced pairs, \(coupling.skippedCommits) skipped as sweeps; "
+          + String(format: "%.3fs", elapsed))
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against

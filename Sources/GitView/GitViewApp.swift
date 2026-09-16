@@ -8,11 +8,13 @@ struct GitViewApp: App {
 
     var body: some Scene {
         WindowGroup("GitView") {
-            ContentView()
+            AppShell()
                 .environmentObject(model)
-                .frame(minWidth: 960, minHeight: 560)
+                .frame(minWidth: 1100, minHeight: 640)
+                .preferredColorScheme(nil)
         }
-        .defaultSize(width: 1320, height: 780)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1380, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Repository…") { chooseRepository(into: model) }

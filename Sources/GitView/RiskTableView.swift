@@ -1,8 +1,10 @@
 import SwiftUI
 import GitViewCore
 
+/// The expert view: every column, sortable. Shown only in Advanced mode.
 struct RiskTableView: View {
     @EnvironmentObject private var model: AnalysisModel
+    let rows: [RiskRow]
     @State private var sortOrder = [KeyPathComparator(\RiskRow.score, order: .reverse)]
     /// Sorted copy held in state rather than computed in `body`. Re-sorting inside `body`
     /// replaces the table's data while NSTableView is still inside the header-click
@@ -12,6 +14,11 @@ struct RiskTableView: View {
 
     var body: some View {
         Table(sortedRows, selection: $model.selectedUnitID, sortOrder: $sortOrder) {
+            TableColumn("Level", value: \.level.rawValue) { row in
+                RiskBadge(level: row.level, compact: true)
+            }
+            .width(min: 84, ideal: 92, max: 110)
+
             TableColumn("Score", value: \.score) { row in
                 Text(row.score, format: .number.precision(.fractionLength(2)))
                     .monospacedDigit()
@@ -82,33 +89,22 @@ struct RiskTableView: View {
         }
         .onAppear(perform: resort)
         .onChange(of: sortOrder) { _ in resort() }
-        .onChange(of: model.rows) { _ in resort() }
+        .onChange(of: rows) { _ in resort() }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
         .overlay {
-            if model.rows.isEmpty {
+            if rows.isEmpty {
                 Text(model.searchText.isEmpty
                      ? "No units match the current filters."
                      : "No units match “\(model.searchText)”.")
                     .foregroundStyle(.secondary)
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                if let analysis = model.analysis {
-                    Text("\(model.rows.count.formatted()) units · "
-                         + "\(analysis.commits.count.formatted()) commits · "
-                         + String(format: "history %.1fs, parse %.1fs",
-                                  analysis.historyDuration, analysis.parseDuration))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
-        }
     }
 
     private func resort() {
-        sortedRows = model.rows.sorted(using: sortOrder)
-        topScore = model.rows.map(\.score).max() ?? 0
+        sortedRows = rows.sorted(using: sortOrder)
+        topScore = rows.map(\.score).max() ?? 0
     }
 
     /// Scores are relative, so colour is relative to the top of the current table rather
