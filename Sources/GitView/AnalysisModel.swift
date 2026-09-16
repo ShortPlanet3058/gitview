@@ -48,6 +48,15 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var couplingRowsByID: [String: CouplingRow] = [:]
     @Published var selectedPairID: String?
 
+    enum CouplingViewMode: String, CaseIterable { case list = "List", graph = "Graph" }
+    @Published var couplingViewMode: CouplingViewMode = .list
+    @Published private(set) var graph: CouplingGraph?
+    /// Layout positions in abstract units; the view fits them to its size.
+    @Published private(set) var graphPositions: [UUID: CGPoint] = [:]
+    @Published private(set) var graphLayoutInProgress = false
+    private var graphLayoutGeneration = 0
+    static let graphEdgeCap = 200
+
     enum CouplingScope: String, CaseIterable, Identifiable {
         case crossDirectory = "Across folders"
         case crossFile = "Across files"
@@ -234,6 +243,35 @@ final class AnalysisModel: ObservableObject {
         if let fragment = pendingPairSelection {
             pendingPairSelection = nil
             selectedPairID = built.first { $0.nameA.contains(fragment) || $0.nameB.contains(fragment) }?.id ?? built.first?.id
+        }
+        rebuildGraph()
+    }
+
+    /// Builds the graph from the pairs currently shown and lays it out off the main actor.
+    /// Layout is a few hundred O(n²) iterations — tens of milliseconds for 200 nodes, but
+    /// not something to do on the main thread while a slider is moving.
+    private func rebuildGraph() {
+        guard let churn else { graph = nil; graphPositions = [:]; return }
+        let built = CouplingGraph(
+            pairs: couplingRows.map(\.pair),
+            maxEdges: Self.graphEdgeCap,
+            unit: { self.unitsByID[$0] },
+            size: { id in Double(self.unitsByID[id].map { churn.commitCount(for: $0) } ?? 1) }
+        )
+        graph = built
+        graphLayoutGeneration += 1
+        let generation = graphLayoutGeneration
+        graphLayoutInProgress = true
+        Task.detached(priority: .userInitiated) { [built] in
+            var layout = ForceDirectedLayout(graph: built)
+            layout.settle(maxIterations: 300)
+            let positions = layout.positions.mapValues { CGPoint(x: $0.x, y: $0.y) }
+            await MainActor.run { [positions] in
+                // A newer rebuild may have started meanwhile; only the latest result counts.
+                guard generation == self.graphLayoutGeneration else { return }
+                self.graphPositions = positions
+                self.graphLayoutInProgress = false
+            }
         }
     }
 

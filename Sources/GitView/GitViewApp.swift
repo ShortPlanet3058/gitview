@@ -30,6 +30,9 @@ struct GitViewApp: App {
 /// not depend on how the binary was launched.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Only the bare SwiftPM binary needs this; a bundle is already a regular app, and
+        // forcing activation there would yank focus from whatever the user is doing.
+        guard Bundle.main.bundleIdentifier == nil else { return }
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }

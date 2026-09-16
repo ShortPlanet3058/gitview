@@ -11,6 +11,8 @@ struct CouplingScreen: View {
                              subtitle: "Functions that keep being edited in the same commits. When they live in "
                                      + "different folders, changing one and forgetting the other is a classic bug.")
                 HStack(spacing: Theme.Space.m) {
+                    SegmentPicker(options: AnalysisModel.CouplingViewMode.allCases.map { ($0, $0.rawValue) },
+                                  selection: $model.couplingViewMode)
                     SegmentPicker(options: AnalysisModel.CouplingScope.allCases.map { ($0, $0.rawValue) },
                                   selection: $model.couplingScope)
                     if model.advanced {
@@ -28,6 +30,11 @@ struct CouplingScreen: View {
             .padding(.horizontal, Theme.Space.xxl)
             .padding(.bottom, Theme.Space.l)
 
+            if model.couplingViewMode == .graph {
+                graph
+                    .padding(.horizontal, Theme.Space.xxl)
+                    .padding(.bottom, Theme.Space.xl)
+            } else {
             ScrollView {
                 LazyVStack(spacing: Theme.Space.s) {
                     ForEach(model.couplingRows.prefix(300)) { row in
@@ -44,6 +51,27 @@ struct CouplingScreen: View {
                 .padding(.bottom, Theme.Space.xxl)
                 .frame(maxWidth: 980, alignment: .leading)
             }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var graph: some View {
+        if let graph = model.graph, !graph.nodes.isEmpty {
+            CouplingGraphView(
+                graph: graph,
+                positions: model.graphPositions,
+                layingOut: model.graphLayoutInProgress,
+                level: { model.rowsByID[$0]?.level },
+                location: { model.rowsByID[$0]?.location },
+                selectedUnitID: $model.selectedUnitID,
+                selectedPairID: $model.selectedPairID
+            )
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.hairline))
+        } else {
+            Text("No pairs in this scope to draw.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

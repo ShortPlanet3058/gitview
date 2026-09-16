@@ -45,6 +45,10 @@ struct AppShell: View {
         switch model.screen {
         case .coupling:
             if let pair = model.selectedPair { return AnyView(PairDetailPanel(row: pair).id(pair.id)) }
+            // Clicking a node in the graph selects a unit rather than a pair.
+            if let unit = model.selectedUnit, let row = model.selectedRow {
+                return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
+            }
         default:
             if let unit = model.selectedUnit, let row = model.selectedRow {
                 return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
@@ -53,11 +57,15 @@ struct AppShell: View {
         return nil
     }
 
-    /// `GitView <repo> [--select <unit>] [--screen overview|hotspots|coupling] [--advanced]`.
-    /// Anything that is not an existing directory is ignored, which skips the
-    /// `-NSDocumentRevisionsDebugMode YES` pair Xcode injects.
+    /// `GitView --repo <path> [--select <unit>] [--screen overview|hotspots|coupling] [--advanced]`.
+    ///
+    /// The repository is a flag, not a bare path, on purpose: AppKit treats a bare path in
+    /// argv as a document to open at launch, and SwiftUI then withholds the WindowGroup's
+    /// default window — the app runs with no window at all. Measured by bisecting the
+    /// arguments; the flag forms were all harmless.
     private func applyLaunchArguments() {
         guard case .idle = model.state else { return }
+        DebugScreenshot.scheduleIfRequested(model: model)
         let arguments = Array(CommandLine.arguments.dropFirst())
         if let flag = arguments.firstIndex(of: "--select"), flag + 1 < arguments.count {
             model.pendingSelection = arguments[flag + 1]
@@ -73,12 +81,14 @@ struct AppShell: View {
             }
         }
         if arguments.contains("--advanced") { model.advanced = true }
+        if arguments.contains("--graph") { model.couplingViewMode = .graph }
         if arguments.contains("--simple") { model.advanced = false }
-        var isDirectory: ObjCBool = false
-        for argument in arguments
-        where FileManager.default.fileExists(atPath: argument, isDirectory: &isDirectory) && isDirectory.boolValue {
-            model.open(url: URL(fileURLWithPath: argument))
-            return
+        if let flag = arguments.firstIndex(of: "--repo"), flag + 1 < arguments.count {
+            let path = (arguments[flag + 1] as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+                model.open(url: URL(fileURLWithPath: path))
+            }
         }
     }
 }
