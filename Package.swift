@@ -37,6 +37,7 @@ let package = Package(
 
         .executableTarget(name: "gitview-cli", dependencies: ["GitViewCore", "GitViewGit", "GitViewParse"]),
 
+        .testTarget(name: "GitViewCoreTests", dependencies: ["GitViewCore"]),
         .testTarget(name: "GitViewGitTests", dependencies: ["GitViewGit", "GitViewCore"]),
         .testTarget(name: "GitViewParseTests", dependencies: ["GitViewParse", "GitViewCore"]),
     ]

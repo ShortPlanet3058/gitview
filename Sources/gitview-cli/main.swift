@@ -15,6 +15,7 @@ guard let command = arguments.first else {
 
       scan    parse a repository's history and report summary statistics
       units   extract every code unit from a checkout and print its metrics
+      churn   join units against history and report which change most often
 
     units options:
       --file <substring>   only files whose path contains this
@@ -140,6 +141,85 @@ case "units":
     if !report.filesFailed.isEmpty {
         print("failed: " + report.filesFailed.prefix(5).joined(separator: ", "))
     }
+
+case "churn":
+    guard arguments.count >= 2 else { fail("churn requires a repository path") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    var limit = 20
+    var tsv = false
+    var index = 2
+    while index < arguments.count {
+        if arguments[index] == "--limit", index + 1 < arguments.count {
+            limit = Int(arguments[index + 1]) ?? 20
+            index += 1
+        } else if arguments[index] == "--tsv" {
+            tsv = true
+        }
+        index += 1
+    }
+
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let root: URL
+    do { root = try repo.validate() } catch { fail("\(error)") }
+
+    let t0 = DispatchTime.now()
+    let commits: [Commit]
+    do { commits = try GitRepository(url: root).loadHistory() } catch { fail("\(error)") }
+    let tHistory = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9
+
+    let t1 = DispatchTime.now()
+    let report: SourceScanner.Report
+    do { report = try await SourceScanner().scan(root: root) } catch { fail("\(error)") }
+    let tParse = Double(DispatchTime.now().uptimeNanoseconds - t1.uptimeNanoseconds) / 1e9
+
+    let t2 = DispatchTime.now()
+    let churn = ChurnJoiner.join(units: report.units, commits: commits)
+    let tJoin = Double(DispatchTime.now().uptimeNanoseconds - t2.uptimeNanoseconds) / 1e9
+
+    func pad(_ value: String, _ width: Int) -> String {
+        value.count >= width ? value : value + String(repeating: " ", count: width - value.count)
+    }
+    let dayFormatter = DateFormatter()
+    dayFormatter.dateFormat = "yyyy-MM-dd"
+
+    let ranked = report.units
+        .filter { $0.kind != .class }
+        .sorted { churn.commitCount(for: $0) > churn.commitCount(for: $1) }
+
+    if tsv {
+        // Machine-readable, for cross-checking attribution against `git log -L`.
+        print("commits\tauthors\tcx\tstart\tend\tpath\tname\tdates")
+        for unit in ranked.prefix(limit) {
+            let dates = churn.commits(for: unit)
+                .map { "\($0.sha):\(Int($0.date.timeIntervalSince1970))" }
+                .joined(separator: ",")
+            print("\(churn.commitCount(for: unit))\t\(churn.authors(for: unit).count)\t\(unit.complexity)"
+                  + "\t\(unit.lineRange.lowerBound)\t\(unit.lineRange.upperBound)"
+                  + "\t\(unit.filePath)\t\(unit.name)\t\(dates)")
+        }
+        exit(0)
+    }
+
+    print(pad("commits", 9) + pad("authors", 9) + pad("cx", 5) + pad("last", 12) + "unit")
+    print(String(repeating: "-", count: 110))
+    for unit in ranked.prefix(limit) {
+        let last = churn.lastTouched(for: unit).map { dayFormatter.string(from: $0) } ?? "-"
+        print(pad("\(churn.commitCount(for: unit))", 9)
+              + pad("\(churn.authors(for: unit).count)", 9)
+              + pad("\(unit.complexity)", 5)
+              + pad(last, 12)
+              + "\(unit.filePath):\(unit.name)")
+    }
+    print(String(repeating: "-", count: 110))
+
+    let touched = report.units.filter { churn.commitCount(for: $0) > 0 }.count
+    let totalHunks = churn.matchedHunks + churn.unmatchedHunks
+    let matchRate = totalHunks > 0 ? Double(churn.matchedHunks) / Double(totalHunks) * 100 : 0
+    print("units             \(report.units.count) (\(touched) with history, "
+          + String(format: "%.0f%%", Double(touched) / Double(max(report.units.count, 1)) * 100) + ")")
+    print("hunks in .swift   \(totalHunks) (" + String(format: "%.1f%%", matchRate) + " landed inside a unit)")
+    print("hunks elsewhere   \(churn.unresolvedPaths) (non-Swift files, or deleted since)")
+    print(String(format: "timing            history %.2fs  parse %.2fs  join %.2fs", tHistory, tParse, tJoin))
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against
