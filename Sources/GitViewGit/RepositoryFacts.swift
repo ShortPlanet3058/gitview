@@ -106,7 +106,8 @@ extension GitRepository {
     /// one `rev-list` per branch.
     public func branches(defaultBranch: String, currentBranch: String, detailLimit: Int = 60) throws -> [BranchInfo] {
         let root = try validate()
-        let format = "%(refname)%1f%(objectname)%1f%(committerdate:iso-strict)%1f%(authorname)%1f%(subject)"
+        // `authorname:mailmap` for the same reason the log format uses %aN.
+        let format = "%(refname)%1f%(objectname)%1f%(committerdate:iso-strict)%1f%(authorname:mailmap)%1f%(subject)"
         let output = try GitProcess.capture(
             arguments: ["for-each-ref", "--sort=-committerdate", "--format=\(format)", "refs/heads", "refs/remotes/origin"],
             in: root)

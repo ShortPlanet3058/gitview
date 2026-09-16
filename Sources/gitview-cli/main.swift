@@ -522,7 +522,12 @@ case "facts":
     let commits: [Commit]
     do { commits = try GitRepository(url: info.root).loadHistory() } catch { fail("\(error)") }
 
-    func mb(_ bytes: Int64) -> String { String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+    // Same formatter the app uses, so CLI and UI never disagree about a size.
+    let byteFormatter = ByteCountFormatter()
+    byteFormatter.countStyle = .file
+    byteFormatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+    byteFormatter.allowsNonnumericFormatting = false
+    func mb(_ bytes: Int64) -> String { byteFormatter.string(fromByteCount: bytes) }
     let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
     print("root            \(info.root.path)")
     print("branch          \(info.currentBranch) (default \(info.defaultBranch))")
@@ -553,11 +558,15 @@ case "facts":
     let top = ChangeFrequency.topFiles(commits: commits, since: now.addingTimeInterval(-90 * 86_400), limit: 5)
     print("top changed files (90d): " + top.map { "\($0.path.split(separator: "/").last ?? "") ×\($0.changes)" }.joined(separator: ", "))
     print()
-    let stale = branches.filter { !$0.isDefault && !$0.isMerged && now.timeIntervalSince($0.date) > 90 * 86_400 }.count
+    let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && now.timeIntervalSince(b.date) > 90 * 86_400 }
     let health = RepositoryHealth.assess(.init(
-        lastCommit: commits.first?.date, activeAuthors: ContributorStats.activeAuthors(commits: commits, since: now.addingTimeInterval(-90 * 86_400)),
-        staleBranches: stale, totalBranches: branches.count, largeFiles: info.inventory.largeFiles.count,
-        complexChangedShare: nil, complexChangedCount: 0, now: now))
+        lastCommit: commits.map(\.date).max(),
+        activeAuthors: ContributorStats.activeAuthors(commits: commits, since: now.addingTimeInterval(-90 * 86_400), excludingBots: true),
+        staleLocalBranches: branches.filter { !$0.isRemote && isStale($0) }.count,
+        localBranches: branches.filter { !$0.isRemote }.count,
+        staleRemoteBranches: branches.filter { $0.isRemote && isStale($0) }.count,
+        largeFiles: info.inventory.largeFiles.count,
+        complexChurnShare: nil, complexFunctionsChanged: 0, now: now))
     print("health          \(health.score) \(health.label) — \(health.summary)")
     for item in health.items { print("  [\(item.points)/\(item.maxPoints)] \(item.title): \(item.detail)") }
     print(String(format: "facts %.2fs", tFacts))

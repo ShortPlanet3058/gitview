@@ -34,6 +34,7 @@ struct ContributorsScreen: View {
                             HStack(spacing: Theme.Space.s) {
                                 Avatar(name: person.name, size: 26)
                                 Text(person.name).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+                                if person.isBot { Chip(text: "bot") }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Text(person.commits.formatted()).font(Theme.Text.body.monospacedDigit()).foregroundStyle(Theme.ink)
@@ -59,7 +60,9 @@ struct ContributorsScreen: View {
                 }
             }
             if model.advanced {
-                Text("Names come from commit author fields as written; the same person may appear under two spellings.")
+                Text("Names are resolved through the repository's .mailmap, so a person who has committed under "
+                     + "several spellings appears once. Automation is marked “bot” and is left out of the health "
+                     + "check that counts active people.")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
         }

@@ -15,13 +15,11 @@ struct StatisticsScreen: View {
                     StatCard(icon: "doc.text.magnifyingglass", tint: .aqua, value: analysis.filesParsed.formatted(), label: "Swift files parsed",
                              delta: analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")
                     StatCard(icon: "function", tint: .violet, value: analysis.allUnits.count.formatted(), label: "Functions found",
-                             delta: "\(model.rows.count.formatted()) with history")
-                    if let churn = model.churn {
-                        let total = churn.matchedHunks + churn.unmatchedHunks
-                        StatCard(icon: "arrow.left.arrow.right", tint: .orange,
-                                 value: total > 0 ? "\(Int((Double(churn.matchedHunks) / Double(total) * 100).rounded()))%" : "—",
-                                 label: "Hunks inside a function", delta: "\(total.formatted()) hunks in Swift files")
-                    }
+                             delta: "\(model.rows.count.formatted()) ranked with the current filters")
+                    StatCard(icon: "arrow.left.arrow.right", tint: .orange,
+                             value: "\(Int((analysis.attribution.matchRate * 100).rounded()))%",
+                             label: "Hunks inside a function",
+                             delta: "\(analysis.attribution.hunksInParsedFiles.formatted()) hunks in Swift files")
                 }
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     Card {
@@ -56,7 +54,9 @@ struct StatisticsScreen: View {
                                 HairlineDivider()
                                 precisionRow("Recency-weighted (365-day half-life)", "≈ 78%")
                             }
-                            Text("Measured against git log -L on 1,286 attributions in swift-nio. The half-life is what keeps "
+                            Text("This repository: \(Int((analysis.attribution.matchRate * 100).rounded()))% of hunks in Swift "
+                                 + "files landed inside a function — the rest are imports, blank lines and drift. Measured "
+                                 + "against git log -L on 1,286 attributions in swift-nio. The half-life is what keeps "
                                  + "the score trustworthy: old, unreliable attributions carry almost no weight. A function's "
                                  + "detail panel marks the commits where it did not exist yet.")
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).fixedSize(horizontal: false, vertical: true)

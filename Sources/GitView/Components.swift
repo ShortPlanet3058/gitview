@@ -367,7 +367,8 @@ struct HealthItemRow: View {
             Text(item.title).font(Theme.Text.body).foregroundStyle(Theme.ink)
             Spacer()
             Text(item.detail).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
-                .lineLimit(1).truncationMode(.tail)
+                .lineLimit(2).multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 5)
     }

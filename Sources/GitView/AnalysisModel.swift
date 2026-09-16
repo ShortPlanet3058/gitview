@@ -206,13 +206,30 @@ final class AnalysisModel: ObservableObject {
         let windowStart = now.addingTimeInterval(-windowDays * 86_400)
         let windowLabel = RiskExplanation.windowLabel(days: windowDays)
         recentWindowLabel = windowLabel
-        var built = ranked.map { risked in
-            RiskRow(risked,
-                    level: levels[risked.unit.id] ?? .low,
-                    recentCommits: index.commits(for: risked.unit).filter { $0.date >= windowStart }.count,
-                    complexityPercentile: percentile(risked.unit.complexity),
-                    window: windowLabel,
-                    now: now)
+
+        // Health is assessed over its own fixed window so that moving the half-life slider
+        // re-ranks functions without changing the repository's health score.
+        let healthStart = now.addingTimeInterval(-RepositoryHealth.assessmentWindow)
+        var complexTouches = 0, allTouches = 0, complexFunctions = 0
+
+        var built: [RiskRow] = []
+        built.reserveCapacity(ranked.count)
+        for risked in ranked {
+            let dates = index.commits(for: risked.unit).map(\.date)
+            let healthTouches = dates.lazy.filter { $0 >= healthStart }.count
+            if healthTouches > 0 {
+                allTouches += healthTouches
+                if risked.unit.complexity >= RepositoryHealth.complexThreshold {
+                    complexTouches += healthTouches
+                    complexFunctions += 1
+                }
+            }
+            built.append(RiskRow(risked,
+                                 level: levels[risked.unit.id] ?? .low,
+                                 recentCommits: dates.lazy.filter { $0 >= windowStart }.count,
+                                 complexityPercentile: percentile(risked.unit.complexity),
+                                 window: windowLabel,
+                                 now: now))
         }
         levelCounts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
 
@@ -227,18 +244,17 @@ final class AnalysisModel: ObservableObject {
             .sorted { $0.1 > $1.1 }
 
         // Health: the four repository checks plus GitView's own "complex code under change".
-        let changed = built.filter { $0.recentCommits > 0 }
-        let complex = changed.filter { $0.complexity >= 20 }
         let ninetyDays = now.addingTimeInterval(-90 * 86_400)
-        let stale = analysis.branches.filter { !$0.isDefault && !$0.isMerged && $0.date < ninetyDays }.count
+        let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && b.date < ninetyDays }
         health = RepositoryHealth.assess(.init(
             lastCommit: analysis.commits.map(\.date).max(),
-            activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays),
-            staleBranches: stale,
-            totalBranches: analysis.branches.count,
+            activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays, excludingBots: true),
+            staleLocalBranches: analysis.branches.filter { !$0.isRemote && isStale($0) }.count,
+            localBranches: analysis.branches.filter { !$0.isRemote }.count,
+            staleRemoteBranches: analysis.branches.filter { $0.isRemote && isStale($0) }.count,
             largeFiles: analysis.info.inventory.largeFiles.count,
-            complexChangedShare: changed.isEmpty ? nil : Double(complex.count) / Double(changed.count),
-            complexChangedCount: complex.count,
+            complexChurnShare: allTouches == 0 ? nil : Double(complexTouches) / Double(allTouches),
+            complexFunctionsChanged: complexFunctions,
             now: now))
 
         let query = searchText.trimmingCharacters(in: .whitespaces)

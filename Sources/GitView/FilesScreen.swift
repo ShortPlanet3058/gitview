@@ -94,7 +94,7 @@ struct FileTree {
                     parent.children.append(node)
                 }
                 node.bytes += file.bytes
-                node.fileCount += isLeaf ? 1 : 1
+                node.fileCount += 1        // a directory counts every file beneath it
                 if let m = file.modified, node.modified.map({ m > $0 }) ?? true { node.modified = m }
                 if let counts = attention[file.path] {
                     for (level, count) in counts { node.hotspotCounts[level, default: 0] += count }

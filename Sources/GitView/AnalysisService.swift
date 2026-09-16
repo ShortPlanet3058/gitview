@@ -7,6 +7,21 @@ import GitViewParse
 ///
 /// Held separately from the derived ranking so that moving the half-life slider or
 /// toggling a filter re-ranks in milliseconds instead of re-reading git history.
+/// How well commit hunks line up with parsed functions, measured over **every** parsed
+/// unit. A diagnostic of the analysis itself, so it must not move when the user excludes
+/// tests or raises the minimum-commits filter.
+struct AttributionStats: Sendable {
+    let matchedHunks: Int
+    let unmatchedHunks: Int
+    /// Hunks in files with no parsed units (non-Swift, or deleted since).
+    let unresolvedHunks: Int
+
+    var hunksInParsedFiles: Int { matchedHunks + unmatchedHunks }
+    var matchRate: Double {
+        hunksInParsedFiles > 0 ? Double(matchedHunks) / Double(hunksInParsedFiles) : 0
+    }
+}
+
 struct RepositoryAnalysis: Sendable {
     let root: URL
     let info: RepositoryInfo
@@ -17,6 +32,7 @@ struct RepositoryAnalysis: Sendable {
     let filesFailed: [String]
     let historyDuration: TimeInterval
     let parseDuration: TimeInterval
+    let attribution: AttributionStats
 
     var authorCount: Int { Set(commits.map(\.author)).count }
     var dateRange: ClosedRange<Date>? {
@@ -53,6 +69,9 @@ enum AnalysisService {
         let (info, branches) = try await facts.value
         let parseDuration = Date().timeIntervalSince(parseStart)
 
+        // Join once over the unfiltered unit set purely for the diagnostic.
+        let fullJoin = ChurnJoiner.join(units: report.units, commits: commits)
+
         return RepositoryAnalysis(
             root: validated,
             info: info,
@@ -62,7 +81,10 @@ enum AnalysisService {
             filesParsed: report.filesParsed,
             filesFailed: report.filesFailed,
             historyDuration: historyDuration,
-            parseDuration: parseDuration
+            parseDuration: parseDuration,
+            attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
+                                          unmatchedHunks: fullJoin.unmatchedHunks,
+                                          unresolvedHunks: fullJoin.unresolvedPaths)
         )
     }
 }

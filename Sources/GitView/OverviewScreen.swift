@@ -66,7 +66,7 @@ struct OverviewScreen: View {
             StatCard(icon: "clock.arrow.circlepath", tint: .blue, value: analysis.commits.count.formatted(), label: "Commits",
                      delta: thisMonth > 0 ? "+\(thisMonth) this month" : nil)
             StatCard(icon: "person.2.fill", tint: .aqua, value: model.contributors.count.formatted(), label: "Contributors",
-                     delta: newPeople > 0 ? "+\(newPeople) this month" : nil)
+                     delta: newPeople > 0 ? "\(newPeople) new this month" : nil)
             if model.advanced {
                 StatCard(icon: "arrow.triangle.branch", tint: .violet, value: analysis.branches.count.formatted(), label: "Branches",
                          delta: "\(active) active")
@@ -158,9 +158,11 @@ struct HealthCard: View {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Repository health",
                            info: "Five checks, 100 points: recent activity (25), active contributors (20), branch "
-                               + "hygiene (15), large files (15), and complex code under change (25). Each line "
-                               + "shows what was measured; the score is a heuristic to start a conversation, not a "
-                               + "verdict.")
+                               + "hygiene (15), large files (15), and complex code under change (25) — the share of "
+                               + "recent commits that landed in a function with 10 or more branch points. Branch "
+                               + "hygiene counts local branches only; branches that exist just on the remote are "
+                               + "other people's pull requests. Each line shows what was measured; the score is a "
+                               + "heuristic to start a conversation, not a verdict.")
                 HStack(spacing: Theme.Space.l) {
                     HealthRing(health: health)
                     VStack(alignment: .leading, spacing: 2) {

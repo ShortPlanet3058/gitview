@@ -7,6 +7,34 @@ private func commit(_ sha: String, _ author: String, daysAgo: Double, files: [St
            fileChanges: files.map { FileChange(path: $0, oldPath: nil, hunks: [Hunk(newStart: 1, newLineCount: 1)]) })
 }
 
+final class BotDetectionTests: XCTestCase {
+    func testRecognisesBots() {
+        for name in ["dependabot[bot]", "github-actions[bot]", "Dependabot", "renovate", "CODECOV"] {
+            XCTAssertTrue(ContributorStats.isBotName(name), name)
+        }
+    }
+
+    func testDoesNotFlagPeople() {
+        for name in ["Cory Benfield", "Robot Wrangler", "botto", "Abbot Smith"] {
+            XCTAssertFalse(ContributorStats.isBotName(name), name)
+        }
+    }
+
+    func testActiveAuthorsCanExcludeBots() {
+        let commits = [commit("1", "Ann", daysAgo: 1), commit("2", "dependabot[bot]", daysAgo: 2)]
+        XCTAssertEqual(ContributorStats.activeAuthors(commits: commits, since: now.addingTimeInterval(-90 * 86_400)), 2)
+        XCTAssertEqual(ContributorStats.activeAuthors(commits: commits, since: now.addingTimeInterval(-90 * 86_400),
+                                                      excludingBots: true), 1)
+    }
+
+    func testContributorCarriesBotFlag() {
+        let people = ContributorStats.compute(commits: [commit("1", "Ann", daysAgo: 1),
+                                                        commit("2", "dependabot[bot]", daysAgo: 1)])
+        XCTAssertEqual(people.first { $0.name == "Ann" }?.isBot, false)
+        XCTAssertEqual(people.first { $0.name == "dependabot[bot]" }?.isBot, true)
+    }
+}
+
 final class ContributorStatsTests: XCTestCase {
     func testCountsSharesAndDates() {
         let commits = [commit("1", "Ann", daysAgo: 1), commit("2", "Bob", daysAgo: 2), commit("3", "Ann", daysAgo: 30)]
@@ -17,7 +45,8 @@ final class ContributorStatsTests: XCTestCase {
         XCTAssertEqual(contributors[0].firstCommit, now.addingTimeInterval(-30 * 86_400))
         XCTAssertEqual(contributors[0].lastCommit, now.addingTimeInterval(-1 * 86_400))
         XCTAssertEqual(contributors[0].initials, "A")
-        XCTAssertEqual(Contributor(name: "Alex Martin", commits: 1, share: 1, firstCommit: now, lastCommit: now).initials, "AM")
+        XCTAssertEqual(Contributor(name: "Alex Martin", commits: 1, share: 1, firstCommit: now,
+                                   lastCommit: now, isBot: false).initials, "AM")
     }
 
     func testActiveAuthorsWindow() {
@@ -84,11 +113,11 @@ final class ChangeFrequencyTests: XCTestCase {
 }
 
 final class RepositoryHealthTests: XCTestCase {
-    func inputs(lastDays: Double? = 1, authors: Int = 6, stale: Int = 0, total: Int = 4, large: Int = 0,
-                share: Double? = 0.01, count: Int = 1) -> RepositoryHealth.Inputs {
+    func inputs(lastDays: Double? = 1, authors: Int = 6, staleLocal: Int = 0, local: Int = 4,
+                staleRemote: Int = 0, large: Int = 0, share: Double? = 0.01, count: Int = 1) -> RepositoryHealth.Inputs {
         .init(lastCommit: lastDays.map { now.addingTimeInterval(-$0 * 86_400) }, activeAuthors: authors,
-              staleBranches: stale, totalBranches: total, largeFiles: large,
-              complexChangedShare: share, complexChangedCount: count, now: now)
+              staleLocalBranches: staleLocal, localBranches: local, staleRemoteBranches: staleRemote,
+              largeFiles: large, complexChurnShare: share, complexFunctionsChanged: count, now: now)
     }
 
     func testPerfectRepositoryScoresOneHundred() {
@@ -101,7 +130,7 @@ final class RepositoryHealthTests: XCTestCase {
     }
 
     func testAbandonedRepositoryScoresLow() {
-        let health = RepositoryHealth.assess(inputs(lastDays: 800, authors: 0, stale: 9, large: 5, share: 0.3, count: 12))
+        let health = RepositoryHealth.assess(inputs(lastDays: 800, authors: 0, staleLocal: 9, large: 5, share: 0.3, count: 12))
         XCTAssertEqual(health.score, 4)
         XCTAssertEqual(health.label, "Needs attention")
         XCTAssertEqual(health.items[0].status, .bad)
@@ -110,7 +139,7 @@ final class RepositoryHealthTests: XCTestCase {
 
     func testMiddleBandIsFair() {
         // 20 + 10 + 10 + 8 + 18 = 66
-        let health = RepositoryHealth.assess(inputs(lastDays: 20, authors: 2, stale: 2, large: 1, share: 0.03))
+        let health = RepositoryHealth.assess(inputs(lastDays: 20, authors: 2, staleLocal: 2, large: 1, share: 0.04))
         XCTAssertEqual(health.score, 66)
         XCTAssertEqual(health.label, "Fair")
     }
@@ -122,10 +151,44 @@ final class RepositoryHealthTests: XCTestCase {
     }
 
     func testDetailsReadAsSentences() {
-        let health = RepositoryHealth.assess(inputs(stale: 1, total: 7, large: 3, share: 0.08, count: 4))
+        let health = RepositoryHealth.assess(inputs(staleLocal: 1, local: 7, large: 3, share: 0.08, count: 4))
         XCTAssertEqual(health.items[2].title, "Stale branches")
-        XCTAssertEqual(health.items[2].detail, "1 unmerged for over 90 days")
+        XCTAssertEqual(health.items[2].detail, "1 local unmerged for 90+ days")
         XCTAssertEqual(health.items[3].detail, "3 files over 10 MB")
-        XCTAssertEqual(health.items[4].detail, "4 very complex functions changed recently (8%)")
+        XCTAssertEqual(health.items[4].detail, "8% of recent changes hit complex code")
+    }
+
+    // MARK: - The two checks that were scoring the wrong thing
+
+    func testRemoteOnlyStaleBranchesAreReportedButNotScored() {
+        // A clone of a public repository has one local branch and dozens of other people's
+        // pull-request branches on the remote. Those must not cost the reader points.
+        let health = RepositoryHealth.assess(inputs(local: 1, staleRemote: 41))
+        let branch = health.items[2]
+        XCTAssertEqual(branch.points, branch.maxPoints)
+        XCTAssertEqual(branch.status, .good)
+        XCTAssertEqual(branch.detail, "Default branch only · 41 stale on origin")
+        XCTAssertEqual(health.score, 100)
+    }
+
+    func testLocalStaleBranchesStillCost() {
+        let health = RepositoryHealth.assess(inputs(staleLocal: 4, local: 9, staleRemote: 41))
+        XCTAssertEqual(health.items[2].points, 5)
+        XCTAssertEqual(health.items[2].detail, "4 local unmerged for 90+ days · 41 stale on origin")
+    }
+
+    func testComplexChurnCheckDiscriminates() {
+        // Measured shares: swift-nio 4.4%, GitView 10.1%. The bands must separate them,
+        // which the old "share of changed functions with complexity >= 20" never did —
+        // every repository sat under 1% and scored full marks.
+        XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.044)).items[4].points, 18)
+        XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.101)).items[4].points, 10)
+        XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.004)).items[4].points, 25)
+        XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.20)).items[4].points, 4)
+    }
+
+    func testSmallSharesKeepAFigure() {
+        XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.003, count: 6)).items[4].detail,
+                       "0.3% of recent changes hit complex code")
     }
 }

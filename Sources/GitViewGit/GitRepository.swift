@@ -34,7 +34,12 @@ public struct GitRepository: Sendable {
             "--find-renames",
             // Fields are separated by 0x1F (ASCII unit separator, `%x1f`) rather than `|`:
             // author names and subjects both contain pipes in real histories.
-            "--pretty=format:@@@%H%x1f%an%x1f%aI%x1f%s",
+            //
+            // `%aN`, not `%an`: the capital form resolves the author through .mailmap, so a
+            // person who has committed as "Johannes Weiss" and "Johannes Weiß" is one
+            // contributor rather than two. swift-nio ships a 4.8 KB mailmap; ignoring it
+            // split its top contributor's 769 commits into 589 + 180.
+            "--pretty=format:@@@%H%x1f%aN%x1f%aI%x1f%s",
             "-p",
         ]
 

@@ -10,6 +10,9 @@ public struct Contributor: Hashable, Sendable, Identifiable {
     public let share: Double
     public let firstCommit: Date
     public let lastCommit: Date
+    /// Automation rather than a person: excluded from the health check that asks how many
+    /// people are active, and marked in the contributor list.
+    public let isBot: Bool
 
     public var initials: String {
         let parts = name.split(separator: " ").prefix(2)
@@ -34,14 +37,24 @@ public enum ContributorStats {
         let total = Double(commits.count)
         return byAuthor.map { name, acc in
             Contributor(name: name, commits: acc.count, share: Double(acc.count) / total,
-                        firstCommit: acc.first, lastCommit: acc.last)
+                        firstCommit: acc.first, lastCommit: acc.last, isBot: isBotName(name))
         }
         .sorted { $0.commits != $1.commits ? $0.commits > $1.commits : $0.name < $1.name }
     }
 
     /// Distinct authors with a commit on or after `since`.
-    public static func activeAuthors(commits: [Commit], since: Date) -> Int {
-        Set(commits.lazy.filter { $0.date >= since }.map(\.author)).count
+    public static func activeAuthors(commits: [Commit], since: Date, excludingBots: Bool = false) -> Int {
+        Set(commits.lazy
+            .filter { $0.date >= since && !(excludingBots && isBotName($0.author)) }
+            .map(\.author)).count
+    }
+
+    /// Recognises the conventional `name[bot]` suffix plus the common CI identities.
+    public static func isBotName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.hasSuffix("[bot]") { return true }
+        return ["dependabot", "renovate", "github-actions", "greenkeeper", "snyk-bot",
+                "semantic-release-bot", "codecov"].contains(lower)
     }
 }
 
@@ -137,24 +150,44 @@ public struct RepositoryHealth: Hashable, Sendable {
         public let maxPoints: Int
     }
 
+    /// A function at or above this many decision points counts as complex. Ten, not twenty:
+    /// measured across swift-nio, 3674 of 5620 functions have complexity 1 and only 16
+    /// reach 20, so a threshold of 20 put every repository under 1% and awarded full marks
+    /// unconditionally. At 10 the check actually discriminates (swift-nio 4.4%,
+    /// GitView 10.1% of recent changes).
+    public static let complexThreshold = 10
+
+    /// Health is always assessed over this window, independent of the risk model's
+    /// half-life — tuning a ranking parameter must not move the repository's health score.
+    public static let assessmentWindow: TimeInterval = 730 * 86_400
+
     public struct Inputs: Sendable {
         public var lastCommit: Date?
-        public var activeAuthors: Int          // distinct authors in the last 90 days
-        public var staleBranches: Int          // unmerged and older than 90 days
-        public var totalBranches: Int
-        public var largeFiles: Int             // tracked files >= 10 MB
-        /// Among functions changed recently, the share with complexity >= 20. Nil when no
-        /// code was analysed.
-        public var complexChangedShare: Double?
-        public var complexChangedCount: Int
+        /// Distinct human authors in the last 90 days.
+        public var activeAuthors: Int
+        /// Local branches other than the default that are unmerged and older than 90 days.
+        public var staleLocalBranches: Int
+        /// Local branches in total. One means there is nothing to judge.
+        public var localBranches: Int
+        /// Stale branches that exist only on the remote. Reported, never scored: they are
+        /// other people's pull requests, not this checkout's hygiene.
+        public var staleRemoteBranches: Int
+        public var largeFiles: Int
+        /// Share of recent function-touching commits that landed in a complex function.
+        /// Churn-weighted rather than counted per function, so one hot complex function
+        /// registers more than a complex one nobody touches. Nil when no code was analysed.
+        public var complexChurnShare: Double?
+        public var complexFunctionsChanged: Int
         public var now: Date
 
-        public init(lastCommit: Date?, activeAuthors: Int, staleBranches: Int, totalBranches: Int,
-                    largeFiles: Int, complexChangedShare: Double?, complexChangedCount: Int, now: Date) {
+        public init(lastCommit: Date?, activeAuthors: Int, staleLocalBranches: Int, localBranches: Int,
+                    staleRemoteBranches: Int, largeFiles: Int, complexChurnShare: Double?,
+                    complexFunctionsChanged: Int, now: Date) {
             self.lastCommit = lastCommit; self.activeAuthors = activeAuthors
-            self.staleBranches = staleBranches; self.totalBranches = totalBranches
-            self.largeFiles = largeFiles; self.complexChangedShare = complexChangedShare
-            self.complexChangedCount = complexChangedCount; self.now = now
+            self.staleLocalBranches = staleLocalBranches; self.localBranches = localBranches
+            self.staleRemoteBranches = staleRemoteBranches; self.largeFiles = largeFiles
+            self.complexChurnShare = complexChurnShare
+            self.complexFunctionsChanged = complexFunctionsChanged; self.now = now
         }
     }
 
@@ -207,49 +240,59 @@ public struct RepositoryHealth: Hashable, Sendable {
         }
         items.append(Item(
             title: "Active contributors",
-            detail: inputs.activeAuthors == 1 ? "1 person in the last 90 days" : "\(inputs.activeAuthors) people in the last 90 days",
+            detail: inputs.activeAuthors == 1 ? "1 person in the last 90 days"
+                                              : "\(inputs.activeAuthors) people in the last 90 days",
             status: contributorPoints >= 15 ? .good : contributorPoints >= 5 ? .warning : .bad,
             points: contributorPoints, maxPoints: 20))
 
-        // Branch hygiene — 15
+        // Branch hygiene — 15, local branches only
+        // Kept short: these read in a half-width card beside their title.
+        let remoteNote = inputs.staleRemoteBranches > 0 ? " · \(inputs.staleRemoteBranches) stale on origin" : ""
         let branchPoints: Int
-        switch inputs.staleBranches {
-        case 0: branchPoints = 15
-        case 1...2: branchPoints = 10
-        case 3...5: branchPoints = 5
-        default: branchPoints = 0
+        let branchTitle: String
+        let branchDetail: String
+        if inputs.localBranches <= 1 {
+            branchPoints = 15
+            branchTitle = "Clean branch structure"
+            branchDetail = "Default branch only" + remoteNote
+        } else {
+            switch inputs.staleLocalBranches {
+            case 0: branchPoints = 15
+            case 1...2: branchPoints = 10
+            case 3...5: branchPoints = 5
+            default: branchPoints = 0
+            }
+            branchTitle = inputs.staleLocalBranches == 0 ? "Clean branch structure" : "Stale branches"
+            branchDetail = inputs.staleLocalBranches == 0
+                ? "\(inputs.localBranches) local branches, none stale" + remoteNote
+                : "\(inputs.staleLocalBranches) local unmerged for 90+ days" + remoteNote
         }
-        items.append(Item(
-            title: inputs.staleBranches == 0 ? "Clean branch structure" : "Stale branches",
-            detail: inputs.staleBranches == 0
-                ? "\(inputs.totalBranches) branch\(inputs.totalBranches == 1 ? "" : "es"), none stale"
-                : "\(inputs.staleBranches) unmerged for over 90 days",
-            status: branchPoints >= 10 ? .good : branchPoints >= 5 ? .warning : .bad,
-            points: branchPoints, maxPoints: 15))
+        items.append(Item(title: branchTitle, detail: branchDetail,
+                          status: branchPoints >= 10 ? .good : branchPoints >= 5 ? .warning : .bad,
+                          points: branchPoints, maxPoints: 15))
 
         // Large files — 15
         let largePoints = inputs.largeFiles == 0 ? 15 : inputs.largeFiles <= 2 ? 8 : 0
         items.append(Item(
             title: inputs.largeFiles == 0 ? "No large files" : "Some large files",
-            detail: inputs.largeFiles == 0 ? "Nothing over 10 MB tracked" : "\(inputs.largeFiles) file\(inputs.largeFiles == 1 ? "" : "s") over 10 MB",
+            detail: inputs.largeFiles == 0 ? "Nothing over 10 MB tracked"
+                                           : "\(inputs.largeFiles) file\(inputs.largeFiles == 1 ? "" : "s") over 10 MB",
             status: largePoints == 15 ? .good : largePoints > 0 ? .warning : .bad,
             points: largePoints, maxPoints: 15))
 
-        // Complex code under change — 25 (GitView's own signal)
+        // Complex code under change — 25
         let complexPoints: Int
         let complexDetail: String
-        if let share = inputs.complexChangedShare {
+        if let share = inputs.complexChurnShare {
             switch share {
-            case ..<0.02: complexPoints = 25
-            case ..<0.05: complexPoints = 18
-            case ..<0.10: complexPoints = 10
+            case ..<0.03: complexPoints = 25
+            case ..<0.06: complexPoints = 18
+            case ..<0.12: complexPoints = 10
             default: complexPoints = 4
             }
-            let percent = share * 100
-            let percentText = percent > 0 && percent < 1 ? String(format: "%.1f%%", percent) : "\(Int(percent.rounded()))%"
-            complexDetail = inputs.complexChangedCount == 0
-                ? "No very complex function changed recently"
-                : "\(inputs.complexChangedCount) very complex function\(inputs.complexChangedCount == 1 ? "" : "s") changed recently (\(percentText))"
+            complexDetail = inputs.complexFunctionsChanged == 0
+                ? "No complex function changed recently"
+                : "\(share.healthPercent) of recent changes hit complex code"
         } else {
             complexPoints = 25
             complexDetail = "No code analysed"
@@ -261,5 +304,14 @@ public struct RepositoryHealth: Hashable, Sendable {
             points: complexPoints, maxPoints: 25))
 
         return RepositoryHealth(score: items.reduce(0) { $0 + $1.points }, items: items)
+    }
+}
+
+extension Double {
+    /// "4%" normally, "0.3%" below one percent so a small share does not read as nothing.
+    var healthPercent: String {
+        let percent = self * 100
+        if percent > 0 && percent < 1 { return String(format: "%.1f%%", percent) }
+        return "\(Int(percent.rounded()))%"
     }
 }
