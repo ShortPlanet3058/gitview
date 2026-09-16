@@ -46,7 +46,10 @@ public struct UnitHistoryService: Sendable {
         churn: ChurnIndex,
         now: Date = Date()
     ) async -> [UnitComplexityPoint] {
-        guard let extractor = try? SwiftUnitExtractor() else { return [] }
+        // The unit's own language, not Swift: a repository can mix several.
+        let ext = (unit.filePath as NSString).pathExtension.lowercased()
+        guard let support = LanguageRegistry.shared.language(forExtension: ext),
+              let extractor = try? UnitExtractor(support: support) else { return [] }
 
         let jobs: [(commit: Commit, path: String)] = churn.commits(for: unit).compactMap { commit in
             churn.historicalPath(of: unit, in: commit).map { (commit, $0) }
@@ -79,19 +82,20 @@ public struct UnitHistoryService: Sendable {
     }
 
     private func point(
-        for unit: CodeUnit, at commit: Commit, path: String, extractor: SwiftUnitExtractor
+        for unit: CodeUnit, at commit: Commit, path: String, extractor: UnitExtractor
     ) -> UnitComplexityPoint {
         var match: CodeUnit?
         if let source = try? provider(commit.sha, path),
            let units = try? extractor.extract(source: source, filePath: path) {
             // Overloads share a name; take the one nearest the unit's current position,
             // which is the best guess without tracking the body across revisions.
-            match = units
-                .filter { $0.name == unit.name && $0.kind == unit.kind }
-                .min {
-                    abs($0.lineRange.lowerBound - unit.lineRange.lowerBound)
-                        < abs($1.lineRange.lowerBound - unit.lineRange.lowerBound)
-                }
+            let candidates: [CodeUnit] = units.filter { $0.name == unit.name && $0.kind == unit.kind }
+            let target: Int = unit.lineRange.lowerBound
+            match = candidates.min { a, b in
+                let da: Int = abs(a.lineRange.lowerBound - target)
+                let db: Int = abs(b.lineRange.lowerBound - target)
+                return da < db
+            }
         }
         return UnitComplexityPoint(
             sha: commit.sha, date: commit.date, author: commit.author, subject: commit.subject,

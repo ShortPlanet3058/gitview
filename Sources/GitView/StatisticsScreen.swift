@@ -12,14 +12,14 @@ struct StatisticsScreen: View {
                 HStack(spacing: Theme.Space.m) {
                     StatCard(icon: "timer", tint: .blue, value: String(format: "%.1fs", analysis.historyDuration + analysis.parseDuration),
                              label: "Analysis time", delta: String(format: "history %.1fs · parse & facts %.1fs", analysis.historyDuration, analysis.parseDuration))
-                    StatCard(icon: "doc.text.magnifyingglass", tint: .aqua, value: analysis.filesParsed.formatted(), label: "Swift files parsed",
+                    StatCard(icon: "doc.text.magnifyingglass", tint: .aqua, value: analysis.filesParsed.formatted(), label: "Files parsed",
                              delta: analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")
                     StatCard(icon: "function", tint: .violet, value: analysis.allUnits.count.formatted(), label: "Functions found",
                              delta: "\(model.rows.count.formatted()) ranked with the current filters")
                     StatCard(icon: "arrow.left.arrow.right", tint: .orange,
                              value: "\(Int((analysis.attribution.matchRate * 100).rounded()))%",
                              label: "Hunks inside a function",
-                             delta: "\(analysis.attribution.hunksInParsedFiles.formatted()) hunks in Swift files")
+                             delta: "\(analysis.attribution.hunksInParsedFiles.formatted()) hunks in parsed files")
                 }
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     Card {
@@ -54,8 +54,8 @@ struct StatisticsScreen: View {
                                 HairlineDivider()
                                 precisionRow("Recency-weighted (365-day half-life)", "≈ 78%")
                             }
-                            Text("This repository: \(Int((analysis.attribution.matchRate * 100).rounded()))% of hunks in Swift "
-                                 + "files landed inside a function — the rest are imports, blank lines and drift. Measured "
+                            Text("This repository: \(Int((analysis.attribution.matchRate * 100).rounded()))% of hunks in "
+                                 + "parsed files landed inside a function — the rest are imports, blank lines and drift. Measured "
                                  + "against git log -L on 1,286 attributions in swift-nio. The half-life is what keeps "
                                  + "the score trustworthy: old, unreliable attributions carry almost no weight. A function's "
                                  + "detail panel marks the commits where it did not exist yet.")

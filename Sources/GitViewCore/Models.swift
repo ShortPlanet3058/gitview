@@ -17,6 +17,8 @@ public struct CodeUnit: Identifiable, Hashable, Sendable {
     public let complexity: Int
     public let nestingDepth: Int
     public let lineCount: Int
+    /// Identifier of the language this unit was parsed from ("swift", "python", …).
+    public let language: String
 
     public init(
         id: UUID = UUID(),
@@ -26,7 +28,8 @@ public struct CodeUnit: Identifiable, Hashable, Sendable {
         lineRange: ClosedRange<Int>,
         complexity: Int,
         nestingDepth: Int,
-        lineCount: Int
+        lineCount: Int,
+        language: String = "swift"
     ) {
         self.id = id
         self.filePath = filePath
@@ -36,6 +39,7 @@ public struct CodeUnit: Identifiable, Hashable, Sendable {
         self.complexity = complexity
         self.nestingDepth = nestingDepth
         self.lineCount = lineCount
+        self.language = language
     }
 }
 

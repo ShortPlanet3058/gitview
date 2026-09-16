@@ -238,7 +238,7 @@ case "churn":
     let matchRate = totalHunks > 0 ? Double(churn.matchedHunks) / Double(totalHunks) * 100 : 0
     print("units             \(report.units.count) (\(touched) with history, "
           + String(format: "%.0f%%", Double(touched) / Double(max(report.units.count, 1)) * 100) + ")")
-    print("hunks in .swift   \(totalHunks) (" + String(format: "%.1f%%", matchRate) + " landed inside a unit)")
+    print("hunks in code   \(totalHunks) (" + String(format: "%.1f%%", matchRate) + " landed inside a unit)")
     print("hunks elsewhere   \(churn.unresolvedPaths) (non-Swift files, or deleted since)")
     print(String(format: "timing            history %.2fs  parse %.2fs  join %.2fs", tHistory, tParse, tJoin))
 
@@ -575,8 +575,45 @@ case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against
     // what the grammar actually produces rather than what it is assumed to produce.
     guard arguments.count >= 2 else { fail("sexp requires a file path") }
-    let source = try String(contentsOfFile: arguments[1], encoding: .utf8)
-    print(SwiftLanguage.sExpression(of: source) ?? "<parse failed>")
+    let sexpPath = arguments[1]
+    let ext = (sexpPath as NSString).pathExtension.lowercased()
+    guard let support = LanguageRegistry.shared.language(forExtension: ext) else {
+        fail("no grammar for .\(ext)")
+    }
+    let sexpSource = try String(contentsOfFile: sexpPath, encoding: .utf8)
+    print(LanguageProbe.sExpression(of: sexpSource, support: support) ?? "<parse failed>")
+
+case "langs":
+    // Parses a built-in snippet per language and prints what was extracted, so a wrong
+    // node name in a query or branch set shows up immediately rather than as a plausible
+    // but wrong number in the UI.
+    let verbose = arguments.contains("--verbose")
+    var failures = 0
+    for support in LanguageSupport.all {
+        guard let sample = LanguageProbe.samples[support.id] else {
+            print("\(support.displayName): no sample"); failures += 1; continue
+        }
+        do {
+            let extractor = try UnitExtractor(support: support)
+            let units = try extractor.extract(source: sample.source, filePath: "probe.\(support.extensions.first!)")
+            let named = units.map { "\($0.name)(cx \($0.complexity),n \($0.nestingDepth))" }
+            let ok = units.count == sample.expectedUnits
+            if !ok { failures += 1 }
+            print("\(ok ? "OK  " : "FAIL")\(support.displayName.padding(toLength: 12, withPad: " ", startingAt: 0)) "
+                  + "\(units.count) units (expected \(sample.expectedUnits)): \(named.joined(separator: ", "))")
+            if verbose {
+                for (name, cx, counted) in (try? LanguageProbe.trace(support, source: sample.source)) ?? [] where cx > 1 {
+                    let parts = counted.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }
+                    print("       \(name): 1 base + \(parts.joined(separator: " + ")) = \(cx)")
+                }
+            }
+        } catch {
+            failures += 1
+            print("FAIL\(support.displayName.padding(toLength: 12, withPad: " ", startingAt: 0)) \(error)")
+        }
+    }
+    print(failures == 0 ? "\nall languages OK" : "\n\(failures) language(s) need attention")
+    if failures > 0 { exit(1) }
 
 default:
     fail("unknown command '\(command)'")

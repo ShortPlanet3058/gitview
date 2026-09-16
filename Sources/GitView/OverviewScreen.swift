@@ -192,7 +192,7 @@ struct TopHotspotsCard: View {
                            info: "Functions with the highest combination of complexity and recent change — where a "
                                + "bug is most likely hiding and where a small refactor pays off most.")
                 if model.rows.isEmpty {
-                    Text("No Swift functions with history to rank.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                    Text("No functions with history to rank.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
                 } else {
                     VStack(spacing: Theme.Space.s) {
                         ForEach(model.rows.prefix(4)) { row in

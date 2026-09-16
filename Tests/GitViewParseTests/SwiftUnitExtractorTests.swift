@@ -5,7 +5,7 @@ import GitViewCore
 final class SwiftUnitExtractorTests: XCTestCase {
 
     private func units(_ source: String) throws -> [CodeUnit] {
-        try SwiftUnitExtractor().extract(source: source, filePath: "T.swift")
+        try UnitExtractor(support: .swift).extract(source: source, filePath: "T.swift")
     }
 
     private func unit(_ source: String, named name: String) throws -> CodeUnit {

@@ -18,7 +18,8 @@ public struct SourceScanner: Sendable {
 
     public init() {}
 
-    public func swiftFiles(in root: URL) -> [URL] {
+    /// Files the registry has a grammar for, so the scan skips what it cannot parse.
+    public func parsableFiles(in root: URL) -> [URL] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
@@ -33,7 +34,7 @@ public struct SourceScanner: Sendable {
                 }
                 continue
             }
-            if url.pathExtension == "swift" { files.append(url) }
+            if LanguageRegistry.shared.language(forExtension: url.pathExtension) != nil { files.append(url) }
         }
         return files.sorted { $0.path < $1.path }
     }
@@ -41,9 +42,16 @@ public struct SourceScanner: Sendable {
     /// Parses every Swift file under `root`, returning paths relative to it so they
     /// line up with the paths git reports.
     public func scan(root: URL) async throws -> Report {
-        let files = swiftFiles(in: root)
-        // Compile the query once rather than once per file.
-        let extractor = try SwiftUnitExtractor()
+        let files = parsableFiles(in: root)
+        // Compile each language's grammar and query once, not once per file.
+        let present = Set(files.map { $0.pathExtension.lowercased() })
+        var built: [String: UnitExtractor] = [:]
+        for support in LanguageRegistry.shared.languages where !support.extensions.isDisjoint(with: present) {
+            for ext in support.extensions where present.contains(ext) {
+                built[ext] = try UnitExtractor(support: support)
+            }
+        }
+        let extractors = built
         let rootPath = root.standardizedFileURL.path
         let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
 
@@ -56,6 +64,7 @@ public struct SourceScanner: Sendable {
                     do {
                         // A file that is not valid UTF-8, or that the grammar chokes on,
                         // must not take the whole scan down with it.
+                        guard let extractor = extractors[file.pathExtension.lowercased()] else { return ([], nil) }
                         let source = try String(contentsOf: file, encoding: .utf8)
                         return (try extractor.extract(source: source, filePath: relative), nil)
                     } catch {
