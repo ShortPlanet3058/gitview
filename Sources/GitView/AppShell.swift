@@ -38,6 +38,7 @@ struct AppShell: View {
         case .loading(let stage): LoadingScreen(stage: stage)
         case .failed(let message): FailedScreen(message: message)
         case .loaded:
+            if model.isSearching { SearchScreen() } else {
             switch model.screen {
             case .overview: OverviewScreen()
             case .commits: CommitsScreen()
@@ -49,6 +50,7 @@ struct AppShell: View {
             case .hotspots: HotspotsScreen()
             case .coupling: CouplingScreen()
             case .statistics: StatisticsScreen()
+            }
             }
         }
     }
@@ -104,8 +106,9 @@ struct TopBar: View {
                 Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
             }
             Spacer()
-            ModeSwitch()
+            if model.analysis != nil { GlobalSearchField() }
             Spacer()
+            ModeSwitch()
             if let analysis = model.analysis {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([analysis.root])

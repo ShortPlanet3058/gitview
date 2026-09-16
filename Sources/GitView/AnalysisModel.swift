@@ -83,6 +83,20 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var ownership: OwnershipIndex?
     /// The contributor whose detail panel is open.
     @Published var selectedAuthor: String?
+    // Search. In-memory results are recomputed on every keystroke because they are just
+    // array scans; the two git-backed searches are debounced behind them.
+    @Published var globalSearch: String = "" {
+        didSet { runSearch() }
+    }
+    @Published private(set) var searchResults: SearchResults?
+    @Published private(set) var codeMatches: [CodeMatch] = []
+    @Published private(set) var historyMatches: [Commit] = []
+    @Published private(set) var deepSearchInFlight = false
+    @Published var focusSearchRequest = 0
+    private var deepSearchTask: Task<Void, Never>?
+
+    var isSearching: Bool { !globalSearch.trimmingCharacters(in: .whitespaces).isEmpty }
+
     // Comparing two points: the release question and the "what changed between" question
     // are the same one.
     @Published var compareFrom: String = ""
@@ -162,6 +176,7 @@ final class AnalysisModel: ObservableObject {
     @Published var pendingFileSelection: String?
     var pendingAuthorSelection: String?
     var pendingCompare: String?
+    var pendingSearch: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -216,6 +231,7 @@ final class AnalysisModel: ObservableObject {
         // Pending rather than direct: `open` clears every selection, and it runs after this.
         pendingAuthorSelection = value("--select-author")
         pendingCompare = value("--compare")   // "from..to"
+        pendingSearch = value("--search")
         pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
@@ -281,6 +297,7 @@ final class AnalysisModel: ObservableObject {
                 }
                 self.state = .loaded(analysis)
                 self.rebuild()
+                if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
                 // After `state` is set: runComparison reads `analysis`, which is nil until then.
                 if let spec = self.pendingCompare {
                     self.pendingCompare = nil
@@ -503,6 +520,50 @@ final class AnalysisModel: ObservableObject {
         VisitLog.record(headSHA: head, to: analysis.root)
         rebuildCatchUp()
     }
+
+    private func runSearch() {
+        deepSearchTask?.cancel()
+        let query = globalSearch.trimmingCharacters(in: .whitespaces)
+        guard let analysis, !query.isEmpty else {
+            searchResults = nil; codeMatches = []; historyMatches = []; deepSearchInFlight = false
+            return
+        }
+
+        let corpus = SearchCorpus(
+            commits: analysis.commits,
+            filePaths: analysis.info.inventory.files.map(\.path),
+            units: analysis.allUnits,
+            contributors: contributors,
+            branches: analysis.branches.map(\.name),
+            tags: analysis.tags.map(\.name))
+        searchResults = SearchEngine.search(query, in: corpus)
+
+        // git grep and the pickaxe each cost a process, so they wait for a pause in typing.
+        let parsed = SearchQuery.parse(query)
+        guard parsed.author == nil, parsed.text.count >= 3 else {
+            codeMatches = []; historyMatches = []; deepSearchInFlight = false
+            return
+        }
+        let term = parsed.text
+        let root = analysis.root
+        deepSearchInFlight = true
+        deepSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            let repository = GitRepository(url: root)
+            let code = (try? repository.grep(term, limit: 60)) ?? []
+            let history = (try? repository.commitsChanging(term, limit: 25)) ?? []
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.globalSearch.trimmingCharacters(in: .whitespaces) == query else { return }
+                self.codeMatches = code
+                self.historyMatches = history
+                self.deepSearchInFlight = false
+            }
+        }
+    }
+
+    func clearSearch() { globalSearch = "" }
 
     /// Commits between two tags, derived from the history already in memory rather than
     /// with a `rev-list` per tag — 188 tags would otherwise cost a process each.

@@ -20,6 +20,13 @@ struct GitViewApp: App {
                 Button("Open Repository…") { chooseRepository(into: model) }
                     .keyboardShortcut("o")
             }
+            CommandGroup(after: .textEditing) {
+                Button("Find…") { model.focusSearchRequest += 1 }
+                    .keyboardShortcut("f")
+                Button("Clear Search") { model.clearSearch() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .disabled(!model.isSearching)
+            }
         }
     }
 }
