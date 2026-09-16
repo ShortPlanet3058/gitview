@@ -104,8 +104,16 @@ final class ForceDirectedLayoutTests: XCTestCase {
         XCTAssertTrue(layout.positions.isEmpty)
     }
 
-    func testLargeGraphSettlesQuickly() {
-        // ~200 nodes / 200 edges is the cap the view uses; layout must be interactive-fast.
+    func testLargeGraphConvergesWellWithinTheIterationCap() {
+        // ~200 nodes / 200 edges is the cap the view uses. What keeps the graph usable is
+        // that the layout *converges* instead of grinding to `maxIterations` — the cost of
+        // one iteration is fixed by the node count, so a bounded iteration count is a
+        // bounded amount of work.
+        //
+        // This used to assert wall-clock seconds, which measured the machine rather than
+        // the algorithm and failed whenever anything else was running. Iterations are
+        // deterministic here (the layout is seeded): 96, every run, while the same runs
+        // ranged over a second in elapsed time.
         var units: [CodeUnit] = []
         for i in 0..<200 { units.append(unit("u\(i)", dir: "D\(i % 7)")) }
         let byID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0) })
@@ -113,10 +121,24 @@ final class ForceDirectedLayoutTests: XCTestCase {
         for i in 0..<200 { pairs.append(pair(units[i], units[(i * 7 + 3) % 200], weight: Double(200 - i))) }
         let graph = CouplingGraph(pairs: pairs, maxEdges: 200, unit: { byID[$0] }, size: { _ in 1 })
         var layout = ForceDirectedLayout(graph: graph)
-        let started = Date()
         layout.settle()
-        XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
         XCTAssertTrue(layout.isSettled)
+        XCTAssertEqual(layout.iterations, 96)
+    }
+
+    /// The guarantee the view actually relies on: however badly a graph behaves, `settle`
+    /// stops. 200 nodes need 96 iterations, so a cap of 5 must cut it short at exactly 5.
+    func testSettleStopsAtTheIterationCapWhenItCannotConverge() {
+        var units: [CodeUnit] = []
+        for i in 0..<200 { units.append(unit("u\(i)", dir: "D\(i % 7)")) }
+        let byID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0) })
+        var pairs: [CouplingPair] = []
+        for i in 0..<200 { pairs.append(pair(units[i], units[(i * 7 + 3) % 200], weight: Double(200 - i))) }
+        let graph = CouplingGraph(pairs: pairs, maxEdges: 200, unit: { byID[$0] }, size: { _ in 1 })
+        var layout = ForceDirectedLayout(graph: graph)
+        layout.settle(maxIterations: 5)
+        XCTAssertEqual(layout.iterations, 5)
+        XCTAssertFalse(layout.isSettled)
     }
 }
 
