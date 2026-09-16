@@ -14,8 +14,16 @@ struct OverviewScreen: View {
                 HStack(alignment: .top) {
                     ScreenHeader(title: "Overview",
                                  subtitle: model.advanced ? "Detailed insights into your repository."
-                                                          : "A quick summary of your repository.")
+                                                          : "What has changed, and where things stand.")
                     Spacer()
+                }
+
+                // What to do now comes before what the repository is.
+                HStack(alignment: .top, spacing: Theme.Space.l) {
+                    if let catchUp = model.catchUp {
+                        CatchUpCard(catchUp: catchUp).frame(maxWidth: .infinity)
+                    }
+                    WorkingStateCard(state: analysis.workingState).frame(width: 360)
                 }
 
                 ProjectCard(analysis: analysis)

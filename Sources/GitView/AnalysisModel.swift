@@ -75,6 +75,16 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var rowsByID: [UUID: RiskRow] = [:]
     @Published private(set) var levelCounts: [RiskLevel: Int] = [:]
     @Published private(set) var health: RepositoryHealth?
+    /// What changed since the last time this repository was opened.
+    @Published private(set) var catchUp: CatchUp?
+    /// Who "you" are. Taken from git config, overridable because the config name and the
+    /// name in the history do not always agree.
+    @Published var identityName: String = UserDefaults.standard.string(forKey: "identityName") ?? "" {
+        didSet {
+            UserDefaults.standard.set(identityName, forKey: "identityName")
+            rebuildCatchUp()
+        }
+    }
     /// Derived once per load; independent of the risk model's parameters.
     @Published private(set) var contributors: [Contributor] = []
     /// Prose for the window "recent changes" are counted in: two half-lives, so it tracks
@@ -225,6 +235,7 @@ final class AnalysisModel: ObservableObject {
                            analysis.factsDuration, Date().timeIntervalSince(started)).utf8))
                 self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
                 self.contributors = ContributorStats.compute(commits: analysis.commits)
+                self.rebuildCatchUp(for: analysis)
                 if let prefix = self.pendingCommitSelection {
                     self.pendingCommitSelection = nil
                     self.selectedCommitSHA = analysis.commits.first {
@@ -415,6 +426,50 @@ final class AnalysisModel: ObservableObject {
                 self.graphLayoutInProgress = false
             }
         }
+    }
+
+    /// Recomputes the catch-up from the current identity and the recorded last visit.
+    func rebuildCatchUp(for analysis: RepositoryAnalysis? = nil) {
+        guard let analysis = analysis ?? self.analysis else { return }
+        let visit = VisitLog.lastVisit(to: analysis.root)
+        catchUp = CatchUpBuilder.build(commits: analysis.commits, lastVisit: visit,
+                                       identity: identity(for: analysis), now: Date())
+        // On a first ever visit, record a baseline straight away so the next open can say
+        // what happened in between. Later visits are only marked when the person says so.
+        if visit == nil, let head = analysis.commits.first?.sha {
+            VisitLog.record(headSHA: head, to: analysis.root)
+        }
+    }
+
+    /// Names to treat as "you": an explicit override if set, otherwise git config, keeping
+    /// only names that actually appear in this history so a typo cannot silently match none.
+    private func identity(for analysis: RepositoryAnalysis) -> Identity {
+        let known = Set(contributors.map(\.name))
+        if !identityName.isEmpty { return Identity(names: [identityName]) }
+        let configured = analysis.info.configuredUserNames.filter { known.contains($0) }
+        return Identity(names: configured)
+    }
+
+    /// Marks everything currently shown as seen, so the next visit starts from here.
+    func markCatchUpSeen() {
+        guard let analysis, let head = analysis.commits.first?.sha else { return }
+        VisitLog.record(headSHA: head, to: analysis.root)
+        rebuildCatchUp()
+    }
+
+    /// Re-reads `git status`. Cheap, so it runs whenever the app comes forward.
+    func refreshWorkingState() {
+        guard case .loaded(var analysis) = state else { return }
+        let root = analysis.root
+        Task.detached(priority: .utility) {
+            let fresh = (try? GitRepository(url: root).workingState()) ?? .clean
+            await MainActor.run {
+                guard case .loaded(var current) = self.state, current.root == root else { return }
+                current.workingState = fresh
+                self.state = .loaded(current)
+            }
+        }
+        _ = analysis
     }
 
     /// Starts the per-revision re-parse for a unit, once. Results are cached for the

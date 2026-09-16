@@ -25,6 +25,10 @@ struct AppShell: View {
         .background(Theme.page)
         .ignoresSafeArea()
         .sheet(isPresented: $model.showSettings) { SettingsSheet().environmentObject(model) }
+        // The working copy changes outside the app, so re-read it whenever we come forward.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshWorkingState()
+        }
     }
 
     @ViewBuilder
@@ -373,6 +377,20 @@ struct SettingsSheet: View {
                     Slider(value: $model.halfLifeDays, in: 30...1095, step: 5)
                     Text(halfLifeCaption).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    CardHeader(title: "You",
+                               info: "Used to mark your own commits, and to point out when someone else changes "
+                                   + "a file you have worked on. Taken from git config; set it here if the name "
+                                   + "you commit under differs.")
+                    TextField("Name you commit under", text: $model.identityName)
+                        .textFieldStyle(.roundedBorder)
+                    Text(model.identityName.isEmpty
+                         ? "Using git config. Leave empty to keep that."
+                         : "Overriding git config.")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
             }
             Card {

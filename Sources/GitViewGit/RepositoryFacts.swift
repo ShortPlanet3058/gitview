@@ -90,6 +90,8 @@ public struct RepositoryInfo: Hashable, Sendable {
     public let packedBytes: Int64?
     /// First paragraph of the README, when there is one.
     public let readmeSummary: String?
+    /// `user.name` from git config, used to recognise "your" commits. Empty when unset.
+    public let configuredUserNames: Set<String>
     public let inventory: FileInventory
 }
 
@@ -109,6 +111,7 @@ extension GitRepository {
             remoteWebURL: remote.flatMap(Self.webURL(fromRemote:)),
             packedBytes: Self.objectStoreBytes(in: root),
             readmeSummary: Self.readmeSummary(in: root),
+            configuredUserNames: Self.configuredUserNames(in: root),
             inventory: Self.inventory(in: root)
         )
     }
@@ -205,6 +208,20 @@ extension GitRepository {
             if url.scheme == "https" || url.scheme == "http" { return URL(string: "https://\(host)\(url.path)") }
         }
         return nil
+    }
+
+    /// Names this person commits under. Both scopes are read because a repository often
+    /// overrides the global identity, and the same person appears under both across a
+    /// history.
+    static func configuredUserNames(in root: URL) -> Set<String> {
+        var names = Set<String>()
+        for scope in [["config", "--local", "user.name"], ["config", "--global", "user.name"]] {
+            if let value = try? GitProcess.capture(arguments: scope, in: root) {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { names.insert(trimmed) }
+            }
+        }
+        return names
     }
 
     static func objectStoreBytes(in root: URL) -> Int64? {

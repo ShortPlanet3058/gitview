@@ -39,6 +39,8 @@ struct RepositoryAnalysis: Sendable {
     let factsDuration: TimeInterval
     let attribution: AttributionStats
     let source: AnalysisSource
+    /// Read fresh on every load and refreshable on its own; never cached.
+    var workingState: WorkingState
 
     var authorCount: Int { Set(commits.map(\.author)).count }
     var dateRange: ClosedRange<Date>? {
@@ -84,12 +86,14 @@ enum AnalysisService {
         // Facts are cheap and always current; they also tell us when the working tree last
         // changed, which decides whether cached units are still valid.
         let factsStart = Date()
-        let facts = Task.detached(priority: .userInitiated) { () throws -> (RepositoryInfo, [BranchInfo]) in
+        let facts = Task.detached(priority: .userInitiated) {
+            () throws -> (RepositoryInfo, [BranchInfo], WorkingState) in
             let info = try repository.info()
             let branches = try repository.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch)
-            return (info, branches)
+            let working = (try? repository.workingState()) ?? .clean
+            return (info, branches, working)
         }
-        let (info, branches) = try await facts.value
+        let (info, branches, workingState) = try await facts.value
         let factsDuration = Date().timeIntervalSince(factsStart)
 
         // History: reuse, extend, or read in full.
@@ -150,7 +154,8 @@ enum AnalysisService {
             attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
                                           unmatchedHunks: fullJoin.unmatchedHunks,
                                           unresolvedHunks: fullJoin.unresolvedPaths),
-            source: source
+            source: source,
+            workingState: workingState
         )
     }
 }
