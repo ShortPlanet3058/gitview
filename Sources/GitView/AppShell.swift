@@ -39,6 +39,7 @@ struct AppShell: View {
         case .failed(let message): FailedScreen(message: message)
         case .loaded:
             if let request = model.diffRequest { DiffViewer(request: request) }
+            else if let path = model.fileHistoryPath { FileHistoryView(path: path) }
             else if model.isSearching { SearchScreen() } else {
             switch model.screen {
             case .overview: OverviewScreen()

@@ -32,7 +32,8 @@ struct DiffViewer: View {
                 Button { model.closeDiff() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                        Text("Back")
+                        // Closing a diff opened from a history returns to that history.
+                        Text(model.fileHistoryPath == nil ? "Back" : "Back to history")
                     }
                     .font(Theme.Text.body).foregroundStyle(Theme.accent)
                 }
@@ -49,6 +50,8 @@ struct DiffViewer: View {
                 }
                 .labelsHidden().frame(width: 110)
                 .help("Lines of unchanged context shown around each change")
+                Button("File history") { model.showFileHistory(request.path) }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 if let url = fileURL {
                     Button("Open file") { NSWorkspace.shared.open(url) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)

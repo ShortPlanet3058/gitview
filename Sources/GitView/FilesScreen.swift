@@ -244,7 +244,13 @@ struct FileInfoCard: View {
                     }
                 }
                 HStack(spacing: Theme.Space.s) {
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Label("Open in Finder", systemImage: "folder") }
+                    if !node.isDirectory {
+                        Button { model.showFileHistory(node.path) } label: {
+                            Label("History", systemImage: "clock.arrow.circlepath")
+                        }
+                        .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                    }
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Label("Finder", systemImage: "folder") }
                         .buttonStyle(SecondaryButtonStyle())
                     if !node.isDirectory {
                         Button { NSWorkspace.shared.open(url) } label: { Label("Open", systemImage: "arrow.up.forward.app") }

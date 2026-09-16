@@ -83,6 +83,17 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var ownership: OwnershipIndex?
     /// The contributor whose detail panel is open.
     @Published var selectedAuthor: String?
+    // One file's life. Kept separate from the diff so that closing a diff returns here
+    // rather than all the way out.
+    @Published var fileHistoryPath: String? { didSet { loadFileHistory() } }
+    @Published private(set) var fileHistory: [FileHistoryEntry] = []
+    @Published private(set) var fileHistoryInFlight = false
+    /// Cap on how far back a single file's history is read.
+    static let fileHistoryLimit = 400
+    /// True when the file has more history than was read, so the view can say so instead of
+    /// presenting the cap as the total.
+    var fileHistoryTruncated: Bool { fileHistory.count >= Self.fileHistoryLimit }
+
     // Viewing one file's diff. The request says what to diff; the result is loaded async.
     @Published var diffRequest: DiffRequest? { didSet { loadDiff() } }
     @Published private(set) var loadedDiff: FileDiff?
@@ -185,6 +196,7 @@ final class AnalysisModel: ObservableObject {
     var pendingCompare: String?
     var pendingSearch: String?
     var pendingDiff: String?
+    var pendingFileHistory: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -241,6 +253,7 @@ final class AnalysisModel: ObservableObject {
         pendingCompare = value("--compare")   // "from..to"
         pendingSearch = value("--search")
         pendingDiff = value("--diff")          // "<sha>:<path>" or "working:<path>"
+        pendingFileHistory = value("--file-history")
         pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
@@ -271,6 +284,7 @@ final class AnalysisModel: ObservableObject {
         selectedCommitSHA = nil
         selectedAuthor = nil
         diffRequest = nil
+        fileHistoryPath = nil
         ownership = nil
         blame = [:]
         blameInFlight = []
@@ -308,6 +322,10 @@ final class AnalysisModel: ObservableObject {
                 self.state = .loaded(analysis)
                 self.rebuild()
                 if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
+                if let path = self.pendingFileHistory {
+                    self.pendingFileHistory = nil
+                    self.showFileHistory(path)
+                }
                 if let spec = self.pendingDiff {
                     self.pendingDiff = nil
                     if let colon = spec.firstIndex(of: ":") {
@@ -543,6 +561,32 @@ final class AnalysisModel: ObservableObject {
         VisitLog.record(headSHA: head, to: analysis.root)
         rebuildCatchUp()
     }
+
+    private func loadFileHistory() {
+        guard let analysis, let path = fileHistoryPath else {
+            fileHistory = []; fileHistoryInFlight = false; return
+        }
+        fileHistoryInFlight = true
+        fileHistory = []
+        let root = analysis.root
+        // Read on this actor; the detached task cannot touch main-actor state.
+        let limit = Self.fileHistoryLimit
+        Task.detached(priority: .userInitiated) {
+            let entries = (try? GitRepository(url: root).fileHistory(path: path, limit: limit)) ?? []
+            await MainActor.run {
+                guard self.fileHistoryPath == path else { return }
+                self.fileHistory = entries
+                self.fileHistoryInFlight = false
+            }
+        }
+    }
+
+    func showFileHistory(_ path: String) {
+        diffRequest = nil
+        fileHistoryPath = path
+    }
+
+    func closeFileHistory() { fileHistoryPath = nil }
 
     private func loadDiff() {
         guard let analysis, let request = diffRequest else {
