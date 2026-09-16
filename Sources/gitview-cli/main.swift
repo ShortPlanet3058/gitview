@@ -19,11 +19,13 @@ guard let command = arguments.first else {
       risk    rank units by risk (complexity x recency-weighted churn)
       history <repo> <name>   complexity of one unit at every revision that touched it
       coupling <repo>         pairs of units that change together, cross-directory first
+      facts <repo>            branches, contributors, size, README summary and health
 
     coupling options:
       --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
       --max-units <n> (default 50)  --half-life <days>  --include-tests
       coupling <repo>         pairs of units that change together, cross-directory first
+      facts <repo>            branches, contributors, size, README summary and health
 
     coupling options:
       --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
@@ -506,6 +508,59 @@ case "coupling":
     print("\(coupling.pairs.count) pairs with >= \(minShared) shared commits (\(shown.count) in scope); "
           + "\(coupling.pairingCommits) commits produced pairs, \(coupling.skippedCommits) skipped as sweeps; "
           + String(format: "%.3fs", elapsed))
+
+case "facts":
+    guard arguments.count >= 2 else { fail("facts requires a repository path") }
+    let path = (arguments[1] as NSString).expandingTildeInPath
+    let repo = GitRepository(url: URL(fileURLWithPath: path))
+    let t0 = DispatchTime.now()
+    let info: RepositoryInfo
+    do { info = try repo.info() } catch { fail("\(error)") }
+    let branches: [BranchInfo]
+    do { branches = try repo.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch) } catch { fail("\(error)") }
+    let tFacts = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9
+    let commits: [Commit]
+    do { commits = try GitRepository(url: info.root).loadHistory() } catch { fail("\(error)") }
+
+    func mb(_ bytes: Int64) -> String { String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+    let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"
+    print("root            \(info.root.path)")
+    print("branch          \(info.currentBranch) (default \(info.defaultBranch))")
+    print("remote          \(info.remoteURL ?? "—")  ->  \(info.remoteWebURL?.absoluteString ?? "—")")
+    print("git objects     \(info.packedBytes.map(mb) ?? "—")")
+    print("tracked files   \(info.inventory.fileCount) · \(mb(info.inventory.totalBytes))")
+    for category in FileInventory.categories {
+        print("  \(category.padding(toLength: 13, withPad: " ", startingAt: 0)) \(mb(info.inventory.bytesByCategory[category] ?? 0))")
+    }
+    print("large files     \(info.inventory.largeFiles.count)" + (info.inventory.largeFiles.first.map { "  (largest \($0.path) \(mb($0.bytes)))" } ?? ""))
+    print("readme          \(info.readmeSummary ?? "—")")
+    print()
+    print("branches (\(branches.count)):")
+    for b in branches.prefix(8) {
+        let flags = [b.isDefault ? "default" : nil, b.isCurrent ? "current" : nil, b.isRemote ? "remote" : nil, b.isMerged ? "merged" : nil].compactMap { $0 }.joined(separator: ",")
+        let ab = (b.ahead != nil && b.behind != nil) ? "+\(b.ahead!)/-\(b.behind!)" : ""
+        print("  \(day.string(from: b.date))  \(b.name.padding(toLength: 28, withPad: " ", startingAt: 0)) \(ab.padding(toLength: 10, withPad: " ", startingAt: 0)) \(flags)")
+    }
+    print()
+    let contributors = ContributorStats.compute(commits: commits)
+    print("contributors (\(contributors.count)):")
+    for c in contributors.prefix(5) {
+        print("  \(c.name.padding(toLength: 24, withPad: " ", startingAt: 0)) \(c.commits) commits  \(Int((c.share * 100).rounded()))%  \(day.string(from: c.firstCommit)) – \(day.string(from: c.lastCommit))")
+    }
+    let now = Date()
+    let series = ActivitySeries.buckets(commits: commits, granularity: .month, from: now.addingTimeInterval(-365 * 86_400), to: now)
+    print("commits/month (last 12): " + series.map { String($0.commits) }.joined(separator: " "))
+    let top = ChangeFrequency.topFiles(commits: commits, since: now.addingTimeInterval(-90 * 86_400), limit: 5)
+    print("top changed files (90d): " + top.map { "\($0.path.split(separator: "/").last ?? "") ×\($0.changes)" }.joined(separator: ", "))
+    print()
+    let stale = branches.filter { !$0.isDefault && !$0.isMerged && now.timeIntervalSince($0.date) > 90 * 86_400 }.count
+    let health = RepositoryHealth.assess(.init(
+        lastCommit: commits.first?.date, activeAuthors: ContributorStats.activeAuthors(commits: commits, since: now.addingTimeInterval(-90 * 86_400)),
+        staleBranches: stale, totalBranches: branches.count, largeFiles: info.inventory.largeFiles.count,
+        complexChangedShare: nil, complexChangedCount: 0, now: now))
+    print("health          \(health.score) \(health.label) — \(health.summary)")
+    for item in health.items { print("  [\(item.points)/\(item.maxPoints)] \(item.title): \(item.detail)") }
+    print(String(format: "facts %.2fs", tFacts))
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against
