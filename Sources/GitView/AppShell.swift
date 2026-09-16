@@ -43,6 +43,7 @@ struct AppShell: View {
             else if model.isSearching { SearchScreen() } else {
             switch model.screen {
             case .overview: OverviewScreen()
+            case .changes: ChangesScreen()
             case .commits: CommitsScreen()
             case .branches: BranchesScreen()
             case .releases: ReleasesScreen()
@@ -165,7 +166,7 @@ struct SidebarView: View {
     @EnvironmentObject private var model: AnalysisModel
 
     private var repositoryScreens: [AnalysisModel.Screen] {
-        [.overview, .commits, .branches, .releases, .contributors, .files, .activity]
+        [.overview, .changes, .commits, .branches, .releases, .contributors, .files, .activity]
     }
     private var analysisScreens: [AnalysisModel.Screen] {
         model.advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling]

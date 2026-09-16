@@ -16,10 +16,11 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var state: State = .idle
 
     enum Screen: String, Hashable, CaseIterable {
-        case overview, commits, branches, releases, contributors, files, activity, hotspots, coupling, statistics
+        case overview, changes, commits, branches, releases, contributors, files, activity, hotspots, coupling, statistics
         var title: String {
             switch self {
             case .overview: return "Overview"
+            case .changes: return "Changes"
             case .commits: return "Commits"
             case .branches: return "Branches"
             case .releases: return "Releases"
@@ -34,6 +35,7 @@ final class AnalysisModel: ObservableObject {
         var symbol: String {
             switch self {
             case .overview: return "square.grid.2x2"
+            case .changes: return "pencil.and.list.clipboard"
             case .commits: return "clock.arrow.circlepath"
             case .branches: return "arrow.triangle.branch"
             case .releases: return "tag"
@@ -83,6 +85,16 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var ownership: OwnershipIndex?
     /// The contributor whose detail panel is open.
     @Published var selectedAuthor: String?
+    // Writing. Every mutating call refreshes the working copy afterwards, and anything
+    // that cannot be undone goes through a confirmation that names what will be lost.
+    @Published var commitSubject = ""
+    @Published var commitBody = ""
+    @Published var stashMessage = ""
+    @Published private(set) var writeInFlight = false
+    @Published var writeError: String?
+    @Published var confirmation: DestructiveConfirmation?
+    @Published private(set) var pushPlan: GitRepository.PushPlan?
+
     // One file's life. Kept separate from the diff so that closing a diff returns here
     // rather than all the way out.
     @Published var fileHistoryPath: String? { didSet { loadFileHistory() } }
@@ -271,7 +283,8 @@ final class AnalysisModel: ObservableObject {
     var selectedRow: RiskRow? { selectedUnitID.flatMap { rowsByID[$0] } }
     var selectedPair: CouplingRow? { selectedPairID.flatMap { couplingRowsByID[$0] } }
 
-    func open(url: URL) {
+    func open(url: URL, preservingSelection: Bool = false) {
+        let keptScreen = screen
         state = .loading("Reading history…")
         rows = []
         rowsByID = [:]
@@ -320,7 +333,9 @@ final class AnalysisModel: ObservableObject {
                     }?.sha
                 }
                 self.state = .loaded(analysis)
+                if preservingSelection { self.screen = keptScreen }
                 self.rebuild()
+                self.refreshPushPlan()
                 if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
                 if let path = self.pendingFileHistory {
                     self.pendingFileHistory = nil
@@ -712,6 +727,113 @@ final class AnalysisModel: ObservableObject {
         }
     }
 
+    /// Runs a mutating git command, then refreshes what it could have changed.
+    ///
+    /// `reloadHistory` is for operations that move HEAD: the commit list, catch-up and
+    /// everything derived from them are stale afterwards. The analysis cache makes that
+    /// reload incremental, so it costs a fraction of a fresh read.
+    private func perform(_ label: String, reloadHistory: Bool = false,
+                         _ work: @escaping @Sendable (GitRepository) throws -> Void) {
+        guard let analysis, !writeInFlight else { return }
+        writeInFlight = true
+        writeError = nil
+        let root = analysis.root
+        Task {
+            let failure: String? = await Task.detached(priority: .userInitiated) {
+                do { try work(GitRepository(url: root)); return nil } catch { return "\(error)" }
+            }.value
+            self.writeError = failure
+            self.writeInFlight = false
+            if failure == nil, reloadHistory {
+                self.open(url: root, preservingSelection: true)
+            } else {
+                self.refreshWorkingState()
+                self.refreshPushPlan()
+            }
+        }
+    }
+
+    func stage(_ paths: [String]) { perform("stage") { try $0.stage(paths: paths) } }
+    func stageAll() { perform("stage all") { try $0.stageAll() } }
+    func unstage(_ paths: [String]) { perform("unstage") { try $0.unstage(paths: paths) } }
+
+    func commitStaged() {
+        let subject = commitSubject, body = commitBody
+        perform("commit", reloadHistory: true) { _ = try $0.commit(subject: subject, body: body) }
+        commitSubject = ""
+        commitBody = ""
+    }
+
+    func stashEverything(includeUntracked: Bool) {
+        let message = stashMessage
+        perform("stash") { try $0.stashPush(message: message, includeUntracked: includeUntracked) }
+        stashMessage = ""
+    }
+
+    func applyStash(_ ref: String, removing: Bool) {
+        perform("stash apply") { try $0.stashApply(ref, removing: removing) }
+    }
+
+    func refreshPushPlan() {
+        guard let analysis else { return }
+        let root = analysis.root
+        Task.detached(priority: .utility) {
+            let plan = try? GitRepository(url: root).pushPlan()
+            await MainActor.run { self.pushPlan = plan }
+        }
+    }
+
+    func push() {
+        guard let plan = pushPlan else { return }
+        perform("push", reloadHistory: true) {
+            try $0.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+        }
+    }
+
+    // MARK: Destructive, always confirmed
+
+    func confirmDiscard(_ file: WorkingState.FileStatus) {
+        confirmation = DestructiveConfirmation(
+            title: "Discard changes to \((file.path as NSString).lastPathComponent)?",
+            message: "The edits in your working copy will be gone. Nothing in git has a copy of them, "
+                   + "so this cannot be undone. Stashing keeps them and you can bring them back later.",
+            confirmLabel: "Discard",
+            alternativeLabel: "Stash instead",
+            perform: { [weak self] in
+                self?.perform("discard") { try $0.discardChanges(paths: [file.path]) }
+            },
+            alternative: { [weak self] in
+                self?.perform("stash") {
+                    try $0.stashPush(message: "Set aside \(file.path)", includeUntracked: false)
+                }
+            })
+    }
+
+    func confirmDelete(_ file: WorkingState.FileStatus) {
+        confirmation = DestructiveConfirmation(
+            title: "Delete \((file.path as NSString).lastPathComponent)?",
+            message: "This file has never been committed, so git has no copy of it. Deleting it removes "
+                   + "it from disk permanently.",
+            confirmLabel: "Delete",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("delete") { try $0.deleteUntracked(paths: [file.path]) }
+            },
+            alternative: nil)
+    }
+
+    func confirmDropStash(_ stash: WorkingState.Stash) {
+        confirmation = DestructiveConfirmation(
+            title: "Drop \(stash.ref)?",
+            message: "“\(stash.message)” will be discarded. A dropped stash is very hard to recover.",
+            confirmLabel: "Drop",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("stash drop") { try $0.stashDrop(stash.ref) }
+            },
+            alternative: nil)
+    }
+
     /// Re-reads `git status`. Cheap, so it runs whenever the app comes forward.
     func refreshWorkingState() {
         guard case .loaded(var analysis) = state else { return }
@@ -743,4 +865,16 @@ final class AnalysisModel: ObservableObject {
             self.loadingHistories.remove(unit.id)
         }
     }
+}
+
+/// A change that cannot be undone, described in the terms the person needs to decide.
+struct DestructiveConfirmation: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmLabel: String
+    /// A safer path that keeps the work, offered where one exists.
+    let alternativeLabel: String?
+    let perform: () -> Void
+    let alternative: (() -> Void)?
 }
