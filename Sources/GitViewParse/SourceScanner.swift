@@ -10,6 +10,12 @@ public struct SourceScanner: Sendable {
         /// Paths recognised as vendored or machine-generated. Their units are still
         /// extracted — the caller decides whether to rank them.
         public var generatedFiles: Set<String> = []
+
+        public init(units: [CodeUnit], filesParsed: Int, filesFailed: [String],
+                    generatedFiles: Set<String> = []) {
+            self.units = units; self.filesParsed = filesParsed
+            self.filesFailed = filesFailed; self.generatedFiles = generatedFiles
+        }
     }
 
     /// Directories that never contain source worth analysing, and would otherwise

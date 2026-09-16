@@ -26,6 +26,7 @@ public enum ChurnJoiner {
 
         var touches: [UUID: [Int32]] = [:]
         touches.reserveCapacity(units.count)
+        var byCommit: [Int32: [UUID]] = [:]
 
         // Maps a path as it was named at some point in history to its name in the current
         // checkout. Built while walking newest -> oldest: when commit C renames X to Y,
@@ -67,6 +68,7 @@ public enum ChurnJoiner {
                         // Commits are processed in order, so a duplicate is always last.
                         if touches[id]?.last == commitIndex32 { continue }
                         touches[id, default: []].append(commitIndex32)
+                        byCommit[commitIndex32, default: []].append(id)
                     }
                 }
             }
@@ -75,6 +77,7 @@ public enum ChurnJoiner {
         return ChurnIndex(
             commits: commits,
             touchesByUnit: touches,
+            unitsByCommit: byCommit,
             unresolvedPaths: unresolved,
             unmatchedHunks: unmatched,
             matchedHunks: matched,

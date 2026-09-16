@@ -175,7 +175,11 @@ struct UnitDetailPanel: View {
                     CardHeader(title: "Changes", subtitle: "\(commits.count) commits")
                     VStack(spacing: 0) {
                         ForEach(commits.prefix(40), id: \.sha) { commit in
-                            CommitLine(commit: commit, point: bySHA[commit.sha], historyLoaded: history != nil)
+                            Button { model.selectedCommitSHA = commit.sha } label: {
+                                CommitLine(commit: commit, point: bySHA[commit.sha], historyLoaded: history != nil)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                             if commit.sha != commits.prefix(40).last?.sha { HairlineDivider() }
                         }
                     }

@@ -90,6 +90,13 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var couplingRows: [CouplingRow] = []
     @Published private(set) var couplingRowsByID: [String: CouplingRow] = [:]
     @Published var selectedPairID: String?
+    /// The commit whose detail panel is open, if any.
+    @Published var selectedCommitSHA: String?
+
+    var selectedCommit: Commit? {
+        guard let sha = selectedCommitSHA else { return nil }
+        return analysis?.commits.first { $0.sha == sha }
+    }
 
     enum CouplingViewMode: String, CaseIterable { case list = "List", graph = "Graph" }
     @Published var couplingViewMode: CouplingViewMode = .list
@@ -123,6 +130,8 @@ final class AnalysisModel: ObservableObject {
     /// Name fragment from `--select`, applied once the first ranking is built.
     var pendingSelection: String?
     var pendingPairSelection: String?
+    /// Commit prefix from `--select-commit`, resolved once history is loaded.
+    var pendingCommitSelection: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -173,6 +182,7 @@ final class AnalysisModel: ObservableObject {
         }
         pendingSelection = value("--select")
         pendingPairSelection = value("--select-pair")
+        pendingCommitSelection = value("--select-commit")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
         if let view = value("--view") { couplingViewMode = view == "graph" ? .graph : .list }
@@ -199,14 +209,28 @@ final class AnalysisModel: ObservableObject {
         couplingRowsByID = [:]
         selectedPairID = nil
         selectedUnitID = nil
+        selectedCommitSHA = nil
         histories = [:]
         loadingHistories = []
 
         Task {
             do {
+                let started = Date()
                 let analysis = try await AnalysisService.load(root: url)
+                // Printed so a run can be timed from the outside without guessing from
+                // wall clock, which a screenshot delay would dominate.
+                FileHandle.standardError.write(Data(
+                    String(format: "gitview: analysis %@ — history %.2fs, parse %.2fs, facts %.2fs, total %.2fs\n",
+                           analysis.source.summary, analysis.historyDuration, analysis.parseDuration,
+                           analysis.factsDuration, Date().timeIntervalSince(started)).utf8))
                 self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
                 self.contributors = ContributorStats.compute(commits: analysis.commits)
+                if let prefix = self.pendingCommitSelection {
+                    self.pendingCommitSelection = nil
+                    self.selectedCommitSHA = analysis.commits.first {
+                        $0.sha.hasPrefix(prefix) || $0.subject.localizedCaseInsensitiveContains(prefix)
+                    }?.sha
+                }
                 self.state = .loaded(analysis)
                 self.rebuild()
             } catch {

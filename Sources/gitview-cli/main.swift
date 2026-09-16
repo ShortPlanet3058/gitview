@@ -20,12 +20,14 @@ guard let command = arguments.first else {
       history <repo> <name>   complexity of one unit at every revision that touched it
       coupling <repo>         pairs of units that change together, cross-directory first
       facts <repo>            branches, contributors, size, README summary and health
+      cache <repo> [--clear]  report or clear the on-disk analysis cache
 
     coupling options:
       --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
       --max-units <n> (default 50)  --half-life <days>  --include-tests
       coupling <repo>         pairs of units that change together, cross-directory first
       facts <repo>            branches, contributors, size, README summary and health
+      cache <repo> [--clear]  report or clear the on-disk analysis cache
 
     coupling options:
       --limit <n>  --min-shared <n> (default 3)  --scope <all|file|directory> (default directory)
@@ -571,6 +573,26 @@ case "facts":
     print("health          \(health.score) \(health.label) — \(health.summary)")
     for item in health.items { print("  [\(item.points)/\(item.maxPoints)] \(item.title): \(item.detail)") }
     print(String(format: "facts %.2fs", tFacts))
+
+case "cache":
+    guard arguments.count >= 2 else { fail("cache requires a repository path") }
+    let cacheRoot = URL(fileURLWithPath: (arguments[1] as NSString).expandingTildeInPath)
+    let resolved = (try? GitRepository(url: cacheRoot).validate()) ?? cacheRoot
+    if arguments.contains("--clear") {
+        AnalysisCache.clear(root: resolved)
+        print("cleared cache for \(resolved.lastPathComponent)")
+    } else if let payload = AnalysisCache.load(root: resolved) {
+        let size = (try? Data(contentsOf: AnalysisCache.url(for: resolved)).count) ?? 0
+        let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd HH:mm"
+        print("head       \(payload.headSHA.prefix(12))")
+        print("written    \(day.string(from: payload.createdAt))")
+        print("commits    \(payload.commits.count.formatted())")
+        print("units      \(payload.units.count.formatted()) (\(payload.generatedFiles.count) generated files)")
+        print("on disk    \(size.formatted()) bytes compressed")
+    } else {
+        print("no cache for \(resolved.path)")
+    }
+    print("total cache size: \(AnalysisCache.sizeOnDisk().formatted()) bytes")
 
 case "sexp":
     // Development aid: dump the parse tree so query patterns can be checked against

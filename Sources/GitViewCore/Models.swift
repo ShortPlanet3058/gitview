@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Line ranges are 1-based and inclusive, matching both editor convention and
 /// the line numbers git reports in hunk headers.
-public struct CodeUnit: Identifiable, Hashable, Sendable {
-    public enum Kind: String, Hashable, Sendable {
+public struct CodeUnit: Identifiable, Hashable, Sendable, Codable {
+    public enum Kind: String, Hashable, Sendable, Codable {
         case function, method, `class`
     }
 
@@ -43,7 +43,7 @@ public struct CodeUnit: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct Commit: Hashable, Sendable {
+public struct Commit: Hashable, Sendable, Codable {
     public let sha: String
     public let author: String
     public let date: Date
@@ -60,7 +60,7 @@ public struct Commit: Hashable, Sendable {
     }
 }
 
-public struct FileChange: Hashable, Sendable {
+public struct FileChange: Hashable, Sendable, Codable {
     /// Path as of this commit's *new* side. Nil-path (deleted file) changes are dropped
     /// by the parser, since a deleted file has no units in the current checkout.
     public let path: String
@@ -84,7 +84,7 @@ public struct FileChange: Hashable, Sendable {
 /// nothing. Git reports `+start,0` where `start` is the line *before* which the
 /// removal happened. Such a hunk covers no new lines at all, so callers that need
 /// a non-empty range must decide how to represent it — see `touchedLineRange`.
-public struct Hunk: Hashable, Sendable {
+public struct Hunk: Hashable, Sendable, Codable {
     public let newStart: Int
     public let newLineCount: Int
 

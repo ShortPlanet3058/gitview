@@ -8,10 +8,17 @@ struct StatisticsScreen: View {
     var body: some View {
         if let analysis = model.analysis {
             Page {
-                ScreenHeader(title: "Statistics", subtitle: "How this analysis was produced, and the model behind the risk scores.")
+                ScreenHeader(title: "Statistics",
+                             subtitle: "How this analysis was produced, and the model behind the risk scores.")
+                Text(analysis.source.summary + ". History is cached per repository and extended incrementally; "
+                     + "source files are re-parsed whenever the working tree has changed.")
+                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 HStack(spacing: Theme.Space.m) {
-                    StatCard(icon: "timer", tint: .blue, value: String(format: "%.1fs", analysis.historyDuration + analysis.parseDuration),
-                             label: "Analysis time", delta: String(format: "history %.1fs · parse & facts %.1fs", analysis.historyDuration, analysis.parseDuration))
+                    StatCard(icon: "timer", tint: .blue,
+                             value: String(format: "%.1fs", analysis.historyDuration + analysis.parseDuration + analysis.factsDuration),
+                             label: analysis.source.isCached ? "Analysis time (cached)" : "Analysis time",
+                             delta: String(format: "history %.1fs · parse %.1fs · facts %.1fs",
+                                           analysis.historyDuration, analysis.parseDuration, analysis.factsDuration))
                     StatCard(icon: "doc.text.magnifyingglass", tint: .aqua, value: analysis.filesParsed.formatted(), label: "Files parsed",
                              delta: analysis.generatedFiles.isEmpty
                                 ? (analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")

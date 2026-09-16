@@ -128,6 +128,7 @@ struct RecentActivityCard: View {
                 CardHeader(title: "Recent activity")
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(commits.enumerated()), id: \.element.sha) { index, commit in
+                        Button { model.selectedCommitSHA = commit.sha } label: {
                         HStack(alignment: .top, spacing: Theme.Space.m) {
                             VStack(spacing: 0) {
                                 Avatar(name: commit.author, size: 26)
@@ -146,6 +147,9 @@ struct RecentActivityCard: View {
                             }
                             .padding(.bottom, index < commits.count - 1 ? Theme.Space.m : 0)
                         }
+                        .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 LinkButton(title: "See all commits →") { model.screen = .commits }

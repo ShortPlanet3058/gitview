@@ -128,8 +128,11 @@ extension GitRepository {
             arguments: ["branch", "-a", "--merged", defaultBranch, "--format=%(refname:short)"], in: root))?
             .split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) } ?? [])
 
+        struct Row { let name: String, fullName: String, sha: String, date: Date, author: String,
+                     subject: String, isRemote: Bool }
         var seen = Set<String>()
-        var branches: [BranchInfo] = []
+        var rows: [Row] = []
+        let formatter = ISO8601DateFormatter()
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "\u{1F}", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
             guard fields.count >= 5 else { continue }
@@ -138,26 +141,37 @@ extension GitRepository {
             let name = isRemote ? String(ref.dropFirst("refs/remotes/origin/".count)) : String(ref.dropFirst("refs/heads/".count))
             guard name != "HEAD", !seen.contains(name) else { continue }   // local wins over its remote twin
             seen.insert(name)
-            let fullName = isRemote ? "origin/\(name)" : name
-
-            var ahead: Int?, behind: Int?
-            if name != defaultBranch, branches.count < detailLimit,
-               let counts = try? GitProcess.capture(
-                   arguments: ["rev-list", "--left-right", "--count", "\(defaultBranch)...\(fullName)"], in: root) {
-                let parts = counts.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .split(whereSeparator: { $0 == "\t" || $0 == " " }).compactMap { Int($0) }
-                if parts.count == 2 { behind = parts[0]; ahead = parts[1] }
-            }
-            branches.append(BranchInfo(
-                name: name, sha: fields[1],
-                date: ISO8601DateFormatter().date(from: fields[2]) ?? .distantPast,
-                author: fields[3], subject: fields[4],
-                isDefault: name == defaultBranch, isCurrent: !isRemote && name == currentBranch,
-                isRemote: isRemote,
-                ahead: ahead, behind: behind,
-                isMerged: name != defaultBranch && (merged.contains(name) || merged.contains(fullName))))
+            rows.append(Row(name: name, fullName: isRemote ? "origin/\(name)" : name, sha: fields[1],
+                            date: formatter.date(from: fields[2]) ?? .distantPast,
+                            author: fields[3], subject: fields[4], isRemote: isRemote))
         }
-        return branches
+
+        // Ahead/behind is one `rev-list` per branch. Run them concurrently: serially this
+        // was the slowest part of opening a repository with many branches (4.6s of
+        // swift-nio's 5.9s), and each call is an independent process.
+        let counts = AheadBehindBox(count: rows.count)
+        let limit = min(rows.count, detailLimit)
+        DispatchQueue.concurrentPerform(iterations: limit) { index in
+            let row = rows[index]
+            guard row.name != defaultBranch,
+                  let output = try? GitProcess.capture(
+                      arguments: ["rev-list", "--left-right", "--count", "\(defaultBranch)...\(row.fullName)"],
+                      in: root) else { return }
+            let parts = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(whereSeparator: { $0 == "\t" || $0 == " " }).compactMap { Int($0) }
+            if parts.count == 2 { counts.set(index, behind: parts[0], ahead: parts[1]) }
+        }
+
+        return rows.enumerated().map { index, row in
+            let (behind, ahead) = counts.get(index)
+            return BranchInfo(
+                name: row.name, sha: row.sha, date: row.date, author: row.author, subject: row.subject,
+                isDefault: row.name == defaultBranch,
+                isCurrent: !row.isRemote && row.name == currentBranch,
+                isRemote: row.isRemote,
+                ahead: ahead, behind: behind,
+                isMerged: row.name != defaultBranch && (merged.contains(row.name) || merged.contains(row.fullName)))
+        }
     }
 
     // MARK: - Pieces
@@ -276,5 +290,19 @@ extension GitRepository {
         return FileInventory(fileCount: count, totalBytes: total, files: files, bytesByCategory: byCategory,
                              bytesByLanguage: byLanguage, filesByLanguage: countByLanguage, languages: ranked,
                              largeFiles: large.sorted { $0.bytes > $1.bytes }, lastModified: newest)
+    }
+}
+
+
+/// Collects ahead/behind counts from concurrent workers.
+private final class AheadBehindBox: @unchecked Sendable {
+    private var values: [(Int?, Int?)]
+    private let lock = NSLock()
+    init(count: Int) { values = Array(repeating: (nil, nil), count: count) }
+    func set(_ index: Int, behind: Int, ahead: Int) {
+        lock.lock(); values[index] = (behind, ahead); lock.unlock()
+    }
+    func get(_ index: Int) -> (Int?, Int?) {
+        lock.lock(); defer { lock.unlock() }; return values[index]
     }
 }

@@ -9,6 +9,10 @@ public struct ChurnIndex: Sendable {
     public let commits: [Commit]
     /// Unit id -> indices into `commits`, newest first (git log's own order).
     public let touchesByUnit: [UUID: [Int32]]
+    /// The same relation inverted: commit index -> the units it touched. Built once by the
+    /// joiner because asking "what did this commit change?" otherwise means scanning every
+    /// unit's history.
+    public let unitsByCommit: [Int32: [UUID]]
     /// Paths seen in history that no longer exist in the checkout, after following renames.
     public let unresolvedPaths: Int
     /// Hunks that fell outside every unit in their file — blank lines, imports, and
@@ -17,6 +21,12 @@ public struct ChurnIndex: Sendable {
     public let matchedHunks: Int
     /// Historical path -> path in the current checkout, built from `--find-renames`.
     public let historicalPathToCurrent: [String: String]
+
+    /// Units touched by a commit, in the order they were joined.
+    public func units(touchedBy sha: String) -> [UUID] {
+        guard let index = commits.firstIndex(where: { $0.sha == sha }) else { return [] }
+        return unitsByCommit[Int32(index)] ?? []
+    }
 
     public func commits(for unit: CodeUnit) -> [Commit] {
         (touchesByUnit[unit.id] ?? []).map { commits[Int($0)] }

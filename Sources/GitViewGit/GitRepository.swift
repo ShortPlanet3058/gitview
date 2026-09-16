@@ -24,7 +24,20 @@ public struct GitRepository: Sendable {
     /// Merge commits appear with no diff, because `git log -p` does not show patches for
     /// merges unless asked. That is deliberate: showing them would double-count every
     /// change that came in through a merge.
-    public func loadHistory() throws -> [Commit] {
+    public func headSHA() throws -> String {
+        try GitProcess.capture(arguments: ["rev-parse", "HEAD"], in: url)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// True when `ancestor` is reachable from `descendant`, so commits can safely be read
+    /// as a range. False after a rebase or force-push, where the old tip is no longer in
+    /// history and an incremental read would silently lose commits.
+    public func isAncestor(_ ancestor: String, of descendant: String) -> Bool {
+        (try? GitProcess.capture(arguments: ["merge-base", "--is-ancestor", ancestor, descendant], in: url)) != nil
+    }
+
+    /// - Parameter since: when set, reads only commits after this one.
+    public func loadHistory(since: String? = nil) throws -> [Commit] {
         let arguments = [
             // Stop git from octal-escaping non-ASCII paths, so UTF-8 filenames survive intact.
             "-c", "core.quotePath=false",
@@ -41,7 +54,7 @@ public struct GitRepository: Sendable {
             // split its top contributor's 769 commits into 589 + 180.
             "--pretty=format:@@@%H%x1f%aN%x1f%aI%x1f%s",
             "-p",
-        ]
+        ] + (since.map { ["\($0)..HEAD"] } ?? [])
 
         let sink = ParserBox()
         try GitProcess.stream(arguments: arguments, in: url) { chunk in

@@ -33,8 +33,12 @@ struct RepositoryAnalysis: Sendable {
     /// Paths recognised as vendored or machine-generated.
     let generatedFiles: Set<String>
     let historyDuration: TimeInterval
+    /// Time spent parsing source files. Zero when cached units were reused.
     let parseDuration: TimeInterval
+    /// Branches, file inventory and README — always recomputed, never cached.
+    let factsDuration: TimeInterval
     let attribution: AttributionStats
+    let source: AnalysisSource
 
     var authorCount: Int { Set(commits.map(\.author)).count }
     var dateRange: ClosedRange<Date>? {
@@ -44,32 +48,89 @@ struct RepositoryAnalysis: Sendable {
     }
 }
 
+/// Where this analysis came from, so the UI can say why it was quick.
+enum AnalysisSource: Sendable {
+    case fresh
+    case cached
+    case incremental(newCommits: Int)
+
+    var isCached: Bool {
+        if case .fresh = self { return false }
+        return true
+    }
+
+    var summary: String {
+        switch self {
+        case .fresh: return "Analysed from scratch"
+        case .cached: return "Loaded from cache"
+        case .incremental(let count): return "Cached, plus \(count) new commit\(count == 1 ? "" : "s")"
+        }
+    }
+}
+
 enum AnalysisService {
-    /// Reads history and parses sources. Both stages run off the main actor — `loadHistory`
-    /// blocks for seconds on a large repository and would freeze the window.
-    static func load(root: URL) async throws -> RepositoryAnalysis {
+    /// Reads history and parses sources, reusing a cache where it is safe to.
+    ///
+    /// Everything heavy runs off the main actor — `loadHistory` blocks for seconds, or a
+    /// minute on a repository whose history carries large generated files.
+    static func load(root: URL, useCache: Bool = true) async throws -> RepositoryAnalysis {
         let validated = try await Task.detached(priority: .userInitiated) {
             try GitRepository(url: root).validate()
         }.value
+        let repository = GitRepository(url: validated)
+        let head = (try? repository.headSHA()) ?? ""
+        let cached = useCache ? AnalysisCache.load(root: validated) : nil
 
-        let historyStart = Date()
-        let commits = try await Task.detached(priority: .userInitiated) {
-            try GitRepository(url: validated).loadHistory()
-        }.value
-        let historyDuration = Date().timeIntervalSince(historyStart)
-
-        // Parsing and repository facts are independent; run them together.
-        let parseStart = Date()
-        async let scan = SourceScanner().scan(root: validated)
+        // Facts are cheap and always current; they also tell us when the working tree last
+        // changed, which decides whether cached units are still valid.
+        let factsStart = Date()
         let facts = Task.detached(priority: .userInitiated) { () throws -> (RepositoryInfo, [BranchInfo]) in
-            let repository = GitRepository(url: validated)
             let info = try repository.info()
             let branches = try repository.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch)
             return (info, branches)
         }
-        let report = try await scan
         let (info, branches) = try await facts.value
+        let factsDuration = Date().timeIntervalSince(factsStart)
+
+        // History: reuse, extend, or read in full.
+        let historyStart = Date()
+        var source = AnalysisSource.fresh
+        var commits: [Commit]
+        if let cached, cached.headSHA == head {
+            commits = cached.commits
+            source = .cached
+        } else if let cached, !cached.headSHA.isEmpty, repository.isAncestor(cached.headSHA, of: head) {
+            let since = cached.headSHA
+            let newCommits = try await Task.detached(priority: .userInitiated) {
+                try GitRepository(url: validated).loadHistory(since: since)
+            }.value
+            commits = newCommits + cached.commits
+            source = .incremental(newCommits: newCommits.count)
+        } else {
+            commits = try await Task.detached(priority: .userInitiated) {
+                try GitRepository(url: validated).loadHistory()
+            }.value
+        }
+        let historyDuration = Date().timeIntervalSince(historyStart)
+
+        // Units come from the working tree, so they are only reusable if nothing has been
+        // edited since the cache was written.
+        let parseStart = Date()
+        let report: SourceScanner.Report
+        if let cached, let modified = info.inventory.lastModified, modified <= cached.createdAt,
+           !cached.units.isEmpty {
+            report = SourceScanner.Report(units: cached.units,
+                                          filesParsed: Set(cached.units.map(\.filePath)).count,
+                                          filesFailed: [],
+                                          generatedFiles: Set(cached.generatedFiles))
+        } else {
+            report = try await SourceScanner().scan(root: validated)
+            if case .cached = source { source = .fresh }
+        }
         let parseDuration = Date().timeIntervalSince(parseStart)
+
+        AnalysisCache.save(.init(headSHA: head, commits: commits, units: report.units,
+                                 generatedFiles: Array(report.generatedFiles)), root: validated)
 
         // Join once over the unfiltered unit set purely for the diagnostic.
         let fullJoin = ChurnJoiner.join(units: report.units, commits: commits)
@@ -85,9 +146,11 @@ enum AnalysisService {
             generatedFiles: report.generatedFiles,
             historyDuration: historyDuration,
             parseDuration: parseDuration,
+            factsDuration: factsDuration,
             attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
                                           unmatchedHunks: fullJoin.unmatchedHunks,
-                                          unresolvedHunks: fullJoin.unresolvedPaths)
+                                          unresolvedHunks: fullJoin.unresolvedPaths),
+            source: source
         )
     }
 }

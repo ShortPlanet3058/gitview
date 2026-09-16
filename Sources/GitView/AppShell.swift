@@ -50,6 +50,10 @@ struct AppShell: View {
 
     private var detail: AnyView? {
         guard case .loaded = model.state else { return nil }
+        // A selected commit wins on any screen: it is the most recent thing the user asked for.
+        if let commit = model.selectedCommit {
+            return AnyView(CommitDetailPanel(commit: commit).id(commit.sha))
+        }
         switch model.screen {
         case .coupling:
             if let pair = model.selectedPair { return AnyView(PairDetailPanel(row: pair).id(pair.id)) }
@@ -369,6 +373,20 @@ struct SettingsSheet: View {
                     Slider(value: $model.halfLifeDays, in: 30...1095, step: 5)
                     Text(halfLifeCaption).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    CardHeader(title: "Cache",
+                               info: "Reading history is the slow part — about a minute on a repository whose "
+                                   + "history carries large generated files. It is cached per repository and "
+                                   + "extended with only the new commits next time.")
+                    HStack {
+                        Text("Using \(AnalysisCache.sizeOnDisk().byteString) on disk")
+                            .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                        Spacer()
+                        Button("Clear cache") { AnalysisCache.clearAll() }.buttonStyle(SecondaryButtonStyle())
+                    }
                 }
             }
             Card {

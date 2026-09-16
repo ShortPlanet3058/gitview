@@ -58,7 +58,10 @@ struct CommitsScreen: View {
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.m).padding(.bottom, 4)
                         ForEach(group.commits, id: \.sha) { commit in
-                            CommitRowView(commit: commit)
+                            Button { model.selectedCommitSHA = commit.sha } label: {
+                                CommitRowView(commit: commit, selected: model.selectedCommitSHA == commit.sha)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     if commits.count > limit {
@@ -96,6 +99,7 @@ struct CommitsScreen: View {
 
 struct CommitRowView: View {
     let commit: Commit
+    var selected = false
     @State private var hovering = false
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Space.m) {
@@ -111,7 +115,9 @@ struct CommitRowView: View {
             ShaChip(sha: commit.sha)
         }
         .padding(.horizontal, Theme.Space.m).padding(.vertical, 8)
-        .background(hovering ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .background(selected ? Theme.accentWash : (hovering ? Theme.wash : .clear),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu {
             Button("Copy SHA") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.sha, forType: .string) }
