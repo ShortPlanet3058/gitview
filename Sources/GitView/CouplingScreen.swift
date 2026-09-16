@@ -35,7 +35,7 @@ struct CouplingScreen: View {
                     .padding(.horizontal, Theme.Space.xxl)
                     .padding(.bottom, Theme.Space.xl)
             } else {
-            ScrollView {
+            ScrollColumn {
                 LazyVStack(spacing: Theme.Space.s) {
                     ForEach(model.couplingRows.prefix(300)) { row in
                         CouplingCard(row: row, selected: model.selectedPairID == row.id) {
@@ -147,7 +147,7 @@ struct PairDetailPanel: View {
             .background(Theme.raised)
             .overlay(alignment: .bottom) { HairlineDivider() }
 
-            ScrollView {
+            ScrollColumn {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     unitCard(id: row.pair.a, name: row.nameA, location: row.locationA)
                     unitCard(id: row.pair.b, name: row.nameB, location: row.locationB)

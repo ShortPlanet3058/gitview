@@ -245,10 +245,11 @@ public struct RepositoryHealth: Hashable, Sendable {
             case ..<0.10: complexPoints = 10
             default: complexPoints = 4
             }
-            let percent = Int((share * 100).rounded())
+            let percent = share * 100
+            let percentText = percent > 0 && percent < 1 ? String(format: "%.1f%%", percent) : "\(Int(percent.rounded()))%"
             complexDetail = inputs.complexChangedCount == 0
                 ? "No very complex function changed recently"
-                : "\(inputs.complexChangedCount) very complex function\(inputs.complexChangedCount == 1 ? "" : "s") changed recently (\(percent)%)"
+                : "\(inputs.complexChangedCount) very complex function\(inputs.complexChangedCount == 1 ? "" : "s") changed recently (\(percentText))"
         } else {
             complexPoints = 25
             complexDetail = "No code analysed"

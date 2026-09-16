@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// `GitView --repo <path> --screenshot out.png [--screenshot-delay 10] [--quit]`
+/// `GitView --repo <path> --screenshot out.png [--screenshot-delay 10] [--quit]` (`--quit` last)
 ///
 /// Renders the root view offscreen with `ImageRenderer` after the delay. Used to verify
 /// screens from the command line: it needs no screen-recording permission, does not care
@@ -28,6 +28,7 @@ enum DebugScreenshot {
     static func render(model: AnalysisModel, to path: String) {
         let content = AppShell()
             .environmentObject(model)
+            .environment(\.staticRendering, true)
             .frame(width: 1380, height: 820)
             .background(Theme.page)
         let appearance = NSApplication.shared.effectiveAppearance

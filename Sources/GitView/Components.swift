@@ -272,3 +272,212 @@ struct HairlineDivider: View {
 extension View {
     func sectionSpacing() -> some View { padding(.bottom, Theme.Space.xl) }
 }
+
+// MARK: - Concept-dashboard pieces
+
+/// Icon square + big number + label, as on the concept's overview.
+struct StatCard: View {
+    let icon: String
+    let tint: Theme.Tint
+    let value: String
+    let label: String
+    var delta: String? = nil
+
+    var body: some View {
+        Card(padding: Theme.Space.l) {
+            HStack(alignment: .top, spacing: Theme.Space.m) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.tint(tint))
+                    .frame(width: 36, height: 36)
+                    .background(Theme.tint(tint).opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(value).font(Theme.Text.hero).foregroundStyle(Theme.ink).lineLimit(1).minimumScaleFactor(0.7)
+                    Text(label).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                    if let delta {
+                        Text(delta).font(Theme.Text.caption).foregroundStyle(Theme.good)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+/// Initials in a tinted circle — no network, so no photos.
+struct Avatar: View {
+    let name: String
+    var size: CGFloat = 28
+
+    private var initials: String {
+        let parts = name.split(separator: " ").prefix(2)
+        let letters = parts.compactMap { $0.first }.map { String($0).uppercased() }
+        return letters.isEmpty ? "?" : letters.joined()
+    }
+    private var tint: Color {
+        var hash: UInt64 = 1469598103934665603
+        for byte in name.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        return Theme.tint(Theme.avatarTints[Int(hash % UInt64(Theme.avatarTints.count))])
+    }
+
+    var body: some View {
+        Text(initials)
+            .font(.system(size: size * 0.38, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: size, height: size)
+            .background(tint.opacity(0.16), in: Circle())
+    }
+}
+
+/// Score ring with the label inside; colour follows the status palette and is always
+/// accompanied by the number and word.
+struct HealthRing: View {
+    let health: RepositoryHealth
+    var size: CGFloat = 96
+
+    private var color: Color {
+        health.score >= 80 ? Theme.good : health.score >= 60 ? Theme.warning : Theme.critical
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Theme.wash, lineWidth: 8)
+            Circle()
+                .trim(from: 0, to: CGFloat(health.score) / 100)
+                .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text("\(health.score)").font(.system(size: size * 0.3, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(health.label).font(.system(size: size * 0.11)).foregroundStyle(color)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityLabel("Health \(health.score), \(health.label)")
+    }
+}
+
+struct HealthItemRow: View {
+    let item: RepositoryHealth.Item
+    var body: some View {
+        HStack(spacing: Theme.Space.s) {
+            Image(systemName: item.status == .good ? "checkmark.circle.fill"
+                  : item.status == .warning ? "exclamationmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.color(for: item.status))
+            Text(item.title).font(Theme.Text.body).foregroundStyle(Theme.ink)
+            Spacer()
+            Text(item.detail).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                .lineLimit(1).truncationMode(.tail)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+/// Sha as a small mono chip.
+struct ShaChip: View {
+    let sha: String
+    var body: some View {
+        Text(sha.prefix(7))
+            .font(Theme.Text.mono)
+            .foregroundStyle(Theme.inkSoft)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+    }
+}
+
+/// Tiny link-styled button ("See all →").
+struct LinkButton: View {
+    let title: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(Theme.Text.body).foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Column headings for hand-built tables.
+struct TableHeading: View {
+    let columns: [(String, CGFloat?, Alignment)]
+    var body: some View {
+        HStack(spacing: Theme.Space.m) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+                Text(column.0.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.inkMuted)
+                    .frame(width: column.1, alignment: column.2)
+                    .frame(maxWidth: column.1 == nil ? .infinity : nil, alignment: column.2)
+            }
+        }
+        .padding(.horizontal, Theme.Space.m)
+        .padding(.vertical, 6)
+    }
+}
+
+/// Inline proportion bar used in tables (contributors, size).
+struct InlineBar: View {
+    let fraction: Double
+    var tint: Color = Theme.accent
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.wash)
+                Capsule().fill(tint).frame(width: max(3, geometry.size.width * CGFloat(min(max(fraction, 0), 1))))
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
+// MARK: - Static rendering (offscreen screenshots)
+
+private struct StaticRenderingKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// True while `--screenshot` renders the view offscreen: ScrollViews become plain stacks
+    /// there because ImageRenderer leaves scroll content blank.
+    var staticRendering: Bool {
+        get { self[StaticRenderingKey.self] }
+        set { self[StaticRenderingKey.self] = newValue }
+    }
+}
+
+/// Vertical ScrollView that degrades to a fixed stack under static rendering.
+struct ScrollColumn<Content: View>: View {
+    @Environment(\.staticRendering) private var staticRendering
+    var showsIndicators = true
+    @ViewBuilder let content: Content
+    var body: some View {
+        if staticRendering {
+            // Content taller than the frame would be centred and spill off the top; pin it
+            // to the top edge and clip so an offscreen render shows what a user sees first.
+            // An explicit minHeight matters: without it the frame grows to the child's height
+            // and nothing is clipped.
+            VStack(spacing: 0) { content }
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                .clipped()
+        } else {
+            ScrollView(showsIndicators: showsIndicators) { content }
+        }
+    }
+}
+
+extension Int64 {
+    /// "892 MB", "1.2 GB", "48 KB".
+    var byteString: String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        return formatter.string(fromByteCount: self)
+    }
+}
+
+
+extension Double {
+    /// "19%" normally, "0.3%" below one percent so small shares do not read as nothing.
+    var sharePercent: String {
+        let percent = self * 100
+        if percent > 0 && percent < 1 { return String(format: "%.1f%%", percent) }
+        return "\(Int(percent.rounded()))%"
+    }
+}

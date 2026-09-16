@@ -29,8 +29,17 @@ public struct FileInventory: Hashable, Sendable {
     }
     public static let largeFileThreshold: Int64 = 10 * 1024 * 1024
 
+    public struct TrackedFile: Hashable, Sendable, Identifiable {
+        public var id: String { path }
+        public let path: String
+        public let bytes: Int64
+        public let modified: Date?
+    }
+
     public let fileCount: Int
     public let totalBytes: Int64
+    /// Every tracked file, in `git ls-files` order.
+    public let files: [TrackedFile]
     /// "Source code", "Assets", "Documents", "Other" — by extension.
     public let bytesByCategory: [String: Int64]
     public let largeFiles: [LargeFile]
@@ -213,12 +222,13 @@ extension GitRepository {
 
     static func inventory(in root: URL) -> FileInventory {
         guard let listing = try? GitProcess.capture(arguments: ["ls-files", "-z"], in: root) else {
-            return FileInventory(fileCount: 0, totalBytes: 0, bytesByCategory: [:], largeFiles: [], lastModified: nil)
+            return FileInventory(fileCount: 0, totalBytes: 0, files: [], bytesByCategory: [:], largeFiles: [], lastModified: nil)
         }
         var count = 0
         var total: Int64 = 0
         var byCategory: [String: Int64] = [:]
         var large: [FileInventory.LargeFile] = []
+        var files: [FileInventory.TrackedFile] = []
         var newest: Date?
         let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
         for entry in listing.split(separator: "\0") where !entry.isEmpty {
@@ -229,10 +239,11 @@ extension GitRepository {
             count += 1
             total += bytes
             byCategory[FileInventory.category(forExtension: url.pathExtension), default: 0] += bytes
+            files.append(.init(path: path, bytes: bytes, modified: values.contentModificationDate))
             if bytes >= FileInventory.largeFileThreshold { large.append(.init(path: path, bytes: bytes)) }
             if let modified = values.contentModificationDate, newest.map({ modified > $0 }) ?? true { newest = modified }
         }
-        return FileInventory(fileCount: count, totalBytes: total, bytesByCategory: byCategory,
+        return FileInventory(fileCount: count, totalBytes: total, files: files, bytesByCategory: byCategory,
                              largeFiles: large.sorted { $0.bytes > $1.bytes }, lastModified: newest)
     }
 }

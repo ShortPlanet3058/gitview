@@ -1,151 +1,493 @@
 import SwiftUI
+import Charts
 import GitViewCore
+import GitViewGit
 
 struct OverviewScreen: View {
     @EnvironmentObject private var model: AnalysisModel
-
-    private var attention: Int { (model.levelCounts[.critical] ?? 0) + (model.levelCounts[.high] ?? 0) }
-    private var activeThisYear: Int { model.rows.filter { $0.recentCommits > 0 }.count }
+    @State private var activityRange: ActivityRange = .sixMonths
 
     var body: some View {
-        Page {
-            if let analysis = model.analysis {
-                ScreenHeader(title: analysis.root.lastPathComponent, subtitle: summary(analysis))
-
-                HStack(spacing: Theme.Space.l) {
-                    StatTile(value: model.rows.count.formatted(), label: "functions with history",
-                             caption: "of \(analysis.allUnits.count.formatted()) found in the code")
-                    StatTile(value: attention.formatted(), label: "need attention",
-                             caption: "critical or high risk")
-                    StatTile(value: activeThisYear.formatted(), label: "changed recently",
-                             caption: "in \(model.recentWindowLabel)")
+        if let analysis = model.analysis {
+            Page {
+                HStack(alignment: .top) {
+                    ScreenHeader(title: "Overview",
+                                 subtitle: model.advanced ? "Detailed insights into your repository."
+                                                          : "A quick summary of your repository.")
+                    Spacer()
                 }
 
-                Card {
-                    VStack(alignment: .leading, spacing: Theme.Space.m) {
-                        CardHeader(title: "Health at a glance",
-                                   info: "Every function is scored on how complex it is and how much it has "
-                                       + "changed recently, then placed in a band relative to the rest of this "
-                                       + "repository. Bands are comparative: the top few percent are “critical” "
-                                       + "here even in a tidy project.")
-                        LevelDistributionBar(counts: model.levelCounts)
-                        Text(healthSentence)
-                            .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+                ProjectCard(analysis: analysis)
 
-                Card {
-                    VStack(alignment: .leading, spacing: Theme.Space.m) {
-                        CardHeader(title: "Top hotspots", subtitle: "click one for the full story",
-                                   info: "The functions with the highest combination of complexity and recent "
-                                       + "change. These are where a bug is most likely to be hiding, and where a "
-                                       + "small refactor pays off most.")
-                        VStack(spacing: Theme.Space.s) {
-                            ForEach(model.rows.prefix(5)) { row in
-                                HotspotCard(row: row, compact: true, selected: model.selectedUnitID == row.id) {
-                                    model.selectedUnitID = row.id
-                                }
-                            }
-                        }
-                        if model.rows.count > 5 {
-                            Button("See all \(model.rows.count.formatted()) →") { model.screen = .hotspots }
-                                .buttonStyle(.plain).font(Theme.Text.body).foregroundStyle(Theme.accent)
-                        }
+                statTiles(analysis)
+
+                HStack(alignment: .top, spacing: Theme.Space.l) {
+                    RecentActivityCard(commits: Array(analysis.commits.prefix(5)))
+                        .frame(maxWidth: .infinity)
+                    if let health = model.health {
+                        HealthCard(health: health).frame(maxWidth: .infinity)
                     }
                 }
 
                 HStack(alignment: .top, spacing: Theme.Space.l) {
-                    Card {
-                        VStack(alignment: .leading, spacing: Theme.Space.m) {
-                            CardHeader(title: "Where risk lives",
-                                       info: "Risk scores of elevated-or-higher functions, added up per folder. "
-                                           + "A long bar means a part of the project that deserves more care, "
-                                           + "review, or tests.")
-                            if model.directoryRisk.isEmpty {
-                                Text("Nothing above low risk.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
-                            } else {
-                                let top = model.directoryRisk.first?.score ?? 1
-                                VStack(spacing: Theme.Space.m) {
-                                    ForEach(model.directoryRisk.prefix(6), id: \.directory) { entry in
-                                        BarRow(label: entry.directory.isEmpty ? "(root)" : entry.directory,
-                                               detail: "\(entry.units) functions",
-                                               fraction: entry.score / max(top, 0.0001))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Card {
-                        VStack(alignment: .leading, spacing: Theme.Space.m) {
-                            CardHeader(title: "Change together",
-                                       info: "Pairs of functions that keep being edited in the same commits even "
-                                           + "though they live in different folders. Changing one and forgetting "
-                                           + "the other is a classic source of bugs.")
-                            if model.couplingRows.isEmpty {
-                                Text("No strong pairs across folders.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
-                            } else {
-                                VStack(alignment: .leading, spacing: Theme.Space.m) {
-                                    ForEach(model.couplingRows.prefix(3)) { pair in
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("\(pair.nameA)  ↔  \(pair.nameB)")
-                                                .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
-                                                .lineLimit(1).truncationMode(.middle)
-                                            Text(pair.sentence).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
-                                        }
-                                    }
-                                }
-                                Button("See all pairs →") { model.screen = .coupling }
-                                    .buttonStyle(.plain).font(Theme.Text.body).foregroundStyle(Theme.accent)
-                            }
-                        }
+                    TopHotspotsCard().frame(maxWidth: .infinity)
+                    if model.advanced {
+                        ContributorsCard(contributors: model.contributors, total: analysis.commits.count)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        QuickActionsCard(analysis: analysis).frame(maxWidth: .infinity)
                     }
                 }
 
-                if model.advanced { AdvancedModelCard() }
+                if model.advanced {
+                    ActivityChartCard(commits: analysis.commits, range: $activityRange)
+                    HStack(alignment: .top, spacing: Theme.Space.l) {
+                        BranchesCard(branches: analysis.branches).frame(maxWidth: .infinity)
+                        RepositorySizeCard(info: analysis.info).frame(maxWidth: .infinity)
+                        TopChangedFilesCard(commits: analysis.commits).frame(maxWidth: .infinity)
+                    }
+                    HStack(alignment: .top, spacing: Theme.Space.l) {
+                        QuickActionsCard(analysis: analysis).frame(maxWidth: .infinity)
+                        RepositoryInfoCard(analysis: analysis, contributors: model.contributors.count).frame(maxWidth: .infinity)
+                    }
+                }
             }
         }
     }
 
-    private func summary(_ analysis: RepositoryAnalysis) -> String {
-        var parts = ["\(analysis.commits.count.formatted()) commits", "\(analysis.authorCount.formatted()) people"]
-        if let range = analysis.dateRange {
-            let style = Date.FormatStyle().year().month(.abbreviated)
-            parts.append("\(range.lowerBound.formatted(style)) – \(range.upperBound.formatted(style))")
+    private func statTiles(_ analysis: RepositoryAnalysis) -> some View {
+        let now = Date()
+        let calendar = Calendar.current
+        let monthStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let thisMonth = analysis.commits.filter { $0.date >= monthStart }.count
+        let newPeople = model.contributors.filter { $0.firstCommit >= monthStart }.count
+        let active = analysis.branches.filter { now.timeIntervalSince($0.date) < 90 * 86_400 }.count
+        return HStack(spacing: Theme.Space.m) {
+            StatCard(icon: "clock.arrow.circlepath", tint: .blue, value: analysis.commits.count.formatted(), label: "Commits",
+                     delta: thisMonth > 0 ? "+\(thisMonth) this month" : nil)
+            StatCard(icon: "person.2.fill", tint: .aqua, value: model.contributors.count.formatted(), label: "Contributors",
+                     delta: newPeople > 0 ? "+\(newPeople) this month" : nil)
+            if model.advanced {
+                StatCard(icon: "arrow.triangle.branch", tint: .violet, value: analysis.branches.count.formatted(), label: "Branches",
+                         delta: "\(active) active")
+            }
+            StatCard(icon: "doc.text.fill", tint: .orange, value: analysis.info.inventory.fileCount.formatted(), label: "Files",
+                     delta: analysis.info.inventory.totalBytes.byteString)
+            StatCard(icon: "calendar", tint: .yellow, value: Self.historySpan(analysis.dateRange), label: "History",
+                     delta: analysis.dateRange.map { "since \($0.lowerBound.formatted(.dateTime.year().month(.abbreviated)))" })
         }
-        return parts.joined(separator: " · ")
     }
 
-    private var healthSentence: String {
-        let critical = model.levelCounts[.critical] ?? 0
-        let high = model.levelCounts[.high] ?? 0
-        let total = model.rows.count
-        guard total > 0 else { return "No functions with history to assess." }
-        if critical + high == 0 { return "Nothing stands out right now — no function is both complex and changing much." }
-        let share = Int((Double(critical + high) / Double(total) * 100).rounded())
-        return "\(critical + high) of \(total) functions (\(share)%) combine high complexity with recent change. "
-             + "Those are the ones to look at first."
+    static func historySpan(_ range: ClosedRange<Date>?) -> String {
+        guard let range else { return "—" }
+        let days = range.upperBound.timeIntervalSince(range.lowerBound) / 86_400
+        if days < 60 { return "\(Int(days)) days" }
+        if days < 365 * 1.5 { return "\(Int((days / 30).rounded())) months" }
+        return "\(Int((days / 365).rounded())) years"
     }
 }
 
-/// Expert controls: the half-life slider and what it trades off.
-struct AdvancedModelCard: View {
+enum ActivityRange: String, CaseIterable, Identifiable {
+    case sixMonths = "Last 6 months", year = "Last year", twoYears = "Last 2 years", all = "All time"
+    var id: String { rawValue }
+}
+
+// MARK: - Cards
+
+struct ProjectCard: View {
+    let analysis: RepositoryAnalysis
+    var body: some View {
+        Card {
+            HStack(spacing: Theme.Space.l) {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 56, height: 56)
+                    .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(analysis.root.lastPathComponent).font(Theme.Text.title).foregroundStyle(Theme.ink)
+                    Text(analysis.info.readmeSummary ?? "No README description found.")
+                        .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+struct RecentActivityCard: View {
     @EnvironmentObject private var model: AnalysisModel
+    let commits: [Commit]
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Recent activity")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(commits.enumerated()), id: \.element.sha) { index, commit in
+                        HStack(alignment: .top, spacing: Theme.Space.m) {
+                            VStack(spacing: 0) {
+                                Avatar(name: commit.author, size: 26)
+                                if index < commits.count - 1 {
+                                    Rectangle().fill(Theme.hairline).frame(width: 1).frame(maxHeight: .infinity)
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(commit.subject.isEmpty ? "(no message)" : commit.subject)
+                                    .font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(commit.sha.prefix(7)).font(Theme.Text.mono).foregroundStyle(Theme.inkMuted)
+                                    Text("· \(RiskExplanation.relative(commit.date, now: Date()))")
+                                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                                }
+                            }
+                            .padding(.bottom, index < commits.count - 1 ? Theme.Space.m : 0)
+                        }
+                    }
+                }
+                LinkButton(title: "See all commits →") { model.screen = .commits }
+            }
+        }
+    }
+}
+
+struct HealthCard: View {
+    let health: RepositoryHealth
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Repository health",
+                           info: "Five checks, 100 points: recent activity (25), active contributors (20), branch "
+                               + "hygiene (15), large files (15), and complex code under change (25). Each line "
+                               + "shows what was measured; the score is a heuristic to start a conversation, not a "
+                               + "verdict.")
+                HStack(spacing: Theme.Space.l) {
+                    HealthRing(health: health)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(health.label).font(Theme.Text.title)
+                            .foregroundStyle(health.score >= 80 ? Theme.good : health.score >= 60 ? Theme.warning : Theme.critical)
+                        Text(health.summary).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                VStack(spacing: 0) {
+                    ForEach(health.items) { item in
+                        HealthItemRow(item: item)
+                        if item.id != health.items.last?.id { HairlineDivider() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct TopHotspotsCard: View {
+    @EnvironmentObject private var model: AnalysisModel
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Risk hotspots", subtitle: "\(model.rows.count.formatted()) functions ranked",
+                           info: "Functions with the highest combination of complexity and recent change — where a "
+                               + "bug is most likely hiding and where a small refactor pays off most.")
+                if model.rows.isEmpty {
+                    Text("No Swift functions with history to rank.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                } else {
+                    VStack(spacing: Theme.Space.s) {
+                        ForEach(model.rows.prefix(4)) { row in
+                            HotspotCard(row: row, compact: true, selected: model.selectedUnitID == row.id) {
+                                model.selectedUnitID = row.id
+                            }
+                        }
+                    }
+                    LinkButton(title: "See all hotspots →") { model.screen = .hotspots }
+                }
+            }
+        }
+    }
+}
+
+struct QuickActionsCard: View {
+    let analysis: RepositoryAnalysis
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Quick actions")
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: Theme.Space.s) {
+                    action("Open in Finder", "folder") { NSWorkspace.shared.activateFileViewerSelecting([analysis.root]) }
+                    action("Open in Terminal", "terminal") {
+                        NSWorkspace.shared.open([analysis.root], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
+                                                configuration: NSWorkspace.OpenConfiguration())
+                    }
+                    if let web = analysis.info.remoteWebURL {
+                        action("View on \(web.host ?? "web")", "globe") { NSWorkspace.shared.open(web) }
+                    }
+                    action("Copy path", "doc.on.clipboard") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(analysis.root.path, forType: .string)
+                    }
+                }
+            }
+        }
+    }
+
+    private func action(_ title: String, _ symbol: String, _ perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.accent)
+                Text(title).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.Space.m).padding(.vertical, 10)
+            .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct RepositoryInfoCard: View {
+    let analysis: RepositoryAnalysis
+    let contributors: Int
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Repository info")
+                VStack(spacing: 0) {
+                    row("folder", "Path", analysis.root.path)
+                    row("arrow.triangle.branch", "Default branch", analysis.info.defaultBranch)
+                    if let range = analysis.dateRange {
+                        row("calendar", "Created", range.lowerBound.formatted(.dateTime.year().month(.abbreviated).day()))
+                        row("clock", "Last commit", RiskExplanation.relative(range.upperBound, now: Date()))
+                    }
+                    row("person.2", "Total contributors", contributors.formatted())
+                    if let remote = analysis.info.remoteURL { row("link", "Remote", remote) }
+                }
+            }
+        }
+    }
+    private func row(_ symbol: String, _ label: String, _ value: String) -> some View {
+        HStack(spacing: Theme.Space.s) {
+            Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(Theme.inkMuted).frame(width: 16)
+            Text(label).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+            Spacer()
+            Text(value).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+struct ContributorsCard: View {
+    @EnvironmentObject private var model: AnalysisModel
+    let contributors: [Contributor]
+    let total: Int
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Contributors", subtitle: "\(contributors.count) people")
+                VStack(spacing: Theme.Space.s) {
+                    ForEach(contributors.prefix(4)) { person in
+                        HStack(spacing: Theme.Space.s) {
+                            Avatar(name: person.name, size: 26)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(person.name).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+                                Text("\(person.commits.formatted()) commits").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                            }
+                            Spacer()
+                            InlineBar(fraction: person.share).frame(width: 70)
+                            Text(person.share.sharePercent)
+                                .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkSoft).frame(width: 34, alignment: .trailing)
+                        }
+                    }
+                    if contributors.count > 4 {
+                        let rest = contributors.dropFirst(4)
+                        HStack(spacing: Theme.Space.s) {
+                            Text("+ \(rest.count) others").font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                            Spacer()
+                            InlineBar(fraction: rest.map(\.share).reduce(0, +), tint: Theme.inkMuted).frame(width: 70)
+                            Text(rest.map(\.share).reduce(0, +).sharePercent)
+                                .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkSoft).frame(width: 34, alignment: .trailing)
+                        }
+                    }
+                }
+                LinkButton(title: "See all →") { model.screen = .contributors }
+            }
+        }
+    }
+}
+
+struct ActivityChartCard: View {
+    let commits: [Commit]
+    @Binding var range: ActivityRange
+
+    private var buckets: [ActivityBucket] {
+        let now = Date()
+        let from: Date
+        let granularity: ActivitySeries.Granularity
+        switch range {
+        case .sixMonths: from = now.addingTimeInterval(-182 * 86_400); granularity = .week
+        case .year: from = now.addingTimeInterval(-365 * 86_400); granularity = .week
+        case .twoYears: from = now.addingTimeInterval(-730 * 86_400); granularity = .month
+        case .all: from = commits.map(\.date).min() ?? now; granularity = .month
+        }
+        return ActivitySeries.buckets(commits: commits, granularity: granularity, from: from, to: now)
+    }
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                CardHeader(title: "Risk model", subtitle: "score = log1p(complexity) × log1p(recency-weighted churn)")
                 HStack {
-                    Text("Half-life").font(Theme.Text.body).foregroundStyle(Theme.ink)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Activity over time").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                        Text(range == .twoYears || range == .all ? "Commits per month" : "Commits per week")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    }
                     Spacer()
-                    Text("\(Int(model.halfLifeDays)) days").font(Theme.Text.body.monospacedDigit()).foregroundStyle(Theme.inkSoft)
+                    Picker("", selection: $range) {
+                        ForEach(ActivityRange.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 150)
                 }
-                Slider(value: $model.halfLifeDays, in: 30...1095, step: 5)
-                Text(halfLifeCaption).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+                ActivityBars(buckets: buckets, granularity: range == .twoYears || range == .all ? .month : .week).frame(height: 150)
+            }
+        }
+    }
+}
+
+/// Single-hue bars, recessive grid, no value on every bar.
+struct ActivityBars: View {
+    let buckets: [ActivityBucket]
+    var granularity: ActivitySeries.Granularity = .week
+    var body: some View {
+        Chart(buckets) { bucket in
+            BarMark(x: .value("Period", bucket.start, unit: granularity == .week ? .weekOfYear : .month),
+                    y: .value("Commits", bucket.commits), width: .ratio(0.65))
+                .foregroundStyle(Theme.accent)
+                .cornerRadius(2)
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                AxisValueLabel(format: .dateTime.month(.abbreviated).year(.twoDigits)).foregroundStyle(Theme.inkMuted)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(Theme.gridline)
+                AxisValueLabel().foregroundStyle(Theme.inkMuted)
+            }
+        }
+    }
+}
+
+struct BranchesCard: View {
+    @EnvironmentObject private var model: AnalysisModel
+    let branches: [BranchInfo]
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Branches", subtitle: "\(branches.count)")
+                VStack(spacing: 0) {
+                    ForEach(branches.prefix(5)) { branch in
+                        HStack(spacing: Theme.Space.s) {
+                            Image(systemName: "arrow.triangle.branch").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                            Text(branch.name).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+                            if branch.isDefault { Chip(text: "Default", tint: Theme.accent) }
+                            Spacer()
+                            Text(RiskExplanation.relative(branch.date, now: Date())).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                }
+                LinkButton(title: "See all →") { model.screen = .branches }
+            }
+        }
+    }
+}
+
+struct RepositorySizeCard: View {
+    let info: RepositoryInfo
+    private var tints: [Theme.Tint] { [.blue, .violet, .yellow, .magenta] }
+    var body: some View {
+        let categories = FileInventory.categories
+        let bytes = categories.map { info.inventory.bytesByCategory[$0] ?? 0 }
+        let history = info.packedBytes ?? 0
+        let total = max(bytes.reduce(0, +) + history, 1)
+        return Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Repository size", subtitle: (bytes.reduce(0, +) + history).byteString,
+                           info: "Tracked files by type, plus the git object store (\"Git history\"). Build products "
+                               + "and dependencies are not counted.")
+                GeometryReader { geometry in
+                    HStack(spacing: 2) {
+                        ForEach(Array(zip(categories, bytes).enumerated()), id: \.offset) { index, entry in
+                            if entry.1 > 0 {
+                                RoundedRectangle(cornerRadius: 2).fill(Theme.tint(tints[index % tints.count]))
+                                    .frame(width: max(3, geometry.size.width * CGFloat(entry.1) / CGFloat(total)))
+                            }
+                        }
+                        if history > 0 {
+                            RoundedRectangle(cornerRadius: 2).fill(Theme.inkMuted)
+                                .frame(width: max(3, geometry.size.width * CGFloat(history) / CGFloat(total)))
+                        }
+                    }
+                }
+                .frame(height: 10)
+                VStack(spacing: 4) {
+                    ForEach(Array(zip(categories, bytes).enumerated()), id: \.offset) { index, entry in
+                        legendRow(entry.0, Int64(entry.1), Theme.tint(tints[index % tints.count]))
+                    }
+                    legendRow("Git history", history, Theme.inkMuted)
+                }
+            }
+        }
+    }
+    private func legendRow(_ label: String, _ bytes: Int64, _ color: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(label).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+            Spacer()
+            Text(bytes.byteString).font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.ink)
+        }
+    }
+}
+
+struct TopChangedFilesCard: View {
+    let commits: [Commit]
+    var body: some View {
+        let top = ChangeFrequency.topFiles(commits: commits, since: Date().addingTimeInterval(-90 * 86_400), limit: 6)
+        return Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Top changed files", subtitle: "last 3 months")
+                if top.isEmpty {
+                    Text("No changes in the last 3 months.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(top) { entry in
+                            HStack(spacing: Theme.Space.s) {
+                                Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                                Text(entry.path).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.head)
+                                Spacer()
+                                Text("\(entry.changes)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkSoft)
+                            }
+                            .padding(.vertical, 6)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/// Expert model card (Statistics page).
+struct AdvancedModelCard: View {
+    @EnvironmentObject private var model: AnalysisModel
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                CardHeader(title: "Risk model", subtitle: "score = log1p(complexity) × log1p(recency-weighted churn)")
                 if let analysis = model.analysis {
-                    HairlineDivider()
                     HStack(spacing: Theme.Space.xl) {
                         Text(String(format: "history %.1fs · parse %.1fs", analysis.historyDuration, analysis.parseDuration))
                         Text("\(analysis.filesParsed) files parsed" + (analysis.filesFailed.isEmpty ? "" : ", \(analysis.filesFailed.count) failed"))
@@ -154,18 +496,11 @@ struct AdvancedModelCard: View {
                             Text(String(format: "%.0f%% of Swift hunks landed inside a unit",
                                         total > 0 ? Double(churn.matchedHunks) / Double(total) * 100 : 0))
                         }
+                        Text("half-life \(Int(model.halfLifeDays)) days")
                     }
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
             }
-        }
-    }
-
-    private var halfLifeCaption: String {
-        switch model.halfLifeDays {
-        case ..<120: return "Short: attribution is most accurate, but function-level churn is sparse enough that change frequency barely registers."
-        case ..<550: return "Balanced: keeps most of the attribution accuracy while change frequency still separates units. Measured sweet spot."
-        default: return "Long: change frequency dominates, but older commits are attributed to lines that have since drifted, so accuracy drops."
         }
     }
 }

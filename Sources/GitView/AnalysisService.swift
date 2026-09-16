@@ -9,6 +9,8 @@ import GitViewParse
 /// toggling a filter re-ranks in milliseconds instead of re-reading git history.
 struct RepositoryAnalysis: Sendable {
     let root: URL
+    let info: RepositoryInfo
+    let branches: [BranchInfo]
     let commits: [Commit]
     let allUnits: [CodeUnit]
     let filesParsed: Int
@@ -38,12 +40,23 @@ enum AnalysisService {
         }.value
         let historyDuration = Date().timeIntervalSince(historyStart)
 
+        // Parsing and repository facts are independent; run them together.
         let parseStart = Date()
-        let report = try await SourceScanner().scan(root: validated)
+        async let scan = SourceScanner().scan(root: validated)
+        let facts = Task.detached(priority: .userInitiated) { () throws -> (RepositoryInfo, [BranchInfo]) in
+            let repository = GitRepository(url: validated)
+            let info = try repository.info()
+            let branches = try repository.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch)
+            return (info, branches)
+        }
+        let report = try await scan
+        let (info, branches) = try await facts.value
         let parseDuration = Date().timeIntervalSince(parseStart)
 
         return RepositoryAnalysis(
             root: validated,
+            info: info,
+            branches: branches,
             commits: commits,
             allUnits: report.units,
             filesParsed: report.filesParsed,

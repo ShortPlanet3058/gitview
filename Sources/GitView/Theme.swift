@@ -2,29 +2,44 @@ import SwiftUI
 import AppKit
 import GitViewCore
 
-/// Design tokens. Values come from a validated palette (warm-neutral surfaces, a blue
-/// accent, a fixed status palette); dark mode uses its own steps, not an inverted light.
+/// Design tokens. Dark is the concept's navy-charcoal; light is a matching cool neutral.
+/// Status colours are a fixed palette and are always paired with an icon and a label.
 enum Theme {
     // Surfaces
-    static let page      = Color.adaptive(light: 0xF9F9F7, dark: 0x0D0D0D)
-    static let surface   = Color.adaptive(light: 0xFCFCFB, dark: 0x1A1A19)
-    static let raised    = Color.adaptive(light: 0xFFFFFF, dark: 0x222221)
-    static let sidebar   = Color.adaptive(light: 0xF2F2EF, dark: 0x121211)
-    static let hairline  = Color.adaptive(light: 0x0B0B0B, dark: 0xFFFFFF, alpha: 0.10)
-    static let gridline  = Color.adaptive(light: 0xE1E0D9, dark: 0x2C2C2A)
-    static let wash      = Color.adaptive(light: 0x0B0B0B, dark: 0xFFFFFF, alpha: 0.05)
+    static let page      = Color.adaptive(light: 0xF4F6FA, dark: 0x0B0F17)
+    static let sidebar   = Color.adaptive(light: 0xEDF0F5, dark: 0x0E131B)
+    static let surface   = Color.adaptive(light: 0xFFFFFF, dark: 0x121824)
+    static let raised    = Color.adaptive(light: 0xFFFFFF, dark: 0x182030)
+    static let hairline  = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.09)
+    static let gridline  = Color.adaptive(light: 0xE2E8F0, dark: 0x1F2937)
+    static let wash      = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.05)
 
     // Ink
-    static let ink       = Color.adaptive(light: 0x0B0B0B, dark: 0xFFFFFF)
-    static let inkSoft   = Color.adaptive(light: 0x52514E, dark: 0xC3C2B7)
-    static let inkMuted  = Color.adaptive(light: 0x898781, dark: 0x898781)
+    static let ink       = Color.adaptive(light: 0x0F172A, dark: 0xE8ECF3)
+    static let inkSoft   = Color.adaptive(light: 0x475569, dark: 0x9AA4B5)
+    static let inkMuted  = Color.adaptive(light: 0x94A3B8, dark: 0x6B7486)
 
-    // Accent (categorical slot 1 / sequential hue)
-    static let accent      = Color.adaptive(light: 0x2A78D6, dark: 0x3987E5)
-    static let accentSoft  = Color.adaptive(light: 0x86B6EF, dark: 0x184F95)
-    static let accentWash  = Color.adaptive(light: 0x2A78D6, dark: 0x3987E5, alpha: 0.12)
+    // Accent
+    static let accent      = Color.adaptive(light: 0x2563EB, dark: 0x3B82F6)
+    static let accentSoft  = Color.adaptive(light: 0x93C5FD, dark: 0x1E3A8A)
+    static let accentWash  = Color.adaptive(light: 0x2563EB, dark: 0x3B82F6, alpha: 0.14)
+    static let onAccent    = Color.white
 
-    // Status palette — fixed, never themed, always paired with icon + label.
+    // Decorative tints for stat-card icons (identity, not data): validated categorical steps.
+    enum Tint { case blue, aqua, violet, orange, yellow, magenta }
+    static func tint(_ tint: Tint) -> Color {
+        switch tint {
+        case .blue: return Color.adaptive(light: 0x2A78D6, dark: 0x3987E5)
+        case .aqua: return Color.adaptive(light: 0x1BAF7A, dark: 0x199E70)
+        case .violet: return Color.adaptive(light: 0x4A3AA7, dark: 0x9085E9)
+        case .orange: return Color.adaptive(light: 0xEB6834, dark: 0xD95926)
+        case .yellow: return Color.adaptive(light: 0xEDA100, dark: 0xC98500)
+        case .magenta: return Color.adaptive(light: 0xE87BA4, dark: 0xD55181)
+        }
+    }
+    static let avatarTints: [Tint] = [.blue, .aqua, .violet, .orange, .yellow, .magenta]
+
+    // Status palette — fixed, never themed.
     static let critical = Color(hex: 0xD03B3B)
     static let serious  = Color(hex: 0xEC835A)
     static let warning  = Color(hex: 0xFAB219)
@@ -36,6 +51,14 @@ enum Theme {
         case .high: return serious
         case .elevated: return warning
         case .low: return good
+        }
+    }
+
+    static func color(for status: RepositoryHealth.Status) -> Color {
+        switch status {
+        case .good: return good
+        case .warning: return warning
+        case .bad: return critical
         }
     }
 
@@ -55,13 +78,13 @@ enum Theme {
     }
 
     enum Text {
-        static let display  = Font.system(size: 26, weight: .semibold)
-        static let title    = Font.system(size: 19, weight: .semibold)
+        static let display  = Font.system(size: 24, weight: .semibold)
+        static let title    = Font.system(size: 18, weight: .semibold)
         static let heading  = Font.system(size: 14, weight: .semibold)
         static let body     = Font.system(size: 13)
         static let bodyBold = Font.system(size: 13, weight: .semibold)
         static let caption  = Font.system(size: 11)
-        static let hero     = Font.system(size: 30, weight: .semibold)   // proportional figures on purpose
+        static let hero     = Font.system(size: 24, weight: .semibold)
         static let mono     = Font.system(size: 11, design: .monospaced)
     }
 }

@@ -25,7 +25,7 @@ struct HotspotsScreen: View {
                     .padding(.horizontal, Theme.Space.xxl)
                     .padding(.bottom, Theme.Space.xl)
             } else {
-                ScrollView {
+                ScrollColumn {
                     LazyVStack(spacing: Theme.Space.s) {
                         ForEach(shown) { row in
                             HotspotCard(row: row, compact: false, selected: model.selectedUnitID == row.id) {

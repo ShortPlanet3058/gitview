@@ -1,28 +1,31 @@
 import SwiftUI
 import GitViewCore
 
-/// Sidebar · main · optional detail, drawn by hand so the look is the app's own.
+/// Sidebar · top bar + page · optional detail, drawn by hand so the look is the app's own.
 struct AppShell: View {
     @EnvironmentObject private var model: AnalysisModel
 
     var body: some View {
         HStack(spacing: 0) {
             SidebarView()
-                .frame(width: 224)
+                .frame(width: 216)
             Rectangle().fill(Theme.hairline).frame(width: 1)
-            main
-                .frame(minWidth: 560, maxWidth: .infinity)
-            if let detail {
-                Rectangle().fill(Theme.hairline).frame(width: 1)
-                detail
-                    .frame(width: 420)
-                    .transition(.move(edge: .trailing))
+            VStack(spacing: 0) {
+                TopBar()
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                HStack(spacing: 0) {
+                    main.frame(minWidth: 560, maxWidth: .infinity)
+                    if let detail {
+                        Rectangle().fill(Theme.hairline).frame(width: 1)
+                        detail.frame(width: 420)
+                    }
+                }
             }
         }
         .background(Theme.page)
         .ignoresSafeArea()
         .onAppear(perform: applyLaunchArguments)
-        .animation(.easeInOut(duration: 0.18), value: model.selectedUnitID != nil || model.selectedPairID != nil)
+        .sheet(isPresented: $model.showSettings) { SettingsSheet().environmentObject(model) }
     }
 
     @ViewBuilder
@@ -34,8 +37,14 @@ struct AppShell: View {
         case .loaded:
             switch model.screen {
             case .overview: OverviewScreen()
+            case .commits: CommitsScreen()
+            case .branches: BranchesScreen()
+            case .contributors: ContributorsScreen()
+            case .files: FilesScreen()
+            case .activity: ActivityScreen()
             case .hotspots: HotspotsScreen()
             case .coupling: CouplingScreen()
+            case .statistics: StatisticsScreen()
             }
         }
     }
@@ -45,24 +54,27 @@ struct AppShell: View {
         switch model.screen {
         case .coupling:
             if let pair = model.selectedPair { return AnyView(PairDetailPanel(row: pair).id(pair.id)) }
-            // Clicking a node in the graph selects a unit rather than a pair.
+            if let unit = model.selectedUnit, let row = model.selectedRow {
+                return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
+            }
+        case .overview, .hotspots, .files:
             if let unit = model.selectedUnit, let row = model.selectedRow {
                 return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
             }
         default:
-            if let unit = model.selectedUnit, let row = model.selectedRow {
-                return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
-            }
+            break
         }
         return nil
     }
 
-    /// `GitView --repo <path> [--select <unit>] [--screen overview|hotspots|coupling] [--advanced]`.
+    /// `GitView --repo <path> [--screen <name>] [--mode standard|advanced] [--view list|graph]
+    /// [--select <unit>] [--select-pair <name>]`.
     ///
-    /// The repository is a flag, not a bare path, on purpose: AppKit treats a bare path in
-    /// argv as a document to open at launch, and SwiftUI then withholds the WindowGroup's
-    /// default window — the app runs with no window at all. Measured by bisecting the
-    /// arguments; the flag forms were all harmless.
+    /// Every flag takes a value, on purpose. AppKit pairs `-key value` from argv; a valueless
+    /// flag followed by another pair leaves a token it treats as a bare argument (a document
+    /// to open), and SwiftUI then withholds the WindowGroup's default window — the app runs
+    /// with no window at all. Measured by bisecting: `--simple --screen overview` is
+    /// windowless, `--screen overview --simple` is not.
     private func applyLaunchArguments() {
         guard case .idle = model.state else { return }
         DebugScreenshot.scheduleIfRequested(model: model)
@@ -73,16 +85,16 @@ struct AppShell: View {
         if let flag = arguments.firstIndex(of: "--select-pair"), flag + 1 < arguments.count {
             model.pendingPairSelection = arguments[flag + 1]
         }
-        if let flag = arguments.firstIndex(of: "--screen"), flag + 1 < arguments.count {
-            switch arguments[flag + 1] {
-            case "hotspots": model.screen = .hotspots
-            case "coupling": model.screen = .coupling
-            default: model.screen = .overview
-            }
+        if let flag = arguments.firstIndex(of: "--screen"), flag + 1 < arguments.count,
+           let screen = AnalysisModel.Screen(rawValue: arguments[flag + 1]) {
+            model.screen = screen
         }
-        if arguments.contains("--advanced") { model.advanced = true }
-        if arguments.contains("--graph") { model.couplingViewMode = .graph }
-        if arguments.contains("--simple") { model.advanced = false }
+        if let flag = arguments.firstIndex(of: "--mode"), flag + 1 < arguments.count {
+            model.advanced = arguments[flag + 1] == "advanced"
+        }
+        if let flag = arguments.firstIndex(of: "--view"), flag + 1 < arguments.count {
+            model.couplingViewMode = arguments[flag + 1] == "graph" ? .graph : .list
+        }
         if let flag = arguments.firstIndex(of: "--repo"), flag + 1 < arguments.count {
             let path = (arguments[flag + 1] as NSString).expandingTildeInPath
             var isDirectory: ObjCBool = false
@@ -93,19 +105,99 @@ struct AppShell: View {
     }
 }
 
+// MARK: - Top bar
+
+struct TopBar: View {
+    @EnvironmentObject private var model: AnalysisModel
+
+    var body: some View {
+        HStack(spacing: Theme.Space.m) {
+            if let analysis = model.analysis {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(analysis.root.lastPathComponent).font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                    Text(abbreviated(analysis.root.path)).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
+                    Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Theme.inkSoft)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+            } else {
+                Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            }
+            Spacer()
+            ModeSwitch()
+            Spacer()
+            if let analysis = model.analysis {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([analysis.root])
+                } label: {
+                    Label("Open in Finder", systemImage: "folder")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .padding(.horizontal, Theme.Space.xl)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(height: 64)
+    }
+
+    private func abbreviated(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+}
+
+/// Standard / Advanced. Standard is the essentials; Advanced adds pages and every metric.
+struct ModeSwitch: View {
+    @EnvironmentObject private var model: AnalysisModel
+    var body: some View {
+        HStack(spacing: 2) {
+            option("Standard", selected: !model.advanced) { model.advanced = false }
+            option("Advanced", selected: model.advanced) { model.advanced = true }
+        }
+        .padding(3)
+        .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous).strokeBorder(Theme.hairline))
+        .help("Standard shows the essentials. Advanced adds Statistics and every metric and control.")
+    }
+
+    private func option(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(selected ? Theme.onAccent : Theme.inkSoft)
+                .padding(.horizontal, 14).padding(.vertical, 5)
+                .background(selected ? Theme.accent : .clear,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Sidebar
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AnalysisModel
 
+    private var repositoryScreens: [AnalysisModel.Screen] { [.overview, .commits, .branches, .contributors, .files, .activity] }
+    private var analysisScreens: [AnalysisModel.Screen] {
+        model.advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Room for the traffic lights under the hidden title bar.
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path.ecg.rectangle")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            HStack(spacing: 9) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.onAccent)
+                    .frame(width: 26, height: 26)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text("GitView").font(Theme.Text.title).foregroundStyle(Theme.ink)
             }
             .padding(.top, 40)
             .padding(.horizontal, Theme.Space.l)
@@ -115,16 +207,12 @@ struct SidebarView: View {
                 .padding(.horizontal, Theme.Space.m)
                 .padding(.bottom, Theme.Space.l)
 
-            VStack(spacing: 2) {
-                NavButton(title: "Overview", systemImage: "square.grid.2x2", selected: model.screen == .overview) {
-                    model.screen = .overview
-                }
-                NavButton(title: "Hotspots", systemImage: "flame", selected: model.screen == .hotspots) {
-                    model.screen = .hotspots
-                }
-                NavButton(title: "Change together", systemImage: "link", selected: model.screen == .coupling) {
-                    model.screen = .coupling
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(repositoryScreens, id: \.self, content: navButton)
+                Text("ANALYSIS")
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+                    .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.l).padding(.bottom, 4)
+                ForEach(analysisScreens, id: \.self, content: navButton)
             }
             .padding(.horizontal, Theme.Space.s)
             .disabled(model.analysis == nil)
@@ -132,21 +220,24 @@ struct SidebarView: View {
 
             Spacer()
 
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                HairlineDivider()
-                Toggle(isOn: $model.advanced) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Advanced").font(Theme.Text.body).foregroundStyle(Theme.ink)
-                        Text(model.advanced ? "All metrics and controls" : "Plain-language view")
-                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                    }
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                HairlineDivider().padding(.bottom, Theme.Space.s)
+                NavButton(title: "Settings", systemImage: "gearshape", selected: false) { model.showSettings = true }
+                    .disabled(model.analysis == nil)
+                Text(model.advanced ? "Advanced · in-depth analysis" : "Standard · essential information")
+                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    .padding(.horizontal, Theme.Space.m).padding(.top, 4)
             }
-            .padding(Theme.Space.l)
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.bottom, Theme.Space.l)
         }
         .background(Theme.sidebar)
+    }
+
+    private func navButton(_ screen: AnalysisModel.Screen) -> some View {
+        NavButton(title: screen.title, systemImage: screen.symbol, selected: model.screen == screen) {
+            model.screen = screen
+        }
     }
 
     @ViewBuilder
@@ -156,10 +247,9 @@ struct SidebarView: View {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: "folder.fill").foregroundStyle(Theme.inkMuted)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(analysis.root.lastPathComponent).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                        Text("\(analysis.commits.count.formatted()) commits")
-                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        Text(analysis.root.lastPathComponent).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
+                        Text(analysis.root.deletingLastPathComponent().lastPathComponent + "/")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).lineLimit(1)
                     }
                     Spacer()
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 9)).foregroundStyle(Theme.inkMuted)
@@ -184,25 +274,26 @@ struct ScreenHeader: View {
     let title: String
     var subtitle: String? = nil
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title).font(Theme.Text.display).foregroundStyle(Theme.ink)
             if let subtitle {
                 Text(subtitle).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.top, 36)
     }
 }
 
-/// Scrollable page with consistent gutters.
+/// Scrollable page with consistent gutters (a fixed stack under static rendering).
 struct Page<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.xl) { content }
-                .padding(.horizontal, Theme.Space.xxl)
+        ScrollColumn {
+            VStack(alignment: .leading, spacing: Theme.Space.l) { content }
+                .padding(.horizontal, Theme.Space.xl)
+                .padding(.top, Theme.Space.xl)
                 .padding(.bottom, Theme.Space.xxl)
-                .frame(maxWidth: 980, alignment: .leading)
+                .frame(maxWidth: 1180, alignment: .leading)
         }
     }
 }
@@ -216,16 +307,18 @@ struct WelcomeScreen: View {
     var body: some View {
         VStack(spacing: Theme.Space.xl) {
             Spacer()
-            Image(systemName: "waveform.path.ecg.rectangle")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(Theme.accent)
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 26, weight: .bold))
+                .foregroundStyle(Theme.onAccent)
+                .frame(width: 64, height: 64)
+                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             VStack(spacing: Theme.Space.s) {
-                Text("See where a codebase is fragile").font(Theme.Text.display).foregroundStyle(Theme.ink)
-                Text("GitView reads a project's git history and points at the individual functions that are "
-                     + "both complicated and changed often — the places where bugs tend to appear.")
+                Text("Understand any repository. Faster.").font(Theme.Text.display).foregroundStyle(Theme.ink)
+                Text("GitView reads a project's git history and shows you who works on it, how it changes, "
+                     + "and which functions are both complicated and changed often — where bugs tend to appear.")
                     .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 440)
+                    .frame(maxWidth: 460)
             }
             VStack(spacing: Theme.Space.m) {
                 Button("Choose a repository…") { chooseRepository(into: model) }
@@ -284,5 +377,59 @@ struct FailedScreen: View {
                 .buttonStyle(SecondaryButtonStyle())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Settings (model parameters live here, not on every page)
+
+struct SettingsSheet: View {
+    @EnvironmentObject private var model: AnalysisModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
+            HStack {
+                Text("Settings").font(Theme.Text.title).foregroundStyle(Theme.ink)
+                Spacer()
+                Button("Done") { model.showSettings = false }.buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+            }
+            Card {
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    CardHeader(title: "Risk model",
+                               info: "A function's risk is its complexity combined with how much it has changed "
+                                   + "recently. The half-life sets how fast a commit's weight fades: at 365 days a "
+                                   + "year-old commit counts half as much as one made today.")
+                    HStack {
+                        Text("Half-life").font(Theme.Text.body).foregroundStyle(Theme.ink)
+                        Spacer()
+                        Text("\(Int(model.halfLifeDays)) days").font(Theme.Text.body.monospacedDigit()).foregroundStyle(Theme.inkSoft)
+                    }
+                    Slider(value: $model.halfLifeDays, in: 30...1095, step: 5)
+                    Text(halfLifeCaption).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    CardHeader(title: "What counts")
+                    Toggle("Exclude test code from hotspots", isOn: $model.excludeTests).toggleStyle(.switch)
+                    Stepper("Ignore functions with fewer than \(model.minimumCommits) commit\(model.minimumCommits == 1 ? "" : "s")",
+                            value: $model.minimumCommits, in: 1...25)
+                    Stepper("Pairs need at least \(model.minSharedCommits) shared commits",
+                            value: $model.minSharedCommits, in: 2...20)
+                }
+                .font(Theme.Text.body)
+            }
+        }
+        .padding(Theme.Space.xl)
+        .frame(width: 520)
+        .background(Theme.page)
+    }
+
+    private var halfLifeCaption: String {
+        switch model.halfLifeDays {
+        case ..<120: return "Short: most accurate attribution, but function-level churn is sparse enough that change frequency barely registers."
+        case ..<550: return "Balanced: keeps most of the attribution accuracy while change frequency still separates functions. Measured sweet spot."
+        default: return "Long: change frequency dominates, but older commits are attributed to lines that have since drifted, so accuracy drops."
+        }
     }
 }

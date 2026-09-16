@@ -15,8 +15,37 @@ final class AnalysisModel: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
-    enum Screen: Hashable { case overview, hotspots, coupling }
+    enum Screen: String, Hashable, CaseIterable {
+        case overview, commits, branches, contributors, files, activity, hotspots, coupling, statistics
+        var title: String {
+            switch self {
+            case .overview: return "Overview"
+            case .commits: return "Commits"
+            case .branches: return "Branches"
+            case .contributors: return "Contributors"
+            case .files: return "Files"
+            case .activity: return "Activity"
+            case .hotspots: return "Hotspots"
+            case .coupling: return "Change together"
+            case .statistics: return "Statistics"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .overview: return "square.grid.2x2"
+            case .commits: return "clock.arrow.circlepath"
+            case .branches: return "arrow.triangle.branch"
+            case .contributors: return "person.2"
+            case .files: return "doc.text"
+            case .activity: return "chart.bar"
+            case .hotspots: return "flame"
+            case .coupling: return "link"
+            case .statistics: return "function"
+            }
+        }
+    }
     @Published var screen: Screen = .overview
+    @Published var showSettings = false
 
     /// Progressive disclosure: off shows plain-language cards; on adds every metric, the
     /// sortable table, the half-life slider and model notes. Persisted across launches.
@@ -34,6 +63,9 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var rows: [RiskRow] = []
     @Published private(set) var rowsByID: [UUID: RiskRow] = [:]
     @Published private(set) var levelCounts: [RiskLevel: Int] = [:]
+    @Published private(set) var health: RepositoryHealth?
+    /// Derived once per load; independent of the risk model's parameters.
+    @Published private(set) var contributors: [Contributor] = []
     /// Prose for the window "recent changes" are counted in: two half-lives, so it tracks
     /// the model. "the last 2 years" at the default 365-day half-life.
     @Published private(set) var recentWindowLabel = "the last 2 years"
@@ -130,6 +162,7 @@ final class AnalysisModel: ObservableObject {
             do {
                 let analysis = try await AnalysisService.load(root: url)
                 self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
+                self.contributors = ContributorStats.compute(commits: analysis.commits)
                 self.state = .loaded(analysis)
                 self.rebuild()
             } catch {
@@ -192,6 +225,21 @@ final class AnalysisModel: ObservableObject {
         }
         directoryRisk = byDirectory.map { ($0.key, $0.value.score, $0.value.units) }
             .sorted { $0.1 > $1.1 }
+
+        // Health: the four repository checks plus GitView's own "complex code under change".
+        let changed = built.filter { $0.recentCommits > 0 }
+        let complex = changed.filter { $0.complexity >= 20 }
+        let ninetyDays = now.addingTimeInterval(-90 * 86_400)
+        let stale = analysis.branches.filter { !$0.isDefault && !$0.isMerged && $0.date < ninetyDays }.count
+        health = RepositoryHealth.assess(.init(
+            lastCommit: analysis.commits.map(\.date).max(),
+            activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays),
+            staleBranches: stale,
+            totalBranches: analysis.branches.count,
+            largeFiles: analysis.info.inventory.largeFiles.count,
+            complexChangedShare: changed.isEmpty ? nil : Double(complex.count) / Double(changed.count),
+            complexChangedCount: complex.count,
+            now: now))
 
         let query = searchText.trimmingCharacters(in: .whitespaces)
         if !query.isEmpty {
