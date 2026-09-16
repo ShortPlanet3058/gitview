@@ -58,6 +58,9 @@ struct AppShell: View {
         if let commit = model.selectedCommit {
             return AnyView(CommitDetailPanel(commit: commit).id(commit.sha))
         }
+        if model.screen == .contributors, let author = model.selectedAuthor {
+            return AnyView(AuthorDetailPanel(author: author).id(author))
+        }
         switch model.screen {
         case .coupling:
             if let pair = model.selectedPair { return AnyView(PairDetailPanel(row: pair).id(pair.id)) }

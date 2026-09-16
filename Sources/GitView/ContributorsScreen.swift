@@ -12,7 +12,8 @@ struct ContributorsScreen: View {
         let top = people.map(\.share).max() ?? 1
         Page {
             HStack(alignment: .top) {
-                ScreenHeader(title: "Contributors", subtitle: "People who have contributed to this repository.")
+                ScreenHeader(title: "Contributors",
+                             subtitle: "Who works on this, and who to ask about what.")
                 Spacer()
                 if model.advanced {
                     Button { exportCSV(people) } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
@@ -24,12 +25,17 @@ struct ContributorsScreen: View {
                 Spacer()
                 Text("\(people.count) people").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
+            if let ownership = model.ownership {
+                KnowledgeRiskCard(index: ownership)
+            }
+
             Card(padding: Theme.Space.s) {
                 VStack(spacing: 0) {
                     TableHeading(columns: [("Name", nil, .leading), ("Commits", 80, .trailing), ("Share", 170, .leading),
                                            ("First commit", 110, .leading), ("Last commit", 110, .leading)])
                     HairlineDivider()
                     ForEach(people.prefix(limit)) { person in
+                        Button { model.selectedAuthor = person.name } label: {
                         HStack(spacing: Theme.Space.m) {
                             HStack(spacing: Theme.Space.s) {
                                 Avatar(name: person.name, size: 26)
@@ -51,6 +57,10 @@ struct ContributorsScreen: View {
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft).frame(width: 110, alignment: .leading)
                         }
                         .padding(.horizontal, Theme.Space.m).padding(.vertical, 8)
+                        .background(model.selectedAuthor == person.name ? Theme.accentWash : .clear)
+                        .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         if person.id != people.prefix(limit).last?.id { HairlineDivider() }
                     }
                     if people.count > limit {

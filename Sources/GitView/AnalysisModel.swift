@@ -77,6 +77,13 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var health: RepositoryHealth?
     /// What changed since the last time this repository was opened.
     @Published private(set) var catchUp: CatchUp?
+    /// Who has changed what, built once from history — independent of the risk filters.
+    @Published private(set) var ownership: OwnershipIndex?
+    /// The contributor whose detail panel is open.
+    @Published var selectedAuthor: String?
+    /// Line-level ownership, computed on demand because it costs a process per file.
+    @Published private(set) var blame: [String: BlameOwnership] = [:]
+    @Published private(set) var blameInFlight: Set<String> = []
     /// Who "you" are. Taken from git config, overridable because the config name and the
     /// name in the history do not always agree.
     @Published var identityName: String = UserDefaults.standard.string(forKey: "identityName") ?? "" {
@@ -142,6 +149,9 @@ final class AnalysisModel: ObservableObject {
     var pendingPairSelection: String?
     /// Commit prefix from `--select-commit`, resolved once history is loaded.
     var pendingCommitSelection: String?
+    /// Path prefix from `--select-file`, consumed by the Files screen.
+    @Published var pendingFileSelection: String?
+    var pendingAuthorSelection: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -193,6 +203,9 @@ final class AnalysisModel: ObservableObject {
         pendingSelection = value("--select")
         pendingPairSelection = value("--select-pair")
         pendingCommitSelection = value("--select-commit")
+        // Pending rather than direct: `open` clears every selection, and it runs after this.
+        pendingAuthorSelection = value("--select-author")
+        pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
         if let view = value("--view") { couplingViewMode = view == "graph" ? .graph : .list }
@@ -220,6 +233,10 @@ final class AnalysisModel: ObservableObject {
         selectedPairID = nil
         selectedUnitID = nil
         selectedCommitSHA = nil
+        selectedAuthor = nil
+        ownership = nil
+        blame = [:]
+        blameInFlight = []
         histories = [:]
         loadingHistories = []
 
@@ -236,6 +253,15 @@ final class AnalysisModel: ObservableObject {
                 self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
                 self.contributors = ContributorStats.compute(commits: analysis.commits)
                 self.rebuildCatchUp(for: analysis)
+                if let wanted = self.pendingAuthorSelection {
+                    self.pendingAuthorSelection = nil
+                    self.selectedAuthor = self.contributors.first {
+                        $0.name == wanted || $0.name.localizedCaseInsensitiveContains(wanted)
+                    }?.name
+                }
+                self.ownership = OwnershipBuilder.build(
+                    commits: analysis.commits,
+                    currentPaths: Set(analysis.info.inventory.files.map(\.path)))
                 if let prefix = self.pendingCommitSelection {
                     self.pendingCommitSelection = nil
                     self.selectedCommitSHA = analysis.commits.first {
@@ -455,6 +481,21 @@ final class AnalysisModel: ObservableObject {
         guard let analysis, let head = analysis.commits.first?.sha else { return }
         VisitLog.record(headSHA: head, to: analysis.root)
         rebuildCatchUp()
+    }
+
+    /// Computes line-level ownership for one file, once. About a quarter of a second, so it
+    /// is only ever done for the file being looked at.
+    func loadBlame(for path: String) {
+        guard let analysis, blame[path] == nil, !blameInFlight.contains(path) else { return }
+        blameInFlight.insert(path)
+        let root = analysis.root
+        Task.detached(priority: .userInitiated) {
+            let result = try? GitRepository(url: root).blame(path: path)
+            await MainActor.run {
+                if let result { self.blame[path] = result }
+                self.blameInFlight.remove(path)
+            }
+        }
     }
 
     /// Re-reads `git status`. Cheap, so it runs whenever the app comes forward.

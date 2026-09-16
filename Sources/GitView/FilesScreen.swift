@@ -9,10 +9,28 @@ struct FilesScreen: View {
     @State private var selectedPath: String? = nil
     @State private var query = ""
 
+    /// Every folder on the way to a path, so a preselected file is visible.
+    private static func ancestors(of path: String) -> Set<String> {
+        var result = Set<String>()
+        var parts = path.split(separator: "/").dropLast()
+        while !parts.isEmpty {
+            result.insert(parts.joined(separator: "/"))
+            parts = parts.dropLast()
+        }
+        return result
+    }
+
     var body: some View {
         if let analysis = model.analysis {
             let tree = FileTree(files: analysis.info.inventory.files, rows: model.rows)
-            let visible = tree.visibleNodes(expanded: expanded, filter: query)
+            // Resolved during evaluation rather than by a side effect: an offscreen render
+            // completes before any async work could land.
+            let pending = model.pendingFileSelection.flatMap { wanted in
+                tree.node(at: wanted)?.path ?? tree.firstNode(matching: wanted)?.path
+            }
+            let chosen = selectedPath ?? pending
+            let openFolders = expanded.union(pending.map(Self.ancestors) ?? [])
+            let visible = tree.visibleNodes(expanded: openFolders, filter: query)
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     ScreenHeader(title: "Files", subtitle: "Explore the repository structure. Tracked files only.")
@@ -30,7 +48,7 @@ struct FilesScreen: View {
                         ScrollColumn {
                             LazyVStack(spacing: 0) {
                                 ForEach(visible) { node in
-                                    FileTreeRow(node: node, expanded: expanded.contains(node.path), selected: selectedPath == node.path) {
+                                    FileTreeRow(node: node, expanded: openFolders.contains(node.path), selected: chosen == node.path) {
                                         if node.isDirectory {
                                             if expanded.contains(node.path) { expanded.remove(node.path) } else { expanded.insert(node.path) }
                                         }
@@ -41,7 +59,7 @@ struct FilesScreen: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    FileInfoCard(node: selectedPath.flatMap { tree.node(at: $0) } ?? tree.root, root: analysis.root)
+                    FileInfoCard(node: chosen.flatMap { tree.node(at: $0) } ?? tree.root, root: analysis.root)
                         .frame(width: 320)
                 }
                 .padding(.horizontal, Theme.Space.xl).padding(.bottom, Theme.Space.xl)
@@ -122,6 +140,12 @@ struct FileTree {
     }
 
     func node(at path: String) -> Node? { index[path] }
+
+    /// First node whose path contains `fragment`, for `--select-file`.
+    func firstNode(matching fragment: String) -> Node? {
+        index.values.filter { !$0.isDirectory && $0.path.contains(fragment) }
+            .min { $0.path.count < $1.path.count }
+    }
 
     /// Depth-first list of rows to draw, honouring expansion; a filter shows every match
     /// with its ancestors expanded.
@@ -227,6 +251,14 @@ struct FileInfoCard: View {
                             .buttonStyle(SecondaryButtonStyle())
                     }
                 }
+                if let ownership = model.ownership {
+                    HairlineDivider()
+                    OwnershipSection(
+                        filePath: node.isDirectory ? nil : node.path,
+                        ownership: node.isDirectory ? nil : ownership.ownership(of: node.path),
+                        directory: node.isDirectory ? ownership.ownership(ofDirectory: node.path) : nil)
+                }
+
                 let rows = hotspotRows
                 if !rows.isEmpty {
                     HairlineDivider()
