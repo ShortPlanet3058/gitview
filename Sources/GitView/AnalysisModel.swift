@@ -83,6 +83,13 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var ownership: OwnershipIndex?
     /// The contributor whose detail panel is open.
     @Published var selectedAuthor: String?
+    // Viewing one file's diff. The request says what to diff; the result is loaded async.
+    @Published var diffRequest: DiffRequest? { didSet { loadDiff() } }
+    @Published private(set) var loadedDiff: FileDiff?
+    @Published private(set) var diffInFlight = false
+    /// Lines of context around each change, adjustable from the viewer.
+    @Published var diffContext: Int = 3 { didSet { loadDiff() } }
+
     // Search. In-memory results are recomputed on every keystroke because they are just
     // array scans; the two git-backed searches are debounced behind them.
     @Published var globalSearch: String = "" {
@@ -177,6 +184,7 @@ final class AnalysisModel: ObservableObject {
     var pendingAuthorSelection: String?
     var pendingCompare: String?
     var pendingSearch: String?
+    var pendingDiff: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -232,6 +240,7 @@ final class AnalysisModel: ObservableObject {
         pendingAuthorSelection = value("--select-author")
         pendingCompare = value("--compare")   // "from..to"
         pendingSearch = value("--search")
+        pendingDiff = value("--diff")          // "<sha>:<path>" or "working:<path>"
         pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
@@ -261,6 +270,7 @@ final class AnalysisModel: ObservableObject {
         selectedUnitID = nil
         selectedCommitSHA = nil
         selectedAuthor = nil
+        diffRequest = nil
         ownership = nil
         blame = [:]
         blameInFlight = []
@@ -298,6 +308,19 @@ final class AnalysisModel: ObservableObject {
                 self.state = .loaded(analysis)
                 self.rebuild()
                 if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
+                if let spec = self.pendingDiff {
+                    self.pendingDiff = nil
+                    if let colon = spec.firstIndex(of: ":") {
+                        let ref = String(spec[spec.startIndex..<colon])
+                        let path = String(spec[spec.index(after: colon)...])
+                        if ref == "working" {
+                            self.showDiff(.workingTree(staged: false), path: path, title: "Uncommitted changes")
+                        } else {
+                            self.selectedCommitSHA = ref
+                            self.showDiff(.commit(sha: ref), path: path, title: ref)
+                        }
+                    }
+                }
                 // After `state` is set: runComparison reads `analysis`, which is nil until then.
                 if let spec = self.pendingCompare {
                     self.pendingCompare = nil
@@ -520,6 +543,29 @@ final class AnalysisModel: ObservableObject {
         VisitLog.record(headSHA: head, to: analysis.root)
         rebuildCatchUp()
     }
+
+    private func loadDiff() {
+        guard let analysis, let request = diffRequest else {
+            loadedDiff = nil; diffInFlight = false; return
+        }
+        diffInFlight = true
+        let root = analysis.root
+        let context = diffContext
+        Task.detached(priority: .userInitiated) {
+            let diff = try? GitRepository(url: root).diff(request.source, path: request.path, context: context)
+            await MainActor.run {
+                guard self.diffRequest == request else { return }   // superseded by a newer click
+                self.loadedDiff = diff
+                self.diffInFlight = false
+            }
+        }
+    }
+
+    func showDiff(_ source: DiffSource, path: String, title: String) {
+        diffRequest = DiffRequest(source: source, path: path, title: title)
+    }
+
+    func closeDiff() { diffRequest = nil }
 
     private func runSearch() {
         deepSearchTask?.cancel()

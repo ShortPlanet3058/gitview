@@ -130,6 +130,10 @@ struct CommitDetailPanel: View {
                 } else {
                     VStack(spacing: 0) {
                         ForEach(commit.fileChanges.prefix(60), id: \.path) { change in
+                            Button {
+                                model.showDiff(.commit(sha: commit.sha), path: change.path,
+                                               title: commit.subject.isEmpty ? commit.sha : commit.subject)
+                            } label: {
                             HStack(spacing: Theme.Space.s) {
                                 Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
                                 VStack(alignment: .leading, spacing: 1) {
@@ -143,8 +147,12 @@ struct CommitDetailPanel: View {
                                 Spacer()
                                 Text("\(change.hunks.count) hunk\(change.hunks.count == 1 ? "" : "s")")
                                     .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Theme.inkMuted)
                             }
-                            .padding(.vertical, 5)
+                            .padding(.vertical, 5).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                             if change.path != commit.fileChanges.prefix(60).last?.path { HairlineDivider() }
                         }
                     }

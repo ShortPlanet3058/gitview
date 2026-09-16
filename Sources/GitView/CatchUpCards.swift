@@ -168,15 +168,31 @@ struct WorkingStateCard: View {
                                 state.stashes.first.map { RiskExplanation.relative($0.date, now: Date()) } ?? "")
                         }
                     }
-                    if !changedPaths.isEmpty {
+                    if !changed.isEmpty {
                         HairlineDivider()
                         VStack(alignment: .leading, spacing: 2) {
-                            ForEach(changedPaths.prefix(4), id: \.self) { path in
-                                Text(path).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                                    .lineLimit(1).truncationMode(.head)
+                            ForEach(changed.prefix(4)) { file in
+                                Button {
+                                    // Staged changes and working-tree edits are different
+                                    // diffs; show whichever this file actually has.
+                                    model.showDiff(.workingTree(staged: file.unstaged == .unchanged),
+                                                   path: file.path,
+                                                   title: file.unstaged == .unchanged ? "Staged changes"
+                                                                                      : "Uncommitted changes")
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(file.path).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                                            .lineLimit(1).truncationMode(.head)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                                            .foregroundStyle(Theme.inkMuted)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                             }
-                            if changedPaths.count > 4 {
-                                Text("and \(changedPaths.count - 4) more…")
+                            if changed.count > 4 {
+                                Text("and \(changed.count - 4) more…")
                                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                             }
                         }
@@ -186,8 +202,8 @@ struct WorkingStateCard: View {
         }
     }
 
-    private var changedPaths: [String] {
-        state.files.filter { !$0.isUntracked }.map(\.path)
+    private var changed: [WorkingState.FileStatus] {
+        state.files.filter { !$0.isUntracked }
     }
 
     private func row(_ symbol: String, _ tint: Color, _ title: String, _ detail: String) -> some View {

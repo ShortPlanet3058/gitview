@@ -186,6 +186,11 @@ struct ReleasesScreen: View {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             Text("Most changed files").font(Theme.Text.heading).foregroundStyle(Theme.ink)
                             ForEach(comparison.deltas.prefix(8)) { delta in
+                                Button {
+                                    model.showDiff(.range(from: comparison.from, to: comparison.to),
+                                                   path: delta.path,
+                                                   title: "\(comparison.from) → \(comparison.to)")
+                                } label: {
                                 HStack(spacing: Theme.Space.s) {
                                     // Middle, not head: two modules can share a filename, and
                                     // head-truncation makes distinct paths look identical.
@@ -201,6 +206,9 @@ struct ReleasesScreen: View {
                                             .foregroundStyle(Theme.critical)
                                     }
                                 }
+                                .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .frame(width: 320, alignment: .leading)

@@ -38,7 +38,8 @@ struct AppShell: View {
         case .loading(let stage): LoadingScreen(stage: stage)
         case .failed(let message): FailedScreen(message: message)
         case .loaded:
-            if model.isSearching { SearchScreen() } else {
+            if let request = model.diffRequest { DiffViewer(request: request) }
+            else if model.isSearching { SearchScreen() } else {
             switch model.screen {
             case .overview: OverviewScreen()
             case .commits: CommitsScreen()
