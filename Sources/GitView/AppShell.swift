@@ -220,17 +220,83 @@ struct FreshnessBanner: View {
     }
 }
 
+/// The repository GitView is showing, and the control for changing it.
+///
+/// It used to be the repository's name in plain text here and the same name again in a chip
+/// in the sidebar: the most prominent words on screen, looking like a page title, saying
+/// nothing about what they were. People reasonably read "nio" as a heading rather than as
+/// "the project you are looking at". Now it says so, in one place, and looks like the
+/// pull-down it has always been.
+struct RepositoryPicker: View {
+    @EnvironmentObject private var model: AnalysisModel
+    let analysis: RepositoryAnalysis
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            let others = RecentRepositories.all().filter {
+                $0.standardizedFileURL != analysis.root.standardizedFileURL
+            }
+            Section("Switch to") {
+                // The current one is listed too, ticked, so the menu answers "which am I
+                // looking at" as well as "what else is there".
+                Label(analysis.root.lastPathComponent, systemImage: "checkmark")
+                ForEach(others, id: \.path) { url in
+                    Button {
+                        model.open(url: url)
+                    } label: {
+                        Text(url.lastPathComponent)
+                        Text(url.deletingLastPathComponent().path)
+                    }
+                }
+            }
+            Button("Open Repository…") { chooseRepository(into: model) }
+            Divider()
+            Button("Reveal in Finder") { revealInFinder(analysis.root) }
+            Button("Open in Terminal") { openInTerminal(analysis.root) }
+            Button("Copy Path") { copyToPasteboard(analysis.root.path) }
+        } label: {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("REPOSITORY")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                        .tracking(0.6)
+                    Text(analysis.root.lastPathComponent)
+                        .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.inkMuted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(hovering ? Theme.raised : Theme.surface,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(hovering ? Theme.accent.opacity(0.5) : Theme.hairline))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help("\(analysis.root.path)\nClick to switch repository, or ⌘O to open another")
+    }
+}
+
 struct TopBar: View {
     @EnvironmentObject private var model: AnalysisModel
 
     var body: some View {
         HStack(spacing: Theme.Space.m) {
             if let analysis = model.analysis {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(analysis.root.lastPathComponent).font(Theme.Text.heading).foregroundStyle(Theme.ink)
-                    Text(abbreviated(analysis.root.path)).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                        .lineLimit(1).truncationMode(.middle)
-                }
+                RepositoryPicker(analysis: analysis)
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
                     Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
@@ -363,49 +429,12 @@ struct SidebarView: View {
         }
     }
 
+    /// Only the empty case lives here now. While a repository is open its name and the
+    /// control for changing it are in the top bar — one place, clearly labelled, instead of
+    /// the same word in two corners of the window.
     @ViewBuilder
     private var repository: some View {
-        if let analysis = model.analysis {
-            // A pop-up chevron has to open a pop-up. It used to open a file dialog, which
-            // is the one thing this control looks like it does not do.
-            Menu {
-                let others = RecentRepositories.all().filter { $0.standardizedFileURL != analysis.root.standardizedFileURL }
-                if !others.isEmpty {
-                    Section("Recent") {
-                        ForEach(others, id: \.path) { url in
-                            Button {
-                                model.open(url: url)
-                            } label: {
-                                Text(url.lastPathComponent)
-                                Text(url.deletingLastPathComponent().path)
-                            }
-                        }
-                    }
-                }
-                Button("Open Repository…") { chooseRepository(into: model) }
-                Divider()
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([analysis.root]) }
-                Button("Open in Terminal") { openInTerminal(analysis.root) }
-                Button("Copy Path") { copyToPasteboard(analysis.root.path) }
-            } label: {
-                HStack(spacing: Theme.Space.s) {
-                    Image(systemName: "folder.fill").foregroundStyle(Theme.inkMuted)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(analysis.root.lastPathComponent).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
-                        Text(analysis.root.deletingLastPathComponent().lastPathComponent + "/")
-                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).lineLimit(1)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9)).foregroundStyle(Theme.inkMuted)
-                }
-                .padding(Theme.Space.m)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .help("Switch repository")
-        } else {
+        if model.analysis == nil {
             Button("Choose repository…") { chooseRepository(into: model) }
                 .buttonStyle(SecondaryButtonStyle())
                 .disabled(model.isLoading)
