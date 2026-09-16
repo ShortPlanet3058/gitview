@@ -119,6 +119,7 @@ struct CommitRowView: View {
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .contextMenu { CommitActions(commit: commit) }
     }
 }

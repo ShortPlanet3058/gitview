@@ -122,7 +122,7 @@ struct SearchScreen: View {
             VStack(spacing: 0) {
                 ForEach(units) { unit in
                     Button {
-                        model.screen = .hotspots
+                        model.show(.hotspots)
                         model.selectedUnitID = unit.id
                         model.clearSearch()
                     } label: {
@@ -153,7 +153,7 @@ struct SearchScreen: View {
                 ForEach(files, id: \.self) { path in
                     Button {
                         model.pendingFileSelection = path
-                        model.screen = .files
+                        model.show(.files)
                         model.clearSearch()
                     } label: {
                         HStack(spacing: Theme.Space.s) {
@@ -184,7 +184,7 @@ struct SearchScreen: View {
                     ForEach(model.codeMatches.prefix(30)) { match in
                         Button {
                             model.pendingFileSelection = match.path
-                            model.screen = .files
+                            model.show(.files)
                             model.clearSearch()
                         } label: {
                             VStack(alignment: .leading, spacing: 1) {
@@ -235,7 +235,7 @@ struct SearchScreen: View {
             FlowRow(spacing: Theme.Space.s) {
                 ForEach(results.people) { person in
                     Button {
-                        model.screen = .contributors
+                        model.show(.contributors)
                         model.selectedAuthor = person.name
                         model.clearSearch()
                     } label: {
@@ -249,7 +249,7 @@ struct SearchScreen: View {
                     .buttonStyle(.plain)
                 }
                 ForEach(results.branches, id: \.self) { name in
-                    Button { model.screen = .branches; model.clearSearch() } label: {
+                    Button { model.show(.branches); model.clearSearch() } label: {
                         Label(name, systemImage: "arrow.triangle.branch")
                             .font(Theme.Text.caption).foregroundStyle(Theme.ink)
                             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -260,7 +260,7 @@ struct SearchScreen: View {
                 ForEach(results.tags, id: \.self) { name in
                     Button {
                         model.compareTo = name
-                        model.screen = .releases
+                        model.show(.releases)
                         model.clearSearch()
                     } label: {
                         Label(name, systemImage: "tag")

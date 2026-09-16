@@ -99,6 +99,25 @@ final class AnalysisModel: ObservableObject {
     var analysisScreens: [Screen] { advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling] }
     var visibleScreens: [Screen] { Self.repositoryScreens + analysisScreens }
 
+    /// Goes to `screen` the way clicking the sidebar should: whatever is layered over the
+    /// current screen closes on the way out.
+    ///
+    /// A diff, a file's history or a set of search results covers the whole content area,
+    /// so leaving them open across a tab change meant clicking "Commits" and still looking
+    /// at a diff. Deliberately a method rather than a `didSet` on `screen`: the screen is
+    /// also restored internally while loading and refreshing, and that must not throw away
+    /// the selection it is in the middle of restoring.
+    func show(_ screen: Screen) {
+        diffRequest = nil
+        fileHistoryPath = nil
+        if isSearching { clearSearch() }
+        selectedUnitID = nil
+        selectedCommitSHA = nil
+        selectedPairID = nil
+        selectedAuthor = nil
+        self.screen = screen
+    }
+
     /// Leaves whatever is layered over the current screen, innermost first: a diff opened
     /// from a file's history returns to that history, not all the way out to the screen
     /// behind it. Returns false when there is nothing to leave.
@@ -282,6 +301,10 @@ final class AnalysisModel: ObservableObject {
     var pendingCompare: String?
     var pendingSearch: String?
     var pendingDiff: String?
+    /// Debug only: navigate to this screen once everything else has been applied. Exists so
+    /// that "changing tabs closes what is open" can be checked from a screenshot run rather
+    /// than asserted — the app target has no tests of its own.
+    var pendingThenShow: String?
     var pendingFileHistory: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
@@ -339,6 +362,7 @@ final class AnalysisModel: ObservableObject {
         pendingCompare = value("--compare")   // "from..to"
         pendingSearch = value("--search")
         pendingDiff = value("--diff")          // "<sha>:<path>" or "working:<path>"
+        pendingThenShow = value("--then-show")
         pendingFileHistory = value("--file-history")
         pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
@@ -573,6 +597,10 @@ final class AnalysisModel: ObservableObject {
                     self.showDiff(.commit(sha: ref), path: path, title: ref)
                 }
             }
+        }
+        if let name = pendingThenShow, let screen = Screen(rawValue: name) {
+            pendingThenShow = nil
+            show(screen)
         }
         // After `state` is set: runComparison reads `analysis`, which is nil until then.
         if let spec = self.pendingCompare {

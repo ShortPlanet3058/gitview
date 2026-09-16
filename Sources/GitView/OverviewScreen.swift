@@ -189,7 +189,7 @@ struct RecentActivityCard: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                LinkButton(title: "See all commits →") { model.screen = .commits }
+                LinkButton(title: "See all commits →") { model.show(.commits) }
             }
         }
     }
@@ -245,7 +245,7 @@ struct TopHotspotsCard: View {
                             }
                         }
                     }
-                    LinkButton(title: "See all hotspots →") { model.screen = .hotspots }
+                    LinkButton(title: "See all hotspots →") { model.show(.hotspots) }
                 }
             }
         }
@@ -357,7 +357,7 @@ struct ContributorsCard: View {
                         }
                     }
                 }
-                LinkButton(title: "See all →") { model.screen = .contributors }
+                LinkButton(title: "See all →") { model.show(.contributors) }
             }
         }
     }
@@ -445,7 +445,7 @@ struct BranchesCard: View {
                         .padding(.vertical, 6)
                     }
                 }
-                LinkButton(title: "See all →") { model.screen = .branches }
+                LinkButton(title: "See all →") { model.show(.branches) }
             }
         }
     }

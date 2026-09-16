@@ -16,15 +16,31 @@ struct AppShell: View {
                 LoadingStrip()
                 FreshnessBanner()
                 HStack(spacing: 0) {
-                    main.frame(minWidth: 560, maxWidth: .infinity)
+                    main
+                        .frame(minWidth: 560, maxWidth: .infinity)
+                        // A crossfade rather than a slide: pages here are dense, and
+                        // anything that moves the text sideways makes it harder to read
+                        // the thing you just asked for. Short enough not to be a wait.
+                        .transition(.opacity)
                     if let detail {
                         Rectangle().fill(Theme.hairline).frame(width: 1)
-                        detail.frame(width: 420)
+                        detail
+                            .frame(width: 420)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
+                .animation(.easeInOut(duration: 0.16), value: model.screen)
+                .animation(.easeOut(duration: 0.2), value: model.selectedUnitID)
+                .animation(.easeOut(duration: 0.2), value: model.selectedCommitSHA)
+                .animation(.easeOut(duration: 0.2), value: model.selectedAuthor)
+                .animation(.easeOut(duration: 0.2), value: model.selectedPairID)
             }
         }
         .background(Theme.page)
+        .animation(.easeInOut(duration: 0.2), value: model.loadProgress)
+        .animation(.easeInOut(duration: 0.25), value: model.outsideChange)
+        .animation(.easeInOut(duration: 0.25), value: model.refreshNote)
+        .animation(.easeInOut(duration: 0.2), value: model.readiness)
         .ignoresSafeArea()
         // Escape leaves whatever is layered over the screen — a diff, a file's history, a
         // search, an open detail panel — innermost first. It used to clear the search and
@@ -343,7 +359,7 @@ struct SidebarView: View {
 
     private func navButton(_ screen: AnalysisModel.Screen) -> some View {
         NavButton(title: screen.title, systemImage: screen.symbol, selected: model.screen == screen) {
-            model.screen = screen
+            model.show(screen)
         }
     }
 

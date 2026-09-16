@@ -46,7 +46,7 @@ struct GitViewApp: App {
                 // on screen. Past nine there is no obvious key, and the sidebar is right
                 // there, so the rest go unshortcut rather than onto arbitrary keys.
                 ForEach(Array(model.visibleScreens.prefix(9).enumerated()), id: \.element) { index, screen in
-                    Button(screen.title) { model.screen = screen }
+                    Button(screen.title) { model.show(screen) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
                         .disabled(!model.hasRepository)
                 }

@@ -200,6 +200,10 @@ struct NavButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        // Hover is quick enough to feel instant but not so instant that the highlight
+        // flickers when the pointer crosses the sidebar on its way somewhere else.
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.15), value: selected)
     }
 }
 

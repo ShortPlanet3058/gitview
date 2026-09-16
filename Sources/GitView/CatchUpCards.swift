@@ -75,7 +75,7 @@ struct CatchUpCard: View {
                             .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                             .lineLimit(1)
                     }
-                    LinkButton(title: "See all commits →") { model.screen = .commits }
+                    LinkButton(title: "See all commits →") { model.show(.commits) }
                 }
             }
         }

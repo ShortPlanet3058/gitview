@@ -166,6 +166,7 @@ struct HotspotCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .contextMenu { PathActions(path: row.filePath) }
     }
 }

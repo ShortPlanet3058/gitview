@@ -115,6 +115,7 @@ struct CouplingCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
     private func unitLine(_ name: String, _ location: String) -> some View {
@@ -184,7 +185,7 @@ struct PairDetailPanel: View {
     private func unitCard(id: UUID, name: String, location: String) -> some View {
         let unitRow = model.rowsByID[id]
         return Button {
-            model.screen = .hotspots
+            model.show(.hotspots)
             model.selectedPairID = nil
             model.selectedUnitID = id
         } label: {
