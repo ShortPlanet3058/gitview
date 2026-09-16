@@ -16,12 +16,13 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var state: State = .idle
 
     enum Screen: String, Hashable, CaseIterable {
-        case overview, commits, branches, contributors, files, activity, hotspots, coupling, statistics
+        case overview, commits, branches, releases, contributors, files, activity, hotspots, coupling, statistics
         var title: String {
             switch self {
             case .overview: return "Overview"
             case .commits: return "Commits"
             case .branches: return "Branches"
+            case .releases: return "Releases"
             case .contributors: return "Contributors"
             case .files: return "Files"
             case .activity: return "Activity"
@@ -35,6 +36,7 @@ final class AnalysisModel: ObservableObject {
             case .overview: return "square.grid.2x2"
             case .commits: return "clock.arrow.circlepath"
             case .branches: return "arrow.triangle.branch"
+            case .releases: return "tag"
             case .contributors: return "person.2"
             case .files: return "doc.text"
             case .activity: return "chart.bar"
@@ -81,6 +83,13 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var ownership: OwnershipIndex?
     /// The contributor whose detail panel is open.
     @Published var selectedAuthor: String?
+    // Comparing two points: the release question and the "what changed between" question
+    // are the same one.
+    @Published var compareFrom: String = ""
+    @Published var compareTo: String = "HEAD"
+    @Published private(set) var comparison: ComparisonResult?
+    @Published private(set) var comparisonInFlight = false
+
     /// Line-level ownership, computed on demand because it costs a process per file.
     @Published private(set) var blame: [String: BlameOwnership] = [:]
     @Published private(set) var blameInFlight: Set<String> = []
@@ -152,6 +161,7 @@ final class AnalysisModel: ObservableObject {
     /// Path prefix from `--select-file`, consumed by the Files screen.
     @Published var pendingFileSelection: String?
     var pendingAuthorSelection: String?
+    var pendingCompare: String?
     /// Rows before the search filter, so the sidebar can report how much is being hidden.
     @Published private(set) var matchedCount = 0
     @Published private(set) var totalRanked = 0
@@ -205,6 +215,7 @@ final class AnalysisModel: ObservableObject {
         pendingCommitSelection = value("--select-commit")
         // Pending rather than direct: `open` clears every selection, and it runs after this.
         pendingAuthorSelection = value("--select-author")
+        pendingCompare = value("--compare")   // "from..to"
         pendingFileSelection = value("--select-file")
         if let name = value("--screen"), let screen = Screen(rawValue: name) { self.screen = screen }
         if let mode = value("--mode") { advanced = mode == "advanced" }
@@ -270,6 +281,16 @@ final class AnalysisModel: ObservableObject {
                 }
                 self.state = .loaded(analysis)
                 self.rebuild()
+                // After `state` is set: runComparison reads `analysis`, which is nil until then.
+                if let spec = self.pendingCompare {
+                    self.pendingCompare = nil
+                    let parts = spec.components(separatedBy: "..")
+                    if parts.count == 2 {
+                        self.compareFrom = parts[0]
+                        self.compareTo = parts[1]
+                        self.runComparison()
+                    }
+                }
             } catch {
                 self.state = .failed("\(error)")
             }
@@ -481,6 +502,48 @@ final class AnalysisModel: ObservableObject {
         guard let analysis, let head = analysis.commits.first?.sha else { return }
         VisitLog.record(headSHA: head, to: analysis.root)
         rebuildCatchUp()
+    }
+
+    /// Commits between two tags, derived from the history already in memory rather than
+    /// with a `rev-list` per tag — 188 tags would otherwise cost a process each.
+    func commitsBetweenTags() -> [String: Int] {
+        guard let analysis else { return [:] }
+        var indexBySHA: [String: Int] = [:]
+        for (index, commit) in analysis.commits.enumerated() { indexBySHA[commit.sha] = index }
+        var result: [String: Int] = [:]
+        let reachable = analysis.tags.compactMap { tag -> (String, Int)? in
+            indexBySHA[tag.commitSHA].map { (tag.name, $0) }
+        }
+        // Tags are newest first, so the *next* one in the list is the previous release.
+        for (offset, entry) in reachable.enumerated() {
+            let previousIndex = offset + 1 < reachable.count ? reachable[offset + 1].1 : analysis.commits.count
+            result[entry.0] = max(previousIndex - entry.1, 0)
+        }
+        return result
+    }
+
+    /// Commits on HEAD that no tag contains yet.
+    var unreleasedCount: Int? {
+        guard let analysis, let latest = analysis.tags.first else { return nil }
+        guard let index = analysis.commits.firstIndex(where: { $0.sha == latest.commitSHA }) else { return nil }
+        return index
+    }
+
+    func runComparison() {
+        guard let analysis, !compareFrom.isEmpty, !comparisonInFlight else { return }
+        let root = analysis.root
+        let from = compareFrom, to = compareTo
+        comparisonInFlight = true
+        Task.detached(priority: .userInitiated) {
+            let repository = GitRepository(url: root)
+            let commits = (try? repository.commits(from: from, to: to)) ?? []
+            let deltas = (try? repository.fileDeltas(from: from, to: to)) ?? []
+            let result = ComparisonResult(from: from, to: to, commits: commits, deltas: deltas)
+            await MainActor.run {
+                self.comparison = result
+                self.comparisonInFlight = false
+            }
+        }
     }
 
     /// Computes line-level ownership for one file, once. About a quarter of a second, so it

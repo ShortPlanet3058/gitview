@@ -42,6 +42,7 @@ struct AppShell: View {
             case .overview: OverviewScreen()
             case .commits: CommitsScreen()
             case .branches: BranchesScreen()
+            case .releases: ReleasesScreen()
             case .contributors: ContributorsScreen()
             case .files: FilesScreen()
             case .activity: ActivityScreen()
@@ -158,7 +159,9 @@ struct ModeSwitch: View {
 struct SidebarView: View {
     @EnvironmentObject private var model: AnalysisModel
 
-    private var repositoryScreens: [AnalysisModel.Screen] { [.overview, .commits, .branches, .contributors, .files, .activity] }
+    private var repositoryScreens: [AnalysisModel.Screen] {
+        [.overview, .commits, .branches, .releases, .contributors, .files, .activity]
+    }
     private var analysisScreens: [AnalysisModel.Screen] {
         model.advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling]
     }

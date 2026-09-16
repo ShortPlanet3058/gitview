@@ -26,6 +26,7 @@ struct RepositoryAnalysis: Sendable {
     let root: URL
     let info: RepositoryInfo
     let branches: [BranchInfo]
+    let tags: [TagInfo]
     let commits: [Commit]
     let allUnits: [CodeUnit]
     let filesParsed: Int
@@ -87,13 +88,14 @@ enum AnalysisService {
         // changed, which decides whether cached units are still valid.
         let factsStart = Date()
         let facts = Task.detached(priority: .userInitiated) {
-            () throws -> (RepositoryInfo, [BranchInfo], WorkingState) in
+            () throws -> (RepositoryInfo, [BranchInfo], [TagInfo], WorkingState) in
             let info = try repository.info()
             let branches = try repository.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch)
+            let tags = (try? repository.tags()) ?? []
             let working = (try? repository.workingState()) ?? .clean
-            return (info, branches, working)
+            return (info, branches, tags, working)
         }
-        let (info, branches, workingState) = try await facts.value
+        let (info, branches, tags, workingState) = try await facts.value
         let factsDuration = Date().timeIntervalSince(factsStart)
 
         // History: reuse, extend, or read in full.
@@ -143,6 +145,7 @@ enum AnalysisService {
             root: validated,
             info: info,
             branches: branches,
+            tags: tags,
             commits: commits,
             allUnits: report.units,
             filesParsed: report.filesParsed,
@@ -158,4 +161,27 @@ enum AnalysisService {
             workingState: workingState
         )
     }
+}
+
+/// What changed between two points in history.
+struct ComparisonResult: Sendable {
+    let from: String
+    let to: String
+    let commits: [Commit]
+    let deltas: [FileDelta]
+
+    var stat: DiffStat {
+        DiffStat(filesChanged: deltas.count,
+                 insertions: deltas.reduce(0) { $0 + $1.insertions },
+                 deletions: deltas.reduce(0) { $0 + $1.deletions })
+    }
+
+    /// People who committed in this range, most commits first.
+    var contributors: [(name: String, commits: Int)] {
+        Dictionary(grouping: commits, by: \.author)
+            .map { (name: $0.key, commits: $0.value.count) }
+            .sorted { $0.commits != $1.commits ? $0.commits > $1.commits : $0.name < $1.name }
+    }
+
+    var isEmpty: Bool { commits.isEmpty && deltas.isEmpty }
 }

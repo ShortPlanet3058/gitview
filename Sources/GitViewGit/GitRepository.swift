@@ -38,6 +38,11 @@ public struct GitRepository: Sendable {
 
     /// - Parameter since: when set, reads only commits after this one.
     public func loadHistory(since: String? = nil) throws -> [Commit] {
+        try loadHistory(range: since.map { "\($0)..HEAD" })
+    }
+
+    /// - Parameter range: a git revision range such as `v1.0..v2.0`. Nil reads all of HEAD.
+    public func loadHistory(range: String?) throws -> [Commit] {
         let arguments = [
             // Stop git from octal-escaping non-ASCII paths, so UTF-8 filenames survive intact.
             "-c", "core.quotePath=false",
@@ -54,7 +59,7 @@ public struct GitRepository: Sendable {
             // split its top contributor's 769 commits into 589 + 180.
             "--pretty=format:@@@%H%x1f%aN%x1f%aI%x1f%s",
             "-p",
-        ] + (since.map { ["\($0)..HEAD"] } ?? [])
+        ] + (range.map { [$0] } ?? [])
 
         let sink = ParserBox()
         try GitProcess.stream(arguments: arguments, in: url) { chunk in
