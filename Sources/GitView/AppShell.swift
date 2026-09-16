@@ -13,6 +13,7 @@ struct AppShell: View {
             VStack(spacing: 0) {
                 TopBar()
                 Rectangle().fill(Theme.hairline).frame(height: 1)
+                LoadingStrip()
                 FreshnessBanner()
                 HStack(spacing: 0) {
                     main.frame(minWidth: 560, maxWidth: .infinity)
@@ -36,6 +37,18 @@ struct AppShell: View {
         }
     }
 
+    /// Shows `content` once the part of the analysis it needs has arrived.
+    @ViewBuilder
+    private func awaiting<Content: View>(_ ready: Bool, _ what: String,
+                                         @ViewBuilder content: () -> Content) -> some View {
+        if ready {
+            content()
+        } else {
+            VStack { Spacer(); StillReading(what: what); Spacer() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     @ViewBuilder
     private var main: some View {
         switch model.state {
@@ -46,18 +59,21 @@ struct AppShell: View {
             if let request = model.diffRequest { DiffViewer(request: request) }
             else if let path = model.fileHistoryPath { FileHistoryView(path: path) }
             else if model.isSearching { SearchScreen() } else {
+            // Branches, tags, the file tree and the working copy come from a handful of
+            // quick git calls, so those screens open immediately. The rest wait on the
+            // part of the analysis they are actually made of — and say which part.
             switch model.screen {
             case .overview: OverviewScreen()
             case .changes: ChangesScreen()
-            case .commits: CommitsScreen()
             case .branches: BranchesScreen()
-            case .releases: ReleasesScreen()
-            case .contributors: ContributorsScreen()
             case .files: FilesScreen()
-            case .activity: ActivityScreen()
-            case .hotspots: HotspotsScreen()
-            case .coupling: CouplingScreen()
-            case .statistics: StatisticsScreen()
+            case .commits: awaiting(model.readiness.hasHistory, "the commit history") { CommitsScreen() }
+            case .releases: awaiting(model.readiness.hasHistory, "the commit history") { ReleasesScreen() }
+            case .contributors: awaiting(model.readiness.hasHistory, "the commit history") { ContributorsScreen() }
+            case .activity: awaiting(model.readiness.hasHistory, "the commit history") { ActivityScreen() }
+            case .hotspots: awaiting(model.readiness.hasUnits, "the source files") { HotspotsScreen() }
+            case .coupling: awaiting(model.readiness.hasUnits, "the source files") { CouplingScreen() }
+            case .statistics: awaiting(model.readiness.hasUnits, "the source files") { StatisticsScreen() }
             }
             }
         }
@@ -91,6 +107,51 @@ struct AppShell: View {
 }
 
 // MARK: - Top bar
+
+/// Carries on reporting the read after the app has become usable.
+///
+/// Once branches and the working copy are on screen the loading screen is gone, but the
+/// history and the parser are often still running. Without this the app would look
+/// finished while half of it was still arriving — and the pages that are not ready yet
+/// would look broken rather than pending.
+struct LoadingStrip: View {
+    @EnvironmentObject private var model: AnalysisModel
+    @State private var elapsed: TimeInterval = 0
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        if let progress = model.loadProgress, model.hasRepository {
+            VStack(spacing: 0) {
+                HStack(spacing: Theme.Space.s) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14)
+                    Text(progress.stage + "…").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                    if let detail = progress.detail {
+                        Text(detail).font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                    }
+                    if let fraction = progress.fraction {
+                        ProgressView(value: fraction).progressViewStyle(.linear).frame(width: 120)
+                    }
+                    Spacer()
+                    if elapsed >= 3 {
+                        Text("\(Int(elapsed))s").font(Theme.Text.caption.monospacedDigit())
+                            .foregroundStyle(Theme.inkMuted)
+                    }
+                    Button("Stop") { model.cancelLoading() }
+                        .buttonStyle(.plain)
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.accent)
+                }
+                .padding(.horizontal, Theme.Space.xl)
+                .padding(.vertical, 6)
+                .background(Theme.wash)
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
+            .onReceive(tick) { _ in
+                elapsed = model.loadStarted.map { Date().timeIntervalSince($0) } ?? 0
+            }
+        }
+    }
+}
 
 /// A slim strip under the top bar, shown only when the repository moved under us or a
 /// refresh just brought something in. It never covers content and never steals focus: at

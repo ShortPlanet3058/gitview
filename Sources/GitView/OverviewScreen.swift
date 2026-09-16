@@ -18,17 +18,25 @@ struct OverviewScreen: View {
                     Spacer()
                 }
 
-                // What to do now comes before what the repository is.
+                // What to do now comes before what the repository is. The working copy is
+                // the first thing that can be shown at all — it comes from `git status`,
+                // not from history — so while the rest is still being read it takes the
+                // full width rather than sitting next to an empty space.
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     if let catchUp = model.catchUp {
                         CatchUpCard(catchUp: catchUp).frame(maxWidth: .infinity)
+                    } else if !model.readiness.hasHistory {
+                        Card { StillReading(what: "the commit history", compact: true) }
+                            .frame(maxWidth: .infinity)
                     }
-                    WorkingStateCard(state: analysis.workingState).frame(width: 360)
+                    WorkingStateCard(state: analysis.workingState)
+                        .frame(width: model.readiness.hasHistory || model.catchUp != nil ? 360 : nil)
+                        .frame(maxWidth: model.readiness.hasHistory ? nil : .infinity)
                 }
 
                 ProjectCard(analysis: analysis)
 
-                statTiles(analysis)
+                if model.readiness.hasHistory { statTiles(analysis) }
 
                 LanguagesCard(inventory: analysis.info.inventory)
 
@@ -38,18 +46,21 @@ struct OverviewScreen: View {
                 // catch-up cannot cover — nothing new since the last visit — where it is
                 // the only place the latest work appears.
                 HStack(alignment: .top, spacing: Theme.Space.l) {
-                    if model.catchUp?.isEmpty ?? true {
+                    if model.readiness.hasHistory, model.catchUp?.isEmpty ?? true {
                         RecentActivityCard(commits: Array(analysis.commits.prefix(5)))
                             .frame(maxWidth: .infinity)
                     }
                     if let health = model.health {
                         HealthCard(health: health).frame(maxWidth: .infinity)
+                    } else if !model.readiness.hasUnits {
+                        Card { StillReading(what: "the source files", compact: true) }
+                            .frame(maxWidth: .infinity)
                     }
                 }
 
                 HStack(alignment: .top, spacing: Theme.Space.l) {
-                    TopHotspotsCard().frame(maxWidth: .infinity)
-                    if model.advanced {
+                    if model.readiness.hasUnits { TopHotspotsCard().frame(maxWidth: .infinity) }
+                    if model.advanced, model.readiness.hasHistory {
                         ContributorsCard(contributors: model.contributors, total: analysis.commits.count)
                             .frame(maxWidth: .infinity)
                     } else {
@@ -57,7 +68,7 @@ struct OverviewScreen: View {
                     }
                 }
 
-                if model.advanced {
+                if model.advanced, model.readiness.hasHistory {
                     ActivityChartCard(commits: analysis.commits, range: $activityRange)
                     HStack(alignment: .top, spacing: Theme.Space.l) {
                         BranchesCard(branches: analysis.branches).frame(maxWidth: .infinity)

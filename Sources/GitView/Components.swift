@@ -485,3 +485,37 @@ extension Double {
         return "\(Int(percent.rounded()))%"
     }
 }
+
+/// Stands in for content whose part of the analysis has not been read yet.
+///
+/// The alternative is worse than a spinner: a commits page drawn before history arrives
+/// shows "0 commits", which is not a loading state, it is a wrong answer.
+///
+/// It also has to tell the truth once the read has stopped. After "Stop", nothing is
+/// arriving any more, and a page that goes on claiming to be reading would be waiting for
+/// something that is never coming — so it says what happened and offers to finish.
+struct StillReading: View {
+    @EnvironmentObject private var model: AnalysisModel
+    let what: String
+    var compact = false
+
+    var body: some View {
+        VStack(spacing: Theme.Space.s) {
+            if model.loadProgress != nil {
+                ProgressView().controlSize(.small)
+                Text("Still reading \(what)…")
+                    .font(compact ? Theme.Text.caption : Theme.Text.body)
+                    .foregroundStyle(Theme.inkMuted)
+            } else {
+                Text("Stopped before \(what) was read.")
+                    .font(compact ? Theme.Text.caption : Theme.Text.body)
+                    .foregroundStyle(Theme.inkMuted)
+                Button("Finish reading") { model.refresh() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, compact ? Theme.Space.l : Theme.Space.xxl)
+    }
+}

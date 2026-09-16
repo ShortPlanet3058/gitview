@@ -71,6 +71,22 @@ enum AnalysisSource: Sendable {
     }
 }
 
+/// Which parts of an analysis have arrived.
+///
+/// The three stages cost wildly different amounts: branches, tags and the working copy are
+/// a handful of quick git calls, history is a full `git log -p`, and parsing is every
+/// source file through tree-sitter. Holding the whole app hostage to the slowest of them
+/// meant staring at a spinner while the answer to "what have I got uncommitted" had been
+/// sitting in memory for twenty seconds.
+struct Readiness: Equatable, Sendable {
+    var hasHistory: Bool
+    var hasUnits: Bool
+
+    static let factsOnly = Readiness(hasHistory: false, hasUnits: false)
+    static let withHistory = Readiness(hasHistory: true, hasUnits: false)
+    static let complete = Readiness(hasHistory: true, hasUnits: true)
+}
+
 /// What the loading screen has to say. Every field is something the analysis genuinely
 /// knows at that moment — there is no synthetic percentage that creeps forward on a timer.
 struct LoadingProgress: Equatable, Sendable {
@@ -85,8 +101,11 @@ enum AnalysisService {
     ///
     /// Everything heavy runs off the main actor — `loadHistory` blocks for seconds, or a
     /// minute on a repository whose history carries large generated files.
+    /// - Parameter partial: handed a usable analysis at each milestone, so the app can put
+    ///   the parts it already has on screen instead of waiting for all of them.
     static func load(root: URL, useCache: Bool = true,
-                     progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in }
+                     progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in },
+                     partial: @escaping @Sendable (RepositoryAnalysis, Readiness) -> Void = { _, _ in }
     ) async throws -> RepositoryAnalysis {
         progress(LoadingProgress(stage: "Checking the repository"))
         let validated = try await Task.detached(priority: .userInitiated) {
@@ -112,6 +131,15 @@ enum AnalysisService {
         let factsDuration = Date().timeIntervalSince(factsStart)
 
         // History: reuse, extend, or read in full.
+        // Everything the quick git calls answered is already worth showing: the working
+        // copy, the branches, the tags, the file tree.
+        partial(RepositoryAnalysis(
+            root: validated, info: info, branches: branches, tags: tags,
+            commits: [], allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
+            historyDuration: 0, parseDuration: 0, factsDuration: factsDuration,
+            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
+            source: .fresh, workingState: workingState), .factsOnly)
+
         progress(LoadingProgress(stage: "Reading history",
                                  detail: cached == nil ? "every commit, first time for this project"
                                                        : "only what is new since last time"))
@@ -134,6 +162,13 @@ enum AnalysisService {
             }.value
         }
         let historyDuration = Date().timeIntervalSince(historyStart)
+
+        partial(RepositoryAnalysis(
+            root: validated, info: info, branches: branches, tags: tags,
+            commits: commits, allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
+            historyDuration: historyDuration, parseDuration: 0, factsDuration: factsDuration,
+            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
+            source: source, workingState: workingState), .withHistory)
 
         // Units come from the working tree, so they are only reusable if nothing has been
         // edited since the cache was written.

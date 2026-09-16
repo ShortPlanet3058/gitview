@@ -30,6 +30,15 @@ final class AnalysisModel: ObservableObject {
     }
     @Published private(set) var outsideChange: OutsideChange?
     @Published private(set) var isRefreshing = false
+    /// Which parts of the current analysis have arrived. Everything except the first
+    /// moments of a load is `.complete`; screens consult it so that a page whose data is
+    /// still being read says so instead of drawing a confident empty state.
+    @Published private(set) var readiness: Readiness = .complete
+    /// The stage the current read is in, for as long as one is running. Survives the move
+    /// from the loading screen to the usable app: once the first results are on screen the
+    /// loading screen is gone, and without this there would be nothing left saying that
+    /// history and parsing are still going.
+    @Published private(set) var loadProgress: LoadingProgress?
     /// A refresh that failed. Kept separate from `state` so a failed refresh leaves the
     /// working analysis on screen instead of replacing it with an error page.
     @Published var refreshError: String?
@@ -361,6 +370,7 @@ final class AnalysisModel: ObservableObject {
         refreshError = nil
         lastAttempted = url
         loadStarted = Date()
+        readiness = .factsOnly
         loadTask?.cancel()
         state = .loading(LoadingProgress(stage: "Checking the repository"))
         rows = []
@@ -385,10 +395,14 @@ final class AnalysisModel: ObservableObject {
             do {
                 let analysis = try await Self.loadReportingTiming(root: url) { progress in
                     Task { @MainActor in
-                        // Only while still loading: a late progress callback must not
-                        // overwrite a finished analysis or a cancellation.
+                        // A late callback must not overwrite a finished analysis or a
+                        // cancellation, so both the strip and the screen check first.
+                        guard self.loadTask != nil else { return }
+                        self.loadProgress = progress
                         if case .loading = self.state { self.state = .loading(progress) }
                     }
+                } partial: { analysis, readiness in
+                    Task { @MainActor in self.adoptPartial(analysis, readiness: readiness) }
                 }
                 guard !Task.isCancelled else { return }
                 self.adopt(analysis, keptScreen: keptScreen, preservingSelection: preservingSelection)
@@ -400,6 +414,34 @@ final class AnalysisModel: ObservableObject {
         }
     }
 
+    /// Puts a half-finished analysis on screen so the app can be used while the rest is
+    /// still being read.
+    ///
+    /// Guarded on the load still being the current one: a partial result arriving after a
+    /// cancellation, a different repository, or the finished analysis itself must never
+    /// overwrite what is on screen with something less complete.
+    private func adoptPartial(_ analysis: RepositoryAnalysis, readiness: Readiness) {
+        guard loadTask != nil, !Task.isCancelled,
+              lastAttempted?.standardizedFileURL == analysis.root.standardizedFileURL,
+              readiness != .complete, self.readiness != .complete || !hasRepository else { return }
+        // Never go backwards: a slow `.factsOnly` callback must not replace history that
+        // has already landed.
+        if self.readiness.hasHistory && !readiness.hasHistory { return }
+
+        self.readiness = readiness
+        state = .loaded(analysis)
+        if readiness.hasHistory {
+            unitsByID = [:]
+            contributors = ContributorStats.compute(commits: analysis.commits)
+            rebuildCatchUp(for: analysis)
+            ownership = OwnershipBuilder.build(
+                commits: analysis.commits,
+                currentPaths: Set(analysis.info.inventory.files.map(\.path)))
+        }
+        rebuild()
+        refreshPushPlan()
+    }
+
     /// Stops waiting for the current analysis.
     ///
     /// Git and the parser run in processes and tasks that do not stop mid-syscall, so this
@@ -409,7 +451,11 @@ final class AnalysisModel: ObservableObject {
         loadTask?.cancel()
         loadTask = nil
         loadStarted = nil
-        state = .idle
+        loadProgress = nil
+        // A partly-read repository is left on screen rather than thrown away: the branches
+        // and the working copy are real, and going back to the welcome screen would
+        // discard work already done. Only a load with nothing to show yet returns there.
+        if !hasRepository { state = .idle }
     }
 
     /// Re-attempts the repository whose load failed.
@@ -432,16 +478,26 @@ final class AnalysisModel: ObservableObject {
         let keptScreen = screen
         isRefreshing = true
         refreshError = nil
+        loadStarted = Date()
         let note = outsideChange?.summary
         Task {
             do {
-                let analysis = try await Self.loadReportingTiming(root: root)
+                // A refresh reports its stages too: it is the same read, and after a
+                // "Stop" it is the read that finishes what was left.
+                let analysis = try await Self.loadReportingTiming(root: root) { progress in
+                    Task { @MainActor in
+                        guard self.isRefreshing else { return }
+                        self.loadProgress = progress
+                    }
+                }
                 self.adopt(analysis, keptScreen: keptScreen, preservingSelection: true)
                 if let note { self.flash(note) }
             } catch {
                 self.refreshError = "\(error)"
             }
             self.isRefreshing = false
+            self.loadProgress = nil
+            self.loadStarted = nil
             self.outsideChange = nil
         }
     }
@@ -460,10 +516,12 @@ final class AnalysisModel: ObservableObject {
     /// Loads and prints the stage timings to stderr, so a run can be timed from outside
     /// without a screenshot delay dominating the wall clock.
     private static func loadReportingTiming(
-        root: URL, progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in }
+        root: URL,
+        progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in },
+        partial: @escaping @Sendable (RepositoryAnalysis, Readiness) -> Void = { _, _ in }
     ) async throws -> RepositoryAnalysis {
         let started = Date()
-        let analysis = try await AnalysisService.load(root: root, progress: progress)
+        let analysis = try await AnalysisService.load(root: root, progress: progress, partial: partial)
         FileHandle.standardError.write(Data(
             String(format: "gitview: analysis %@ — history %.2fs, parse %.2fs, facts %.2fs, total %.2fs\n",
                    analysis.source.summary, analysis.historyDuration, analysis.parseDuration,
@@ -474,6 +532,8 @@ final class AnalysisModel: ObservableObject {
     /// Takes a freshly read analysis as the one on screen. Shared by opening and refreshing,
     /// so a refresh cannot drift out of step with an open.
     private func adopt(_ analysis: RepositoryAnalysis, keptScreen: Screen, preservingSelection: Bool) {
+        readiness = .complete
+        loadProgress = nil
         self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
         self.contributors = ContributorStats.compute(commits: analysis.commits)
         self.rebuildCatchUp(for: analysis)
@@ -612,6 +672,11 @@ final class AnalysisModel: ObservableObject {
         // Health: the four repository checks plus GitView's own "complex code under change".
         let ninetyDays = now.addingTimeInterval(-90 * 86_400)
         let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && b.date < ninetyDays }
+        // Health is a judgement over the whole repository, so a partial analysis cannot
+        // produce one: scored before history arrives it reports "no commits" and "0 active
+        // contributors" and hands out a low score for a repository that is merely still
+        // being read. No score at all is the honest output until everything is in.
+        guard readiness == .complete else { health = nil; return }
         health = RepositoryHealth.assess(.init(
             lastCommit: analysis.commits.map(\.date).max(),
             activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays, excludingBots: true),
