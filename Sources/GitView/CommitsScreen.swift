@@ -119,8 +119,6 @@ struct CommitRowView: View {
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .contextMenu {
-            Button("Copy SHA") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.sha, forType: .string) }
-        }
+        .contextMenu { CommitActions(commit: commit) }
     }
 }

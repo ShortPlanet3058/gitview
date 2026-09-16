@@ -125,6 +125,7 @@ struct ChangesScreen: View {
                 HairlineDivider()
                 ForEach(files) { file in
                     row(file, tint: tint, staged: staged)
+                        .contextMenu { PathActions(path: file.path) }
                     if file.id != files.last?.id { HairlineDivider() }
                 }
             }

@@ -61,6 +61,7 @@ struct ContributorsScreen: View {
                         .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .contextMenu { PersonActions(name: person.name) }
                         if person.id != people.prefix(limit).last?.id { HairlineDivider() }
                     }
                     if people.count > limit {

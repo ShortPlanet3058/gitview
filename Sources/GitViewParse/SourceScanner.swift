@@ -51,8 +51,12 @@ public struct SourceScanner: Sendable {
     /// Parses every Swift file under `root`, returning paths relative to it so they
     /// line up with the paths git reports.
     /// - Parameter detectGenerated: read the head of each file to spot generated markers.
-    public func scan(root: URL, detectGenerated: Bool = true) async throws -> Report {
+    /// - Parameter onProgress: called as each file's result arrives, with (parsed, total).
+    ///   Called from the collecting task, so it must be cheap and must not assume an actor.
+    public func scan(root: URL, detectGenerated: Bool = true,
+                     onProgress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Report {
         let files = parsableFiles(in: root)
+        onProgress?(0, files.count)
         // Compile each language's grammar and query once, not once per file.
         let present = Set(files.map { $0.pathExtension.lowercased() })
         var built: [String: UnitExtractor] = [:]
@@ -93,7 +97,10 @@ public struct SourceScanner: Sendable {
             }
 
             var report = Report(units: [], filesParsed: 0, filesFailed: [])
+            var settled = 0
             for try await result in group {
+                settled += 1
+                onProgress?(settled, files.count)
                 if let failure = result.failure {
                     report.filesFailed.append(failure)
                 } else {

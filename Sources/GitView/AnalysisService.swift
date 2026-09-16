@@ -71,12 +71,24 @@ enum AnalysisSource: Sendable {
     }
 }
 
+/// What the loading screen has to say. Every field is something the analysis genuinely
+/// knows at that moment — there is no synthetic percentage that creeps forward on a timer.
+struct LoadingProgress: Equatable, Sendable {
+    var stage: String
+    var detail: String?
+    /// Set only while parsing, which is the one stage whose total is known in advance.
+    var fraction: Double?
+}
+
 enum AnalysisService {
     /// Reads history and parses sources, reusing a cache where it is safe to.
     ///
     /// Everything heavy runs off the main actor — `loadHistory` blocks for seconds, or a
     /// minute on a repository whose history carries large generated files.
-    static func load(root: URL, useCache: Bool = true) async throws -> RepositoryAnalysis {
+    static func load(root: URL, useCache: Bool = true,
+                     progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in }
+    ) async throws -> RepositoryAnalysis {
+        progress(LoadingProgress(stage: "Checking the repository"))
         let validated = try await Task.detached(priority: .userInitiated) {
             try GitRepository(url: root).validate()
         }.value
@@ -95,10 +107,14 @@ enum AnalysisService {
             let working = (try? repository.workingState()) ?? .clean
             return (info, branches, tags, working)
         }
+        progress(LoadingProgress(stage: "Reading branches and tags"))
         let (info, branches, tags, workingState) = try await facts.value
         let factsDuration = Date().timeIntervalSince(factsStart)
 
         // History: reuse, extend, or read in full.
+        progress(LoadingProgress(stage: "Reading history",
+                                 detail: cached == nil ? "every commit, first time for this project"
+                                                       : "only what is new since last time"))
         let historyStart = Date()
         var source = AnalysisSource.fresh
         var commits: [Commit]
@@ -130,11 +146,20 @@ enum AnalysisService {
                                           filesFailed: [],
                                           generatedFiles: Set(cached.generatedFiles))
         } else {
-            report = try await SourceScanner().scan(root: validated)
+            progress(LoadingProgress(stage: "Parsing source files"))
+            report = try await SourceScanner().scan(root: validated) { parsed, total in
+                guard total > 0 else { return }
+                progress(LoadingProgress(
+                    stage: "Parsing source files",
+                    detail: "\(parsed.formatted()) of \(total.formatted()) files",
+                    fraction: Double(parsed) / Double(total)))
+            }
             if case .cached = source { source = .fresh }
         }
         let parseDuration = Date().timeIntervalSince(parseStart)
 
+        progress(LoadingProgress(stage: "Working out what it all means",
+                                 detail: "\(commits.count.formatted()) commits, \(report.units.count.formatted()) functions"))
         AnalysisCache.save(.init(headSHA: head, commits: commits, units: report.units,
                                  generatedFiles: Array(report.generatedFiles)), root: validated)
 

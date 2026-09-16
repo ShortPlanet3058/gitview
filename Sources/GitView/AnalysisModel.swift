@@ -8,12 +8,43 @@ import GitViewParse
 final class AnalysisModel: ObservableObject {
     enum State {
         case idle
-        case loading(String)
+        case loading(LoadingProgress)
         case loaded(RepositoryAnalysis)
         case failed(String)
     }
 
     @Published private(set) var state: State = .idle
+
+    /// Something happened to the repository while GitView was showing it: a commit from a
+    /// terminal, a pull, a checkout. Set only when the analysis on screen is genuinely out
+    /// of date — never for a change GitView made itself, and never for an edit to a file,
+    /// which changes what `git status` says but not what the history is.
+    struct OutsideChange: Identifiable, Equatable {
+        let id = UUID()
+        /// Plain language, already counted: "3 new commits", "Now on feature/login".
+        let summary: String
+        /// False when the old tip is gone (a rebase or a force-push upstream), which is
+        /// worth saying out loud because the numbers on screen describe commits that no
+        /// longer exist.
+        let isFastForward: Bool
+    }
+    @Published private(set) var outsideChange: OutsideChange?
+    @Published private(set) var isRefreshing = false
+    /// A refresh that failed. Kept separate from `state` so a failed refresh leaves the
+    /// working analysis on screen instead of replacing it with an error page.
+    @Published var refreshError: String?
+    /// What a just-completed automatic refresh brought in, shown briefly so an update that
+    /// happens on its own is still something you saw happen rather than a number that
+    /// changed while you were looking away.
+    @Published private(set) var refreshNote: String?
+
+    private var watcher: RepositoryWatcher?
+    private var refreshNoteTask: Task<Void, Never>?
+    private var loadTask: Task<Void, Never>?
+    /// When the current load started, so the loading screen can say how long it has been.
+    @Published private(set) var loadStarted: Date?
+    /// The repository a failed load was for, so "Try Again" knows what to try.
+    private var lastAttempted: URL?
 
     enum Screen: String, Hashable, CaseIterable {
         case overview, changes, commits, branches, releases, contributors, files, activity, hotspots, coupling, statistics
@@ -50,6 +81,29 @@ final class AnalysisModel: ObservableObject {
     }
     @Published var screen: Screen = .overview
     @Published var showSettings = false
+
+    /// The screens the sidebar offers, in order. Menu shortcuts are numbered from this same
+    /// list, so ⌘4 always lands on the fourth item someone can see rather than the fourth
+    /// case in the enum.
+    static let repositoryScreens: [Screen] = [.overview, .changes, .commits, .branches,
+                                              .releases, .contributors, .files, .activity]
+    var analysisScreens: [Screen] { advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling] }
+    var visibleScreens: [Screen] { Self.repositoryScreens + analysisScreens }
+
+    /// Leaves whatever is layered over the current screen, innermost first: a diff opened
+    /// from a file's history returns to that history, not all the way out to the screen
+    /// behind it. Returns false when there is nothing to leave.
+    @discardableResult
+    func goBack() -> Bool {
+        if diffRequest != nil { diffRequest = nil; return true }
+        if fileHistoryPath != nil { fileHistoryPath = nil; return true }
+        if isSearching { clearSearch(); return true }
+        if selectedUnitID != nil || selectedCommitSHA != nil || selectedPairID != nil || selectedAuthor != nil {
+            selectedUnitID = nil; selectedCommitSHA = nil; selectedPairID = nil; selectedAuthor = nil
+            return true
+        }
+        return false
+    }
 
     /// Progressive disclosure: off shows plain-language cards; on adds every metric, the
     /// sortable table, the half-life slider and model notes. Persisted across launches.
@@ -124,6 +178,17 @@ final class AnalysisModel: ObservableObject {
     @Published private(set) var deepSearchInFlight = false
     @Published var focusSearchRequest = 0
     private var deepSearchTask: Task<Void, Never>?
+
+    /// True when there is something layered over the current screen to leave.
+    var canGoBack: Bool {
+        diffRequest != nil || fileHistoryPath != nil || isSearching
+            || selectedUnitID != nil || selectedCommitSHA != nil
+            || selectedPairID != nil || selectedAuthor != nil
+    }
+
+    /// True once a repository is on screen, so menu items that act on one can be disabled
+    /// rather than silently doing nothing.
+    var hasRepository: Bool { if case .loaded = state { return true }; return false }
 
     var isSearching: Bool { !globalSearch.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -276,6 +341,11 @@ final class AnalysisModel: ObservableObject {
             if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
                 open(url: URL(fileURLWithPath: path))
             }
+        } else if !arguments.contains("--no-reopen"), let last = RecentRepositories.last() {
+            // Reopening where you left off is the overwhelmingly common intent: almost
+            // nobody opens a repository tool to look at nothing. The welcome screen is
+            // still there on a first run, and `--no-reopen` gets it back for a screenshot.
+            open(url: last)
         }
     }
 
@@ -285,7 +355,14 @@ final class AnalysisModel: ObservableObject {
 
     func open(url: URL, preservingSelection: Bool = false) {
         let keptScreen = screen
-        state = .loading("Reading history…")
+        RecentRepositories.remember(url)
+        startWatching(url)
+        outsideChange = nil
+        refreshError = nil
+        lastAttempted = url
+        loadStarted = Date()
+        loadTask?.cancel()
+        state = .loading(LoadingProgress(stage: "Checking the repository"))
         rows = []
         rowsByID = [:]
         churn = nil
@@ -304,71 +381,151 @@ final class AnalysisModel: ObservableObject {
         histories = [:]
         loadingHistories = []
 
+        loadTask = Task {
+            do {
+                let analysis = try await Self.loadReportingTiming(root: url) { progress in
+                    Task { @MainActor in
+                        // Only while still loading: a late progress callback must not
+                        // overwrite a finished analysis or a cancellation.
+                        if case .loading = self.state { self.state = .loading(progress) }
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                self.adopt(analysis, keptScreen: keptScreen, preservingSelection: preservingSelection)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.state = .failed("\(error)")
+            }
+            self.loadStarted = nil
+        }
+    }
+
+    /// Stops waiting for the current analysis.
+    ///
+    /// Git and the parser run in processes and tasks that do not stop mid-syscall, so this
+    /// does not kill work already in flight — it stops GitView waiting for it and discards
+    /// the result. The honest description is "stop waiting", which is what the button says.
+    func cancelLoading() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadStarted = nil
+        state = .idle
+    }
+
+    /// Re-attempts the repository whose load failed.
+    func retryLastOpen() {
+        guard let lastAttempted else { return }
+        open(url: lastAttempted)
+    }
+
+    /// Re-reads the repository *without* clearing the screen first.
+    ///
+    /// `open` blanks everything and shows the loading screen, which is right when you are
+    /// moving to a different project and wrong when you are standing still: a refresh that
+    /// empties the window and fills it again a second later reads as a glitch, and loses
+    /// your place. Here the old analysis stays up, fully usable, until the new one is ready
+    /// to take its place. A refresh that fails leaves the old data alone and says so, rather
+    /// than throwing away a perfectly good view of the repository.
+    func refresh() {
+        guard case .loaded(let current) = state, !isRefreshing else { return }
+        let root = current.root
+        let keptScreen = screen
+        isRefreshing = true
+        refreshError = nil
+        let note = outsideChange?.summary
         Task {
             do {
-                let started = Date()
-                let analysis = try await AnalysisService.load(root: url)
-                // Printed so a run can be timed from the outside without guessing from
-                // wall clock, which a screenshot delay would dominate.
-                FileHandle.standardError.write(Data(
-                    String(format: "gitview: analysis %@ — history %.2fs, parse %.2fs, facts %.2fs, total %.2fs\n",
-                           analysis.source.summary, analysis.historyDuration, analysis.parseDuration,
-                           analysis.factsDuration, Date().timeIntervalSince(started)).utf8))
-                self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
-                self.contributors = ContributorStats.compute(commits: analysis.commits)
-                self.rebuildCatchUp(for: analysis)
-                if let wanted = self.pendingAuthorSelection {
-                    self.pendingAuthorSelection = nil
-                    self.selectedAuthor = self.contributors.first {
-                        $0.name == wanted || $0.name.localizedCaseInsensitiveContains(wanted)
-                    }?.name
-                }
-                self.ownership = OwnershipBuilder.build(
-                    commits: analysis.commits,
-                    currentPaths: Set(analysis.info.inventory.files.map(\.path)))
-                if let prefix = self.pendingCommitSelection {
-                    self.pendingCommitSelection = nil
-                    self.selectedCommitSHA = analysis.commits.first {
-                        $0.sha.hasPrefix(prefix) || $0.subject.localizedCaseInsensitiveContains(prefix)
-                    }?.sha
-                }
-                self.state = .loaded(analysis)
-                if preservingSelection { self.screen = keptScreen }
-                self.rebuild()
-                self.refreshPushPlan()
-                if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
-                if let path = self.pendingFileHistory {
-                    self.pendingFileHistory = nil
-                    self.showFileHistory(path)
-                }
-                if let spec = self.pendingDiff {
-                    self.pendingDiff = nil
-                    if let colon = spec.firstIndex(of: ":") {
-                        let ref = String(spec[spec.startIndex..<colon])
-                        let path = String(spec[spec.index(after: colon)...])
-                        if ref == "working" {
-                            self.showDiff(.workingTree(staged: false), path: path, title: "Uncommitted changes")
-                        } else {
-                            self.selectedCommitSHA = ref
-                            self.showDiff(.commit(sha: ref), path: path, title: ref)
-                        }
-                    }
-                }
-                // After `state` is set: runComparison reads `analysis`, which is nil until then.
-                if let spec = self.pendingCompare {
-                    self.pendingCompare = nil
-                    let parts = spec.components(separatedBy: "..")
-                    if parts.count == 2 {
-                        self.compareFrom = parts[0]
-                        self.compareTo = parts[1]
-                        self.runComparison()
-                    }
-                }
+                let analysis = try await Self.loadReportingTiming(root: root)
+                self.adopt(analysis, keptScreen: keptScreen, preservingSelection: true)
+                if let note { self.flash(note) }
             } catch {
-                self.state = .failed("\(error)")
+                self.refreshError = "\(error)"
+            }
+            self.isRefreshing = false
+            self.outsideChange = nil
+        }
+    }
+
+    /// Shows `note` for a few seconds and then takes it away.
+    private func flash(_ note: String) {
+        refreshNoteTask?.cancel()
+        refreshNote = note
+        refreshNoteTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.refreshNote = nil
+        }
+    }
+
+    /// Loads and prints the stage timings to stderr, so a run can be timed from outside
+    /// without a screenshot delay dominating the wall clock.
+    private static func loadReportingTiming(
+        root: URL, progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in }
+    ) async throws -> RepositoryAnalysis {
+        let started = Date()
+        let analysis = try await AnalysisService.load(root: root, progress: progress)
+        FileHandle.standardError.write(Data(
+            String(format: "gitview: analysis %@ — history %.2fs, parse %.2fs, facts %.2fs, total %.2fs\n",
+                   analysis.source.summary, analysis.historyDuration, analysis.parseDuration,
+                   analysis.factsDuration, Date().timeIntervalSince(started)).utf8))
+        return analysis
+    }
+
+    /// Takes a freshly read analysis as the one on screen. Shared by opening and refreshing,
+    /// so a refresh cannot drift out of step with an open.
+    private func adopt(_ analysis: RepositoryAnalysis, keptScreen: Screen, preservingSelection: Bool) {
+        self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
+        self.contributors = ContributorStats.compute(commits: analysis.commits)
+        self.rebuildCatchUp(for: analysis)
+        if let wanted = self.pendingAuthorSelection {
+            self.pendingAuthorSelection = nil
+            self.selectedAuthor = self.contributors.first {
+                $0.name == wanted || $0.name.localizedCaseInsensitiveContains(wanted)
+            }?.name
+        }
+        self.ownership = OwnershipBuilder.build(
+            commits: analysis.commits,
+            currentPaths: Set(analysis.info.inventory.files.map(\.path)))
+        if let prefix = self.pendingCommitSelection {
+            self.pendingCommitSelection = nil
+            self.selectedCommitSHA = analysis.commits.first {
+                $0.sha.hasPrefix(prefix) || $0.subject.localizedCaseInsensitiveContains(prefix)
+            }?.sha
+        }
+        self.state = .loaded(analysis)
+        if preservingSelection { self.screen = keptScreen }
+        self.rebuild()
+        self.refreshPushPlan()
+        if let term = self.pendingSearch { self.pendingSearch = nil; self.globalSearch = term }
+        if let path = self.pendingFileHistory {
+            self.pendingFileHistory = nil
+            self.showFileHistory(path)
+        }
+        if let spec = self.pendingDiff {
+            self.pendingDiff = nil
+            if let colon = spec.firstIndex(of: ":") {
+                let ref = String(spec[spec.startIndex..<colon])
+                let path = String(spec[spec.index(after: colon)...])
+                if ref == "working" {
+                    self.showDiff(.workingTree(staged: false), path: path, title: "Uncommitted changes")
+                } else {
+                    self.selectedCommitSHA = ref
+                    self.showDiff(.commit(sha: ref), path: path, title: ref)
+                }
+            }
+        }
+        // After `state` is set: runComparison reads `analysis`, which is nil until then.
+        if let spec = self.pendingCompare {
+            self.pendingCompare = nil
+            let parts = spec.components(separatedBy: "..")
+            if parts.count == 2 {
+                self.compareFrom = parts[0]
+                self.compareTo = parts[1]
+                self.runComparison()
             }
         }
     }
+
 
     /// Re-derives the ranking from the cached analysis.
     ///
@@ -745,7 +902,11 @@ final class AnalysisModel: ObservableObject {
             self.writeError = failure
             self.writeInFlight = false
             if failure == nil, reloadHistory {
-                self.open(url: root, preservingSelection: true)
+                // `refresh`, not `open`: committing should not blank the window and rebuild
+                // it from a loading screen. The watcher will also see this write, but by
+                // the time it asks, HEAD already matches what is on screen, so it does
+                // nothing — the two paths cannot both reload.
+                self.refresh()
             } else {
                 self.refreshWorkingState()
                 self.refreshPushPlan()
@@ -835,6 +996,71 @@ final class AnalysisModel: ObservableObject {
     }
 
     /// Re-reads `git status`. Cheap, so it runs whenever the app comes forward.
+    // MARK: - Staying current
+
+    /// Watches `root` from now on, replacing any previous watch.
+    private func startWatching(_ root: URL) {
+        watcher?.stop()
+        watcher = RepositoryWatcher(root: root) { [weak self] in
+            Task { @MainActor in self?.repositoryMayHaveMoved() }
+        }
+    }
+
+    /// The watcher knows only that a file under `.git` changed — which is true of a commit,
+    /// a checkout and a plain `git status` alike. Ask git what actually differs, cheaply,
+    /// and do nothing at all unless the history on screen is genuinely behind.
+    private func repositoryMayHaveMoved() {
+        guard case .loaded(let analysis) = state, !isRefreshing, !writeInFlight else { return }
+        // The working copy and the push plan are cheap and never disruptive, so they are
+        // always brought up to date; the question below is only about history.
+        refreshWorkingState()
+        refreshPushPlan()
+
+        guard let knownHead = analysis.commits.first?.sha else { return }
+        let root = analysis.root
+        let knownBranch = analysis.workingState.branch
+        Task.detached(priority: .utility) {
+            let repository = GitRepository(url: root)
+            guard let head = try? repository.headSHA(), head != knownHead else { return }
+            let fastForward = repository.isAncestor(knownHead, of: head)
+            let added = fastForward ? repository.commitCount(from: knownHead, to: head) : 0
+            let branch = (try? repository.workingState().branch) ?? knownBranch
+            await MainActor.run {
+                self.noteOutsideChange(branch: branch, knownBranch: knownBranch,
+                                       added: added, isFastForward: fastForward)
+            }
+        }
+    }
+
+    private func noteOutsideChange(branch: String?, knownBranch: String?,
+                                   added: Int, isFastForward: Bool) {
+        guard case .loaded = state, !isRefreshing else { return }
+        let summary: String
+        if let branch, branch != knownBranch {
+            summary = "Now on \(branch)"
+        } else if !isFastForward {
+            summary = "History was rewritten"
+        } else if added > 0 {
+            summary = added == 1 ? "1 new commit" : "\(added) new commits"
+        } else {
+            summary = "The history moved"
+        }
+        outsideChange = OutsideChange(summary: summary, isFastForward: isFastForward)
+        // Bring it in straight away unless that would pull something out from under the
+        // user. Reading a diff, a file's history or a set of search results means they are
+        // looking at a specific thing; swapping the data underneath would lose their place,
+        // so the banner waits for them instead.
+        if !isMidFlow { refresh() }
+    }
+
+    /// True when the user is inside something that a silent reload would interrupt.
+    private var isMidFlow: Bool {
+        diffRequest != nil || fileHistoryPath != nil || isSearching
+            || confirmation != nil || showSettings || comparisonInFlight
+    }
+
+    func dismissOutsideChange() { outsideChange = nil }
+
     func refreshWorkingState() {
         guard case .loaded(var analysis) = state else { return }
         let root = analysis.root

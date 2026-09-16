@@ -151,6 +151,7 @@ struct FileHistoryView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { CommitActions(commit: entry.commit) }
                 }
             }
         }

@@ -32,9 +32,16 @@ struct OverviewScreen: View {
 
                 LanguagesCard(inventory: analysis.info.inventory)
 
+                // The catch-up card at the top already lists the newest commits. Showing
+                // them again here was the same five rows twice on one screen, each with
+                // its own "see all commits" link. Recent activity is kept for the case the
+                // catch-up cannot cover — nothing new since the last visit — where it is
+                // the only place the latest work appears.
                 HStack(alignment: .top, spacing: Theme.Space.l) {
-                    RecentActivityCard(commits: Array(analysis.commits.prefix(5)))
-                        .frame(maxWidth: .infinity)
+                    if model.catchUp?.isEmpty ?? true {
+                        RecentActivityCard(commits: Array(analysis.commits.prefix(5)))
+                            .frame(maxWidth: .infinity)
+                    }
                     if let health = model.health {
                         HealthCard(health: health).frame(maxWidth: .infinity)
                     }
@@ -92,6 +99,10 @@ struct OverviewScreen: View {
     static func historySpan(_ range: ClosedRange<Date>?) -> String {
         guard let range else { return "—" }
         let days = range.upperBound.timeIntervalSince(range.lowerBound) / 86_400
+        // A project started this morning has a history spanning zero days, which is true
+        // and reads like a bug. Say what it means instead.
+        if days < 1 { return "Today" }
+        if days < 2 { return "1 day" }
         if days < 60 { return "\(Int(days)) days" }
         if days < 365 * 1.5 { return "\(Int((days / 30).rounded())) months" }
         return "\(Int((days / 365).rounded())) years"
@@ -134,6 +145,11 @@ struct RecentActivityCard: View {
         Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Recent activity")
+                // The connector between avatars is `maxHeight: .infinity`, so if this stack
+                // is ever handed more height than it needs — a taller card beside it, a
+                // stretching container — the extra goes into the gaps between commits and
+                // five rows spread over half a screen. Pinning it to its ideal height keeps
+                // the connector doing its job without letting it become the layout.
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(commits.enumerated()), id: \.element.sha) { index, commit in
                         Button { model.selectedCommitSHA = commit.sha } label: {
@@ -158,8 +174,10 @@ struct RecentActivityCard: View {
                         .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .contextMenu { CommitActions(commit: commit) }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
                 LinkButton(title: "See all commits →") { model.screen = .commits }
             }
         }

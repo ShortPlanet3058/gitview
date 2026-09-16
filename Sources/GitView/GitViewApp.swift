@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitViewCore
 
 @main
 struct GitViewApp: App {
@@ -19,12 +20,48 @@ struct GitViewApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open Repository…") { chooseRepository(into: model) }
                     .keyboardShortcut("o")
+                // Built fresh each time the menu opens, so a repository deleted since
+                // launch is not offered.
+                Menu("Open Recent") {
+                    ForEach(RecentRepositories.all(), id: \.path) { url in
+                        Button(url.lastPathComponent) { model.open(url: url) }
+                    }
+                    if !RecentRepositories.all().isEmpty {
+                        Divider()
+                        Button("Clear Menu") { RecentRepositories.clear() }
+                    }
+                }
+                .disabled(RecentRepositories.all().isEmpty)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Refresh") { model.refresh() }
+                    .keyboardShortcut("r")
+                    .disabled(!model.hasRepository || model.isRefreshing)
+                // Escape does this too, from the view itself, so it is not listed twice.
+                Button("Back") { model.goBack() }
+                    .keyboardShortcut("[")
+                    .disabled(!model.canGoBack)
+                Divider()
+                // Numbered from what the sidebar shows, so ⌘4 is always the fourth item
+                // on screen. Past nine there is no obvious key, and the sidebar is right
+                // there, so the rest go unshortcut rather than onto arbitrary keys.
+                ForEach(Array(model.visibleScreens.prefix(9).enumerated()), id: \.element) { index, screen in
+                    Button(screen.title) { model.screen = screen }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                        .disabled(!model.hasRepository)
+                }
+                Divider()
+                Toggle("Advanced Mode", isOn: $model.advanced)
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Settings…") { model.showSettings = true }
+                    .keyboardShortcut(",")
+                    .disabled(!model.hasRepository)
             }
             CommandGroup(after: .textEditing) {
                 Button("Find…") { model.focusSearchRequest += 1 }
                     .keyboardShortcut("f")
+                    .disabled(!model.hasRepository)
                 Button("Clear Search") { model.clearSearch() }
-                    .keyboardShortcut(.escape, modifiers: [])
                     .disabled(!model.isSearching)
             }
         }

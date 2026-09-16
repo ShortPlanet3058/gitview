@@ -36,6 +36,18 @@ public struct GitRepository: Sendable {
         (try? GitProcess.capture(arguments: ["merge-base", "--is-ancestor", ancestor, descendant], in: url)) != nil
     }
 
+    /// How many commits `to` has that `from` does not — `git rev-list --count from..to`.
+    ///
+    /// Counting this way costs a graph walk and nothing else. Asking `loadHistory` and
+    /// taking `.count` would read every patch in the range to answer a question about
+    /// arithmetic, which is what makes the difference between instant and seconds when
+    /// something is only checking whether the repository moved.
+    public func commitCount(from: String, to: String) -> Int {
+        guard let output = try? GitProcess.capture(
+            arguments: ["rev-list", "--count", "\(from)..\(to)"], in: url) else { return 0 }
+        return Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
     /// - Parameter since: when set, reads only commits after this one.
     public func loadHistory(since: String? = nil) throws -> [Commit] {
         try loadHistory(range: since.map { "\($0)..HEAD" })

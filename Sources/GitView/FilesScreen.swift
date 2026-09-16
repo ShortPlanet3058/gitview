@@ -54,6 +54,16 @@ struct FilesScreen: View {
                                         }
                                         selectedPath = node.path
                                     }
+                                    .contextMenu {
+                                        if node.isDirectory {
+                                            Button("Reveal in Finder") {
+                                                revealInFinder(analysis.root.appendingPathComponent(node.path))
+                                            }
+                                            Button("Copy Path") { copyToPasteboard(node.path) }
+                                        } else {
+                                            PathActions(path: node.path)
+                                        }
+                                    }
                                 }
                             }
                         }

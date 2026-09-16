@@ -13,6 +13,7 @@ struct AppShell: View {
             VStack(spacing: 0) {
                 TopBar()
                 Rectangle().fill(Theme.hairline).frame(height: 1)
+                FreshnessBanner()
                 HStack(spacing: 0) {
                     main.frame(minWidth: 560, maxWidth: .infinity)
                     if let detail {
@@ -24,6 +25,10 @@ struct AppShell: View {
         }
         .background(Theme.page)
         .ignoresSafeArea()
+        // Escape leaves whatever is layered over the screen — a diff, a file's history, a
+        // search, an open detail panel — innermost first. It used to clear the search and
+        // nothing else, so the key did nothing almost everywhere in the app.
+        .onExitCommand { model.goBack() }
         .sheet(isPresented: $model.showSettings) { SettingsSheet().environmentObject(model) }
         // The working copy changes outside the app, so re-read it whenever we come forward.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -35,7 +40,7 @@ struct AppShell: View {
     private var main: some View {
         switch model.state {
         case .idle: WelcomeScreen()
-        case .loading(let stage): LoadingScreen(stage: stage)
+        case .loading(let progress): LoadingScreen(progress: progress)
         case .failed(let message): FailedScreen(message: message)
         case .loaded:
             if let request = model.diffRequest { DiffViewer(request: request) }
@@ -87,6 +92,57 @@ struct AppShell: View {
 
 // MARK: - Top bar
 
+/// A slim strip under the top bar, shown only when the repository moved under us or a
+/// refresh just brought something in. It never covers content and never steals focus: at
+/// most it asks for one click, and when GitView could refresh on its own it says what it
+/// did rather than changing the numbers silently.
+struct FreshnessBanner: View {
+    @EnvironmentObject private var model: AnalysisModel
+
+    var body: some View {
+        if let error = model.refreshError {
+            strip(icon: "exclamationmark.triangle.fill", tint: Theme.warning,
+                  message: "Couldn't refresh: \(error)") {
+                Button("Try Again") { model.refresh() }.buttonStyle(SecondaryButtonStyle())
+                Button { model.refreshError = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.inkMuted)
+            }
+        } else if let change = model.outsideChange {
+            strip(icon: change.isFastForward ? "arrow.down.circle.fill" : "exclamationmark.triangle.fill",
+                  tint: change.isFastForward ? Theme.accent : Theme.warning,
+                  message: change.isFastForward
+                    ? "\(change.summary) since this was read."
+                    : "\(change.summary) — what's on screen describes commits that may no longer exist.") {
+                Button("Refresh") { model.refresh() }.buttonStyle(PrimaryButtonStyle())
+                Button { model.dismissOutsideChange() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.inkMuted)
+            }
+        } else if let note = model.refreshNote {
+            strip(icon: "checkmark.circle.fill", tint: Theme.good, message: "Updated — \(note).") {
+                EmptyView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func strip<Trailing: View>(icon: String, tint: Color, message: String,
+                                       @ViewBuilder trailing: () -> Trailing) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: icon).font(.system(size: 12)).foregroundStyle(tint)
+                Text(message).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                Spacer()
+                trailing()
+            }
+            .padding(.horizontal, Theme.Space.xl)
+            .padding(.vertical, 8)
+            .background(tint.opacity(0.08))
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
 struct TopBar: View {
     @EnvironmentObject private var model: AnalysisModel
 
@@ -113,6 +169,17 @@ struct TopBar: View {
             Spacer()
             ModeSwitch()
             if let analysis = model.analysis {
+                Button { model.refresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
+                        .rotationEffect(.degrees(model.isRefreshing ? 360 : 0))
+                        .animation(model.isRefreshing
+                                   ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                                   : .default, value: model.isRefreshing)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(model.isRefreshing)
+                .help("Re-read this repository (⌘R)")
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([analysis.root])
                 } label: {
@@ -165,12 +232,8 @@ struct ModeSwitch: View {
 struct SidebarView: View {
     @EnvironmentObject private var model: AnalysisModel
 
-    private var repositoryScreens: [AnalysisModel.Screen] {
-        [.overview, .changes, .commits, .branches, .releases, .contributors, .files, .activity]
-    }
-    private var analysisScreens: [AnalysisModel.Screen] {
-        model.advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling]
-    }
+    private var repositoryScreens: [AnalysisModel.Screen] { AnalysisModel.repositoryScreens }
+    private var analysisScreens: [AnalysisModel.Screen] { model.analysisScreens }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -226,7 +289,28 @@ struct SidebarView: View {
     @ViewBuilder
     private var repository: some View {
         if let analysis = model.analysis {
-            Button { chooseRepository(into: model) } label: {
+            // A pop-up chevron has to open a pop-up. It used to open a file dialog, which
+            // is the one thing this control looks like it does not do.
+            Menu {
+                let others = RecentRepositories.all().filter { $0.standardizedFileURL != analysis.root.standardizedFileURL }
+                if !others.isEmpty {
+                    Section("Recent") {
+                        ForEach(others, id: \.path) { url in
+                            Button {
+                                model.open(url: url)
+                            } label: {
+                                Text(url.lastPathComponent)
+                                Text(url.deletingLastPathComponent().path)
+                            }
+                        }
+                    }
+                }
+                Button("Open Repository…") { chooseRepository(into: model) }
+                Divider()
+                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([analysis.root]) }
+                Button("Open in Terminal") { openInTerminal(analysis.root) }
+                Button("Copy Path") { copyToPasteboard(analysis.root.path) }
+            } label: {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: "folder.fill").foregroundStyle(Theme.inkMuted)
                     VStack(alignment: .leading, spacing: 1) {
@@ -241,8 +325,9 @@ struct SidebarView: View {
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
             }
-            .buttonStyle(.plain)
-            .help("Choose another repository")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Switch repository")
         } else {
             Button("Choose repository…") { chooseRepository(into: model) }
                 .buttonStyle(SecondaryButtonStyle())
@@ -308,6 +393,30 @@ struct WelcomeScreen: View {
                     .buttonStyle(PrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
                 Text("or drop a project folder here").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                // Somewhere to go that is not a file dialog. Only shown when there is
+                // history to show, so a first run stays as simple as it was.
+                let recent = RecentRepositories.all()
+                if !recent.isEmpty {
+                    HairlineDivider().padding(.vertical, Theme.Space.xs)
+                    Text("RECENT").font(Theme.Text.caption.weight(.semibold)).foregroundStyle(Theme.inkMuted)
+                    VStack(spacing: 2) {
+                        ForEach(recent.prefix(5), id: \.path) { url in
+                            Button { model.open(url: url) } label: {
+                                HStack(spacing: Theme.Space.s) {
+                                    Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+                                    Text(url.lastPathComponent).font(Theme.Text.body).foregroundStyle(Theme.ink)
+                                    Spacer()
+                                    Text(url.deletingLastPathComponent().lastPathComponent + "/")
+                                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                                        .lineLimit(1).truncationMode(.head)
+                                }
+                                .padding(.horizontal, Theme.Space.s).padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             }
             .padding(Theme.Space.xxl)
             .frame(maxWidth: 480)
@@ -333,17 +442,48 @@ struct WelcomeScreen: View {
     }
 }
 
+/// Says what is happening, how far along it is, and how long it has taken.
+///
+/// The previous version showed one fixed line and promised "a few seconds", which on a
+/// large repository was simply untrue — and a wait with no visible progress is one a person
+/// cannot tell apart from a hang. Every number here is real: the file count comes from the
+/// scanner as results land, the elapsed time is a clock, and nothing advances on its own
+/// to give an impression of movement.
 struct LoadingScreen: View {
-    let stage: String
+    @EnvironmentObject private var model: AnalysisModel
+    let progress: LoadingProgress
+    @State private var elapsed: TimeInterval = 0
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     var body: some View {
         VStack(spacing: Theme.Space.l) {
             ProgressView().controlSize(.large)
-            Text(stage).font(Theme.Text.heading).foregroundStyle(Theme.ink)
-            Text("Reading every commit, then parsing every file. A few seconds on a large project.")
-                .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-                .multilineTextAlignment(.center).frame(maxWidth: 360)
+            VStack(spacing: Theme.Space.xs) {
+                Text(progress.stage + "…").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                if let detail = progress.detail {
+                    Text(detail).font(Theme.Text.body.monospacedDigit()).foregroundStyle(Theme.inkSoft)
+                }
+            }
+            if let fraction = progress.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .frame(width: 260)
+            }
+            if elapsed >= 3 {
+                // Only once the wait is long enough to wonder about. Appearing instantly
+                // would make every quick load look slow.
+                Text("\(Int(elapsed))s so far")
+                    .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+            }
+            if elapsed >= 5 {
+                Button("Stop Waiting") { model.cancelLoading() }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onReceive(tick) { _ in
+            elapsed = model.loadStarted.map { Date().timeIntervalSince($0) } ?? 0
+        }
     }
 }
 
@@ -356,8 +496,12 @@ struct FailedScreen: View {
             Text("That didn't work").font(Theme.Text.title).foregroundStyle(Theme.ink)
             Text(message).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
                 .multilineTextAlignment(.center).textSelection(.enabled).frame(maxWidth: 460)
-            Button("Choose another repository…") { chooseRepository(into: model) }
-                .buttonStyle(SecondaryButtonStyle())
+            HStack(spacing: Theme.Space.s) {
+                Button("Try Again") { model.retryLastOpen() }
+                    .buttonStyle(PrimaryButtonStyle())
+                Button("Choose another repository…") { chooseRepository(into: model) }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

@@ -153,6 +153,7 @@ struct CommitDetailPanel: View {
                             .padding(.vertical, 5).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { PathActions(path: change.path) }
                             if change.path != commit.fileChanges.prefix(60).last?.path { HairlineDivider() }
                         }
                     }
