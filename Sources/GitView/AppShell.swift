@@ -231,62 +231,140 @@ struct RepositoryPicker: View {
     @EnvironmentObject private var model: AnalysisModel
     let analysis: RepositoryAnalysis
     @State private var hovering = false
+    @State private var frame: CGRect = .zero
+    @State private var controller = RepositoryMenuController()
 
     var body: some View {
-        Menu {
-            let others = RecentRepositories.all().filter {
-                $0.standardizedFileURL != analysis.root.standardizedFileURL
-            }
-            Section("Switch to") {
-                // The current one is listed too, ticked, so the menu answers "which am I
-                // looking at" as well as "what else is there".
-                Label(analysis.root.lastPathComponent, systemImage: "checkmark")
-                ForEach(others, id: \.path) { url in
-                    Button {
-                        model.open(url: url)
-                    } label: {
-                        Text(url.lastPathComponent)
-                        Text(url.deletingLastPathComponent().path)
-                    }
-                }
-            }
-            Button("Open Repository…") { chooseRepository(into: model) }
-            Divider()
-            Button("Reveal in Finder") { revealInFinder(analysis.root) }
-            Button("Open in Terminal") { openInTerminal(analysis.root) }
-            Button("Copy Path") { copyToPasteboard(analysis.root.path) }
-        } label: {
-            HStack(spacing: Theme.Space.s) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.accent)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("REPOSITORY")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.inkMuted)
-                        .tracking(0.6)
-                    Text(analysis.root.lastPathComponent)
-                        .font(Theme.Text.heading).foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
+        // A plain Button and a real NSMenu, not SwiftUI's `Menu`. The first version of this
+        // used `Menu` with `.menuStyle(.borderlessButton)` and `.menuIndicator(.hidden)`,
+        // which drew correctly and did nothing when clicked: with the indicator hidden, that
+        // style leaves the custom label visible but not hit-testable. A Button is the same
+        // control as the Refresh button beside it, and popping the menu up by hand means the
+        // behaviour does not depend on how SwiftUI decides to style a menu this year.
+        Button { present() } label: { picker }
+            .buttonStyle(.plain)
+            .background(GeometryReader { geometry in
+                Color.clear.onAppear { frame = geometry.frame(in: .global) }
+                    .onChange(of: geometry.frame(in: .global)) { frame = $0 }
+            })
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .help("\(analysis.root.path)\nClick to switch repository, or ⌘O to open another")
+            // Without this the control is missing from the accessibility tree entirely —
+            // which is how it reads to VoiceOver, and why it could not be found to test.
+            .accessibilityLabel("Repository \(analysis.root.lastPathComponent)")
+            .accessibilityHint("Switch to another repository")
+    }
+
+    private var picker: some View {
+        HStack(spacing: Theme.Space.s) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("REPOSITORY")
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Theme.inkMuted)
+                    .tracking(0.6)
+                Text(analysis.root.lastPathComponent)
+                    .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(hovering ? Theme.raised : Theme.surface,
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                .strokeBorder(hovering ? Theme.accent.opacity(0.5) : Theme.hairline))
-            .contentShape(Rectangle())
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Theme.inkMuted)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .help("\(analysis.root.path)\nClick to switch repository, or ⌘O to open another")
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(hovering ? Theme.raised : Theme.surface,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            .strokeBorder(hovering ? Theme.accent.opacity(0.5) : Theme.hairline))
+        .contentShape(Rectangle())
+    }
+
+    private func present() {
+        var entries: [RepositoryMenuController.Entry] = [
+            .init(title: analysis.root.lastPathComponent, checked: true, action: nil)
+        ]
+        for url in RecentRepositories.all()
+        where url.standardizedFileURL != analysis.root.standardizedFileURL {
+            entries.append(.init(title: url.lastPathComponent,
+                                 subtitle: url.deletingLastPathComponent().path,
+                                 action: { model.open(url: url) }))
+        }
+        entries.append(.separator)
+        entries.append(.init(title: "Open Repository…", action: { chooseRepository(into: model) }))
+        entries.append(.separator)
+        entries.append(.init(title: "Reveal in Finder", action: { revealInFinder(analysis.root) }))
+        entries.append(.init(title: "Open in Terminal", action: { openInTerminal(analysis.root) }))
+        entries.append(.init(title: "Copy Path", action: { copyToPasteboard(analysis.root.path) }))
+        controller.popUp(entries, under: frame)
+    }
+}
+
+/// Turns a list of entries into an `NSMenu` and shows it under the control.
+///
+/// Holding the closures here rather than on the menu items is what makes the actions
+/// survive: an `NSMenuItem` keeps only a target and a selector, and a target it does not
+/// own is free to be deallocated before the menu is dismissed.
+@MainActor
+final class RepositoryMenuController: NSObject {
+    struct Entry {
+        var title: String = ""
+        var subtitle: String? = nil
+        var checked = false
+        var action: (() -> Void)? = nil
+        var isSeparator = false
+
+        /// A computed property, not a `static let`: the closure it carries makes `Entry`
+        /// non-Sendable, and a stored global of a non-Sendable type is not allowed.
+        static var separator: Entry { Entry(isSeparator: true) }
+    }
+
+    private var actions: [Int: () -> Void] = [:]
+
+    func popUp(_ entries: [Entry], under frame: CGRect) {
+        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible),
+              let contentView = window.contentView else { return }
+
+        actions = [:]
+        let menu = NSMenu()
+        for (index, entry) in entries.enumerated() {
+            guard !entry.isSeparator else { menu.addItem(.separator()); continue }
+            let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
+            if let subtitle = entry.subtitle {
+                item.attributedTitle = Self.styled(entry.title, subtitle: subtitle)
+            }
+            item.state = entry.checked ? .on : .off
+            if let action = entry.action {
+                item.target = self
+                item.action = #selector(runEntryAction(_:))
+                item.tag = index
+                actions[index] = action
+            }
+            menu.addItem(item)
+        }
+
+        // SwiftUI's global frame has its origin at the top left; an unflipped NSView's is at
+        // the bottom left, so the menu would otherwise appear a window's height away.
+        let origin = NSPoint(x: frame.minX, y: contentView.bounds.height - frame.maxY)
+        menu.popUp(positioning: nil, at: origin, in: contentView)
+    }
+
+    @objc private func runEntryAction(_ sender: NSMenuItem) {
+        actions[sender.tag]?()
+    }
+
+    private static func styled(_ title: String, subtitle: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(
+            string: title,
+            attributes: [.font: NSFont.menuFont(ofSize: 0)])
+        result.append(NSAttributedString(
+            string: "\n" + subtitle,
+            attributes: [.font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                         .foregroundColor: NSColor.secondaryLabelColor]))
+        return result
     }
 }
 
