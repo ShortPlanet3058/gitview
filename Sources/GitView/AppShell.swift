@@ -231,29 +231,28 @@ struct RepositoryPicker: View {
     @EnvironmentObject private var model: AnalysisModel
     let analysis: RepositoryAnalysis
     @State private var hovering = false
-    @State private var frame: CGRect = .zero
-    @State private var controller = RepositoryMenuController()
+    @State private var showingMenu = false
 
     var body: some View {
-        // A plain Button and a real NSMenu, not SwiftUI's `Menu`. The first version of this
-        // used `Menu` with `.menuStyle(.borderlessButton)` and `.menuIndicator(.hidden)`,
-        // which drew correctly and did nothing when clicked: with the indicator hidden, that
-        // style leaves the custom label visible but not hit-testable. A Button is the same
-        // control as the Refresh button beside it, and popping the menu up by hand means the
-        // behaviour does not depend on how SwiftUI decides to style a menu this year.
-        Button { present() } label: { picker }
+        // A popover, not an `NSMenu` and not SwiftUI's `Menu`. The menu went through three
+        // versions to get here: `Menu` with `.menuStyle(.borderlessButton)` drew a label
+        // that could not be clicked at all, and a hand-rolled `NSMenu` opened at the bottom
+        // of the screen because the window's content view is flipped, so converting the
+        // button's position into it inverted the y axis. A popover has no coordinate maths
+        // to get wrong — it is anchored to this button by construction — and its contents
+        // are ordinary views, so the list can look like the rest of the app instead of like
+        // a system menu.
+        Button { showingMenu.toggle() } label: { picker }
             .buttonStyle(.plain)
-            .background(GeometryReader { geometry in
-                Color.clear.onAppear { frame = geometry.frame(in: .global) }
-                    .onChange(of: geometry.frame(in: .global)) { frame = $0 }
-            })
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
             .help("\(analysis.root.path)\nClick to switch repository, or ⌘O to open another")
-            // Without this the control is missing from the accessibility tree entirely —
-            // which is how it reads to VoiceOver, and why it could not be found to test.
             .accessibilityLabel("Repository \(analysis.root.lastPathComponent)")
             .accessibilityHint("Switch to another repository")
+            .popover(isPresented: $showingMenu, arrowEdge: .bottom) {
+                RepositoryMenu(analysis: analysis, dismiss: { showingMenu = false })
+                    .environmentObject(model)
+            }
     }
 
     private var picker: some View {
@@ -273,98 +272,126 @@ struct RepositoryPicker: View {
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(Theme.inkMuted)
+                .rotationEffect(.degrees(showingMenu ? 180 : 0))
+                .animation(.easeOut(duration: 0.15), value: showingMenu)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(hovering ? Theme.raised : Theme.surface,
+        .background(hovering || showingMenu ? Theme.raised : Theme.surface,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-            .strokeBorder(hovering ? Theme.accent.opacity(0.5) : Theme.hairline))
+            .strokeBorder(hovering || showingMenu ? Theme.accent.opacity(0.5) : Theme.hairline))
         .contentShape(Rectangle())
-    }
-
-    private func present() {
-        var entries: [RepositoryMenuController.Entry] = [
-            .init(title: analysis.root.lastPathComponent, checked: true, action: nil)
-        ]
-        for url in RecentRepositories.all()
-        where url.standardizedFileURL != analysis.root.standardizedFileURL {
-            entries.append(.init(title: url.lastPathComponent,
-                                 subtitle: url.deletingLastPathComponent().path,
-                                 action: { model.open(url: url) }))
-        }
-        entries.append(.separator)
-        entries.append(.init(title: "Open Repository…", action: { chooseRepository(into: model) }))
-        entries.append(.separator)
-        entries.append(.init(title: "Reveal in Finder", action: { revealInFinder(analysis.root) }))
-        entries.append(.init(title: "Open in Terminal", action: { openInTerminal(analysis.root) }))
-        entries.append(.init(title: "Copy Path", action: { copyToPasteboard(analysis.root.path) }))
-        controller.popUp(entries, under: frame)
     }
 }
 
-/// Turns a list of entries into an `NSMenu` and shows it under the control.
-///
-/// Holding the closures here rather than on the menu items is what makes the actions
-/// survive: an `NSMenuItem` keeps only a target and a selector, and a target it does not
-/// own is free to be deallocated before the menu is dismissed.
-@MainActor
-final class RepositoryMenuController: NSObject {
-    struct Entry {
-        var title: String = ""
-        var subtitle: String? = nil
-        var checked = false
-        var action: (() -> Void)? = nil
-        var isSeparator = false
+/// The contents of the repository pop-up, drawn with the app's own components.
+struct RepositoryMenu: View {
+    @EnvironmentObject private var model: AnalysisModel
+    let analysis: RepositoryAnalysis
+    let dismiss: () -> Void
 
-        /// A computed property, not a `static let`: the closure it carries makes `Entry`
-        /// non-Sendable, and a stored global of a non-Sendable type is not allowed.
-        static var separator: Entry { Entry(isSeparator: true) }
-    }
-
-    private var actions: [Int: () -> Void] = [:]
-
-    func popUp(_ entries: [Entry], under frame: CGRect) {
-        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible),
-              let contentView = window.contentView else { return }
-
-        actions = [:]
-        let menu = NSMenu()
-        for (index, entry) in entries.enumerated() {
-            guard !entry.isSeparator else { menu.addItem(.separator()); continue }
-            let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            if let subtitle = entry.subtitle {
-                item.attributedTitle = Self.styled(entry.title, subtitle: subtitle)
-            }
-            item.state = entry.checked ? .on : .off
-            if let action = entry.action {
-                item.target = self
-                item.action = #selector(runEntryAction(_:))
-                item.tag = index
-                actions[index] = action
-            }
-            menu.addItem(item)
+    private var others: [URL] {
+        RecentRepositories.all().filter {
+            $0.standardizedFileURL != analysis.root.standardizedFileURL
         }
-
-        // SwiftUI's global frame has its origin at the top left; an unflipped NSView's is at
-        // the bottom left, so the menu would otherwise appear a window's height away.
-        let origin = NSPoint(x: frame.minX, y: contentView.bounds.height - frame.maxY)
-        menu.popUp(positioning: nil, at: origin, in: contentView)
     }
 
-    @objc private func runEntryAction(_ sender: NSMenuItem) {
-        actions[sender.tag]?()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading("OPEN")
+            row(name: analysis.root.lastPathComponent,
+                detail: analysis.root.deletingLastPathComponent().path,
+                checked: true) {}
+
+            if !others.isEmpty {
+                heading("RECENT")
+                // Capped: this is a switcher, not a file browser. Everything ever opened is
+                // in File ▸ Open Recent.
+                ForEach(others.prefix(6), id: \.path) { url in
+                    row(name: url.lastPathComponent,
+                        detail: url.deletingLastPathComponent().path,
+                        checked: false) {
+                        dismiss()
+                        model.open(url: url)
+                    }
+                }
+            }
+
+            Divider().overlay(Theme.hairline).padding(.vertical, Theme.Space.xs)
+
+            action("Open Repository…", "folder.badge.plus") {
+                dismiss()
+                chooseRepository(into: model)
+            }
+            action("Reveal in Finder", "folder") { dismiss(); revealInFinder(analysis.root) }
+            action("Open in Terminal", "terminal") { dismiss(); openInTerminal(analysis.root) }
+            action("Copy Path", "doc.on.clipboard") { dismiss(); copyToPasteboard(analysis.root.path) }
+        }
+        .padding(Theme.Space.s)
+        .frame(width: 320)
+        .background(Theme.surface)
     }
 
-    private static func styled(_ title: String, subtitle: String) -> NSAttributedString {
-        let result = NSMutableAttributedString(
-            string: title,
-            attributes: [.font: NSFont.menuFont(ofSize: 0)])
-        result.append(NSAttributedString(
-            string: "\n" + subtitle,
-            attributes: [.font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                         .foregroundColor: NSColor.secondaryLabelColor]))
-        return result
+    private func heading(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Theme.inkMuted)
+            .tracking(0.6)
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+
+    private func row(name: String, detail: String, checked: Bool,
+                     action: @escaping () -> Void) -> some View {
+        MenuRow(action: action) {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: checked ? "checkmark.circle.fill" : "folder.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(checked ? Theme.accent : Theme.inkMuted)
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(name).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
+                    Text(detail).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1).truncationMode(.head)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func action(_ title: String, _ icon: String, _ perform: @escaping () -> Void) -> some View {
+        MenuRow(action: perform) {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: icon).font(.system(size: 11))
+                    .foregroundStyle(Theme.inkSoft).frame(width: 14)
+                Text(title).font(Theme.Text.body).foregroundStyle(Theme.ink)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+/// One row of the pop-up: full-width hit area, accent highlight under the pointer.
+struct MenuRow<Content: View>: View {
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            content
+                .padding(.horizontal, Theme.Space.s)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(hovering ? Theme.accentWash : .clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.1), value: hovering)
     }
 }
 
