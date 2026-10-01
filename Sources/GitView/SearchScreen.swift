@@ -4,14 +4,25 @@ import GitViewGit
 
 struct GlobalSearchField: View {
     @EnvironmentObject private var model: AnalysisModel
+    @Environment(\.staticRendering) private var staticRendering
     @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
+            if staticRendering {
+                // A real TextField is AppKit-backed and draws as a blank placeholder in the
+                // offscreen renderer, which is no use for a screenshot. Same metrics, plain
+                // text, only ever used when rendering to an image.
+                Text(model.globalSearch.isEmpty ? "Search commits, files, functions…" : model.globalSearch)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(model.globalSearch.isEmpty ? Theme.inkMuted : Theme.ink)
+                    .frame(width: 260, alignment: .leading)
+            } else {
             TextField("Search commits, files, functions…", text: $model.globalSearch)
                 .textFieldStyle(.plain).font(Theme.Text.body).focused($focused)
                 .frame(width: 260)
+            }
             if model.isSearching {
                 Button { model.clearSearch() } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
