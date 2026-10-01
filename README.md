@@ -11,6 +11,7 @@ who to ask about it, and which code is most likely to bite you.
 ![Swift 6](https://img.shields.io/badge/Swift-6.0-F05138?style=flat-square)
 ![Universal](https://img.shields.io/badge/binary-universal-blue?style=flat-square)
 ![No network](https://img.shields.io/badge/telemetry-none-brightgreen?style=flat-square)
+![MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 ![GitView's dashboard](docs/dashboard.png)
 
@@ -151,3 +152,7 @@ build/GitView.app/Contents/MacOS/GitView --repo <path> --screen overview \
   check shows the number behind it.
 - **Merge commits are not counted** by default, deliberately: counting them double-counts
   every change that arrived through one.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
