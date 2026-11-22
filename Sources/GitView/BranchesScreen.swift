@@ -114,7 +114,7 @@ struct BranchRow: View {
             HStack(spacing: Theme.Space.xs) {
                 if !branch.isCurrent {
                     Button(branch.isRemote ? "Track" : "Switch") {
-                        workingCopy.switchBranch(branch.name, isRemote: branch.isRemote)
+                        workingCopy.switchBranch(branch.checkoutTarget, isRemote: branch.isRemote)
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                     .disabled(workingCopy.writeInFlight)
@@ -134,7 +134,7 @@ struct BranchRow: View {
         .contextMenu {
             if !branch.isCurrent {
                 Button(branch.isRemote ? "Track & Switch" : "Switch to Branch") {
-                    workingCopy.switchBranch(branch.name, isRemote: branch.isRemote)
+                    workingCopy.switchBranch(branch.checkoutTarget, isRemote: branch.isRemote)
                 }
             }
             if canDelete {

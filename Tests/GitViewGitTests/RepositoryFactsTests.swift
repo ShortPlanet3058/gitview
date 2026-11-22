@@ -1,5 +1,6 @@
 import XCTest
 @testable import GitViewGit
+import GitViewCore
 
 final class RepositoryFactsTests: XCTestCase {
     func testRemoteToWebURL() {
@@ -41,5 +42,92 @@ final class RepositoryFactsTests: XCTestCase {
         XCTAssertEqual(FileInventory.category(forExtension: "PNG"), "Assets")
         XCTAssertEqual(FileInventory.category(forExtension: "md"), "Documents")
         XCTAssertEqual(FileInventory.category(forExtension: "xyz"), "Other")
+    }
+
+    func testParseConfigListExtractsRemotesAndIdentities() {
+        let config = """
+        user.name=Global Alice
+        user.email=Alice@Example.com
+        remote.origin.url=git@github.com:fork/gitview.git
+        remote.upstream.url=https://github.com/org/gitview.git
+        user.name=Work Alice
+        """
+        let summary = GitRepository.parseConfigList(config)
+        XCTAssertEqual(summary.userNames, ["Global Alice", "Work Alice"])
+        XCTAssertEqual(summary.userEmails, ["alice@example.com"])
+        XCTAssertEqual(summary.remotes["origin"], "git@github.com:fork/gitview.git")
+        XCTAssertEqual(summary.remotes["upstream"], "https://github.com/org/gitview.git")
+    }
+
+    func testParseWorktreesIdentifiesCurrentAndBranches() {
+        let output = """
+        worktree /tmp/repo-main
+        HEAD 1111111111111111111111111111111111111111
+        branch refs/heads/main
+
+        worktree /tmp/repo-feature
+        HEAD 2222222222222222222222222222222222222222
+        branch refs/heads/feat/x
+
+        worktree /tmp/repo-detached
+        HEAD 3333333333333333333333333333333333333333
+        detached
+        """
+        let trees = GitRepository.parseWorktrees(output, currentRoot: URL(fileURLWithPath: "/tmp/repo-feature"))
+        XCTAssertEqual(trees.count, 3)
+        XCTAssertFalse(trees[0].isCurrent)
+        XCTAssertEqual(trees[0].branch, "main")
+        XCTAssertTrue(trees[1].isCurrent)
+        XCTAssertEqual(trees[1].branch, "feat/x")
+        XCTAssertNil(trees[2].branch)
+    }
+
+    func testParseBranchRowsKeepsUpstreamAndDeduplicatesOrigin() {
+        let output = [
+            "refs/remotes/origin/main\u{1F}sha1\u{1F}2025-03-01T10:00:00Z\u{1F}Alice\u{1F}Newer origin",
+            "refs/remotes/upstream/main\u{1F}shaU\u{1F}2025-02-20T10:00:00Z\u{1F}Maintainer\u{1F}Upstream",
+            "refs/remotes/origin/remote-only\u{1F}shaR\u{1F}2025-02-15T10:00:00Z\u{1F}Bob\u{1F}Remote only",
+            "refs/heads/main\u{1F}shaLocal\u{1F}2025-02-10T10:00:00Z\u{1F}Alice\u{1F}Local main",
+            "refs/remotes/origin/HEAD\u{1F}sha1\u{1F}2025-03-01T10:00:00Z\u{1F}Alice\u{1F}HEAD pointer",
+        ].joined(separator: "\n")
+
+        let rows = GitRepository.parseBranchRows(output)
+        XCTAssertEqual(rows.map(\.name), ["upstream/main", "remote-only", "main"])
+        XCTAssertEqual(rows[0].remoteName, "upstream")
+        XCTAssertEqual(rows[1].remoteName, "origin")
+        XCTAssertFalse(rows[2].isRemote)
+    }
+
+    func testCachedDivergenceReusedInRepositoryBranches() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-facts-branch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-b", "main", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRoot)
+        try "1\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "a.txt"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-q", "-m", "Root"], in: tempRoot)
+
+        let repo = GitRepository(url: tempRoot)
+        let mainSHA = try repo.headSHA()
+        try repo.createBranch(name: "feat", checkout: true)
+        try "2\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try repo.stage(paths: ["a.txt"])
+        let featSHA = try repo.commit(subject: "Feat commit")
+
+        let first = try repo.branches(defaultBranch: "main", currentBranch: "feat", cachedDivergence: [:])
+        let pair = AnalysisCache.DivergencePair(baseSHA: mainSHA, tipSHA: featSHA)
+        XCTAssertEqual(first.computedDivergence[pair]?.ahead, 1)
+        XCTAssertEqual(first.computedDivergence[pair]?.behind, 0)
+
+        let second = try repo.branches(defaultBranch: "main", currentBranch: "feat",
+                                       cachedDivergence: first.computedDivergence)
+        XCTAssertTrue(second.computedDivergence.isEmpty, "Cache hit should skip rev-list computation")
+        let featInfo = try XCTUnwrap(second.branches.first { $0.name == "feat" })
+        XCTAssertEqual(featInfo.ahead, 1)
+        XCTAssertEqual(featInfo.behind, 0)
     }
 }

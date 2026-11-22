@@ -604,7 +604,7 @@ struct BranchPicker: View {
         MenuRow {
             guard !branch.isCurrent else { showingPopover = false; return }
             showingPopover = false
-            workingCopy.switchBranch(branch.name, isRemote: branch.isRemote)
+            workingCopy.switchBranch(branch.checkoutTarget, isRemote: branch.isRemote)
         } content: {
             HStack(spacing: Theme.Space.s) {
                 Image(systemName: branch.isCurrent ? "checkmark" : "arrow.triangle.branch")

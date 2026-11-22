@@ -112,9 +112,9 @@ public final class WorkspaceSession {
             guard let self else { return }
             switch kind {
             case .riskModel:
-                self.risk.rebuildFromCached()
+                self.risk.rebuildInBackground()
             case .coupling:
-                self.risk.rebuildCoupling()
+                self.risk.rebuildCouplingInBackground()
             case .identity:
                 self.rebuildCatchUp()
             case .environment:
@@ -269,10 +269,10 @@ public final class WorkspaceSession {
         inspector.setRepositoryRoot(analysis.root)
         if readiness.hasHistory {
             unitsByID = [:]
-            contributors = ContributorStats.compute(commits: analysis.commits)
+            contributors = analysis.precomputedContributors ?? ContributorStats.compute(commits: analysis.commits)
             recentActivityBuckets = Self.computeRecentBuckets(from: analysis.commits)
             rebuildCatchUp(for: analysis)
-            ownership = OwnershipBuilder.build(
+            ownership = analysis.precomputedOwnership ?? OwnershipBuilder.build(
                 commits: analysis.commits,
                 currentPaths: Set(analysis.info.inventory.files.map(\.path))
             )
@@ -351,7 +351,7 @@ public final class WorkspaceSession {
         loadProgress = nil
         inspector.setRepositoryRoot(analysis.root)
         self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
-        self.contributors = ContributorStats.compute(commits: analysis.commits)
+        self.contributors = analysis.precomputedContributors ?? ContributorStats.compute(commits: analysis.commits)
         self.recentActivityBuckets = Self.computeRecentBuckets(from: analysis.commits)
         self.rebuildCatchUp(for: analysis)
         if let wanted = navigation.pendingAuthorSelection {
@@ -360,7 +360,7 @@ public final class WorkspaceSession {
                 $0.name == wanted || $0.name.localizedCaseInsensitiveContains(wanted)
             }?.name
         }
-        self.ownership = OwnershipBuilder.build(
+        self.ownership = analysis.precomputedOwnership ?? OwnershipBuilder.build(
             commits: analysis.commits,
             currentPaths: Set(analysis.info.inventory.files.map(\.path))
         )

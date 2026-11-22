@@ -93,12 +93,18 @@ final class RiskStore {
     private(set) var graphPositions: [UUID: CGPoint] = [:]
     private(set) var graphLayoutInProgress = false
     @ObservationIgnored private var graphLayoutGeneration = 0
+    @ObservationIgnored private var rebuildGeneration = 0
+    @ObservationIgnored private var backgroundRebuildTask: Task<Void, Never>?
 
     init(preferences: AppPreferences) {
         self.preferences = preferences
     }
 
     func resetForOpen() {
+        backgroundRebuildTask?.cancel()
+        backgroundRebuildTask = nil
+        rebuildGeneration += 1
+        graphLayoutGeneration += 1
         latestAnalysis = nil
         latestUnitsByID = [:]
         latestIsComplete = false
@@ -120,39 +126,167 @@ final class RiskStore {
     }
 
     func update(analysis: RepositoryAnalysis, unitsByID: [UUID: CodeUnit], isComplete: Bool) {
+        backgroundRebuildTask?.cancel()
+        backgroundRebuildTask = nil
+        rebuildGeneration += 1
         self.latestAnalysis = analysis
         self.latestUnitsByID = unitsByID
         self.latestIsComplete = isComplete
         rebuildFromCached()
     }
 
+    private struct ConfigSnapshot: Sendable {
+        let halfLifeDays: Double
+        let excludeTests: Bool
+        let excludeGenerated: Bool
+        let ignoredPaths: String
+        let minimumCommits: Int
+        let minSharedCommits: Int
+        let kindFilter: KindFilter
+        let couplingScope: CouplingScope
+    }
+
+    private func configSnapshot() -> ConfigSnapshot {
+        ConfigSnapshot(
+            halfLifeDays: preferences.halfLifeDays,
+            excludeTests: preferences.excludeTests,
+            excludeGenerated: preferences.excludeGenerated,
+            ignoredPaths: preferences.ignoredPaths,
+            minimumCommits: preferences.minimumCommits,
+            minSharedCommits: preferences.minSharedCommits,
+            kindFilter: kindFilter,
+            couplingScope: couplingScope
+        )
+    }
+
+    private struct RankingOutput: Sendable {
+        let excludedUnitCount: Int
+        let recentWindowLabel: String
+        let levelCounts: [RiskLevel: Int]
+        let health: RepositoryHealth?
+        let allRankedRows: [RiskRow]
+        let allRankedRowsByID: [UUID: RiskRow]
+        let fileTree: FileTree?
+        let churn: ChurnIndex
+    }
+
+    private struct CouplingOutput: Sendable {
+        let coupling: CouplingIndex
+        let couplingRows: [CouplingRow]
+        let couplingRowsByID: [String: CouplingRow]
+    }
+
     func rebuildFromCached() {
         guard let analysis = latestAnalysis else { return }
         fullRebuildCount += 1
+        let output = Self.computeRanking(analysis: analysis, config: configSnapshot(), isComplete: latestIsComplete)
+        applyRankingOutput(output, analysis: analysis, isComplete: latestIsComplete)
+        if latestIsComplete {
+            rebuildCoupling()
+        }
+    }
 
+    /// Recomputes risk ranking, health, FileTree, and coupling off the main actor when preferences change.
+    func rebuildInBackground() {
+        guard let analysis = latestAnalysis else { return }
+        fullRebuildCount += 1
+        let config = configSnapshot()
+        let unitsSnapshot = latestUnitsByID
+        let complete = latestIsComplete
+        backgroundRebuildTask?.cancel()
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
+
+        backgroundRebuildTask = Task {
+            let ranked = await Task.detached(priority: .userInitiated) {
+                Self.computeRanking(analysis: analysis, config: config, isComplete: complete)
+            }.value
+            guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
+            let coupled: CouplingOutput? = complete ? await Task.detached(priority: .userInitiated) {
+                Self.computeCoupling(
+                    units: unitsSnapshot,
+                    rankedIDs: ranked.allRankedRows.map(\.id),
+                    churn: ranked.churn,
+                    config: config
+                )
+            }.value : nil
+            guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
+            self.applyRankingOutput(ranked, analysis: analysis, isComplete: complete)
+            if let coupled {
+                self.applyCouplingOutput(coupled)
+            }
+        }
+    }
+
+    func rebuildCouplingInBackground() {
+        guard let churn, latestAnalysis != nil else { return }
+        let config = configSnapshot()
+        let unitsSnapshot = latestUnitsByID
+        let rankedIDs = allRankedRows.map(\.id)
+        backgroundRebuildTask?.cancel()
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
+
+        backgroundRebuildTask = Task {
+            let coupled = await Task.detached(priority: .userInitiated) {
+                Self.computeCoupling(units: unitsSnapshot, rankedIDs: rankedIDs, churn: churn, config: config)
+            }.value
+            guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
+            self.applyCouplingOutput(coupled)
+        }
+    }
+
+    private func applyRankingOutput(_ output: RankingOutput, analysis: RepositoryAnalysis, isComplete: Bool) {
+        excludedUnitCount = output.excludedUnitCount
+        recentWindowLabel = output.recentWindowLabel
+        levelCounts = output.levelCounts
+        guard isComplete else {
+            health = nil
+            fileTree = FileTree(files: analysis.info.inventory.files, rows: [])
+            return
+        }
+        health = output.health
+        allRankedRows = output.allRankedRows
+        allRankedRowsByID = output.allRankedRowsByID
+        fileTree = output.fileTree
+        churn = output.churn
+        applySearchFilter()
+    }
+
+    private func applyCouplingOutput(_ output: CouplingOutput) {
+        coupling = output.coupling
+        couplingRows = output.couplingRows
+        couplingRowsByID = output.couplingRowsByID
+        onCouplingChanged?(output.couplingRows, output.couplingRowsByID)
+        rebuildGraph()
+    }
+
+    nonisolated private static func computeRanking(analysis: RepositoryAnalysis,
+                                               config: ConfigSnapshot,
+                                               isComplete: Bool) -> RankingOutput {
         let before = analysis.allUnits.count
         var units = analysis.allUnits
-        if preferences.excludeTests {
+        if config.excludeTests {
             units = units.filter { !PathClassifier.isTest(path: $0.filePath) }
         }
-        if preferences.excludeGenerated {
+        if config.excludeGenerated {
             units = units.filter { !analysis.generatedFiles.contains($0.filePath) }
         }
-        let fragments = preferences.ignoredPaths
+        let fragments = config.ignoredPaths
             .split(whereSeparator: { $0 == "," || $0 == "\n" })
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         if !fragments.isEmpty {
             units = units.filter { unit in !fragments.contains { unit.filePath.contains($0) } }
         }
-        excludedUnitCount = before - units.count
-        units = units.filter { kindFilter.matches($0.kind) }
+        let excludedCount = before - units.count
+        units = units.filter { config.kindFilter.matches($0.kind) }
 
-        let index = ChurnJoiner.join(units: units, commits: analysis.commits)
+        let index = analysis.fullChurn ?? ChurnJoiner.join(units: analysis.allUnits, commits: analysis.commits)
         let now = Date()
-        let model = RiskModel(halfLife: preferences.halfLifeDays * 86_400)
+        let model = RiskModel(halfLife: config.halfLifeDays * 86_400)
         var ranked = model.rank(units: units, churn: index, now: now)
-        ranked = ranked.filter { $0.commitCount >= preferences.minimumCommits }
+        ranked = ranked.filter { $0.commitCount >= config.minimumCommits }
 
         let levels = RiskLevel.assign(to: ranked)
         let complexities = ranked.map(\.unit.complexity).sorted()
@@ -166,10 +300,9 @@ final class RiskStore {
             return Double(low) / Double(complexities.count)
         }
 
-        let windowDays = preferences.halfLifeDays * 2
+        let windowDays = config.halfLifeDays * 2
         let windowStart = now.addingTimeInterval(-windowDays * 86_400)
         let windowLabel = RiskExplanation.windowLabel(days: windowDays)
-        recentWindowLabel = windowLabel
 
         let healthStart = now.addingTimeInterval(-RepositoryHealth.assessmentWindow)
         var complexTouches = 0, allTouches = 0, complexFunctions = 0
@@ -195,17 +328,24 @@ final class RiskStore {
                 now: now
             ))
         }
-        levelCounts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
+        let counts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
 
-        guard latestIsComplete else {
-            health = nil
-            fileTree = FileTree(files: analysis.info.inventory.files, rows: [])
-            return
+        guard isComplete else {
+            return RankingOutput(
+                excludedUnitCount: excludedCount,
+                recentWindowLabel: windowLabel,
+                levelCounts: counts,
+                health: nil,
+                allRankedRows: [],
+                allRankedRowsByID: [:],
+                fileTree: nil,
+                churn: index
+            )
         }
 
         let ninetyDays = now.addingTimeInterval(-90 * 86_400)
         let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && b.date < ninetyDays }
-        health = RepositoryHealth.assess(.init(
+        let healthValue = RepositoryHealth.assess(.init(
             lastCommit: analysis.commits.map(\.date).max(),
             activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays, excludingBots: true),
             staleLocalBranches: analysis.branches.filter { !$0.isRemote && isStale($0) }.count,
@@ -217,13 +357,52 @@ final class RiskStore {
             now: now
         ))
 
-        allRankedRows = built
-        allRankedRowsByID = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
-        fileTree = FileTree(files: analysis.info.inventory.files, rows: built)
-        churn = index
+        let rowsByID = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
+        let tree = FileTree(files: analysis.info.inventory.files, rows: built)
+        return RankingOutput(
+            excludedUnitCount: excludedCount,
+            recentWindowLabel: windowLabel,
+            levelCounts: counts,
+            health: healthValue,
+            allRankedRows: built,
+            allRankedRowsByID: rowsByID,
+            fileTree: tree,
+            churn: index
+        )
+    }
 
-        applySearchFilter()
-        rebuildCoupling()
+    nonisolated private static func computeCoupling(units: [UUID: CodeUnit],
+                                                rankedIDs: [UUID],
+                                                churn: ChurnIndex,
+                                                config: ConfigSnapshot) -> CouplingOutput {
+        let analyzer = CouplingAnalyzer(
+            maxUnitsPerCommit: 50,
+            minSharedCommits: config.minSharedCommits,
+            halfLife: config.halfLifeDays * 86_400
+        )
+        let unitsInJoin = rankedIDs.compactMap { units[$0] }
+        let index = analyzer.analyze(units: unitsInJoin, churn: churn, now: Date())
+
+        let built: [CouplingRow] = index.pairs.filter(config.couplingScope.matches).compactMap { pair in
+            guard let a = units[pair.a], let b = units[pair.b] else { return nil }
+            let commitsA = churn.commitCount(for: a), commitsB = churn.commitCount(for: b)
+            let anchor = commitsA <= commitsB ? a : b
+            return CouplingRow(
+                id: pair.id,
+                pair: pair,
+                nameA: a.name,
+                locationA: "\(a.filePath):\(a.lineRange.lowerBound)",
+                nameB: b.name,
+                locationB: "\(b.filePath):\(b.lineRange.lowerBound)",
+                anchorName: anchor.name,
+                anchorCommits: min(commitsA, commitsB)
+            )
+        }
+        return CouplingOutput(
+            coupling: index,
+            couplingRows: built,
+            couplingRowsByID: Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
+        )
     }
 
     /// Filters `allRankedRows` by `searchText` in O(N) without touching git history or layouts.
@@ -246,34 +425,13 @@ final class RiskStore {
 
     func rebuildCoupling() {
         guard let churn, latestAnalysis != nil else { return }
-        let analyzer = CouplingAnalyzer(
-            maxUnitsPerCommit: 50,
-            minSharedCommits: preferences.minSharedCommits,
-            halfLife: preferences.halfLifeDays * 86_400
+        let output = Self.computeCoupling(
+            units: latestUnitsByID,
+            rankedIDs: allRankedRows.map(\.id),
+            churn: churn,
+            config: configSnapshot()
         )
-        let unitsInJoin = allRankedRows.map(\.id).compactMap { latestUnitsByID[$0] }
-        let index = analyzer.analyze(units: unitsInJoin, churn: churn, now: Date())
-        coupling = index
-
-        let built: [CouplingRow] = index.pairs.filter(couplingScope.matches).compactMap { pair in
-            guard let a = latestUnitsByID[pair.a], let b = latestUnitsByID[pair.b] else { return nil }
-            let commitsA = churn.commitCount(for: a), commitsB = churn.commitCount(for: b)
-            let anchor = commitsA <= commitsB ? a : b
-            return CouplingRow(
-                id: pair.id,
-                pair: pair,
-                nameA: a.name,
-                locationA: "\(a.filePath):\(a.lineRange.lowerBound)",
-                nameB: b.name,
-                locationB: "\(b.filePath):\(b.lineRange.lowerBound)",
-                anchorName: anchor.name,
-                anchorCommits: min(commitsA, commitsB)
-            )
-        }
-        couplingRows = built
-        couplingRowsByID = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
-        onCouplingChanged?(built, couplingRowsByID)
-        rebuildGraph()
+        applyCouplingOutput(output)
     }
 
     private func rebuildGraph() {

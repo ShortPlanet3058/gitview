@@ -42,6 +42,49 @@ struct RepositoryAnalysis: Sendable {
     let source: AnalysisSource
     /// Read fresh on every load and refreshable on its own; never cached.
     var workingState: WorkingState
+    var fullChurn: ChurnIndex? = nil
+    var precomputedOwnership: OwnershipIndex? = nil
+    var precomputedContributors: [Contributor]? = nil
+
+    init(
+        root: URL,
+        info: RepositoryInfo,
+        branches: [BranchInfo],
+        tags: [TagInfo],
+        commits: [Commit],
+        allUnits: [CodeUnit],
+        filesParsed: Int,
+        filesFailed: [String],
+        generatedFiles: Set<String>,
+        historyDuration: TimeInterval,
+        parseDuration: TimeInterval,
+        factsDuration: TimeInterval,
+        attribution: AttributionStats,
+        source: AnalysisSource,
+        workingState: WorkingState,
+        fullChurn: ChurnIndex? = nil,
+        precomputedOwnership: OwnershipIndex? = nil,
+        precomputedContributors: [Contributor]? = nil
+    ) {
+        self.root = root
+        self.info = info
+        self.branches = branches
+        self.tags = tags
+        self.commits = commits
+        self.allUnits = allUnits
+        self.filesParsed = filesParsed
+        self.filesFailed = filesFailed
+        self.generatedFiles = generatedFiles
+        self.historyDuration = historyDuration
+        self.parseDuration = parseDuration
+        self.factsDuration = factsDuration
+        self.attribution = attribution
+        self.source = source
+        self.workingState = workingState
+        self.fullChurn = fullChurn
+        self.precomputedOwnership = precomputedOwnership
+        self.precomputedContributors = precomputedContributors
+    }
 
     var authorCount: Int { Set(commits.map(\.author)).count }
     var dateRange: ClosedRange<Date>? {
@@ -116,20 +159,29 @@ enum AnalysisService {
         let cached = useCache ? AnalysisCache.load(root: validated, matchingHead: head.isEmpty ? nil : head)
             ?? AnalysisCache.load(root: validated) : nil
         let cachedFileUnits = useCache ? AnalysisCache.loadFileUnits(root: validated) : [:]
+        let cachedDivergence = useCache ? AnalysisCache.loadBranchDivergence(root: validated) : [:]
 
-        // Facts are cheap and always current; they also tell us when the working tree last
-        // changed, which decides whether cached units are still valid.
+        // Facts are cheap and always current; run independent git reads in parallel.
         let factsStart = Date()
-        let facts = Task.detached(priority: .userInitiated) {
-            () throws -> (RepositoryInfo, [BranchInfo], [TagInfo], WorkingState) in
-            let info = try repository.info()
-            let branches = try repository.branches(defaultBranch: info.defaultBranch, currentBranch: info.currentBranch)
-            let tags = (try? repository.tags()) ?? []
-            let working = (try? repository.workingState()) ?? .clean
-            return (info, branches, tags, working)
-        }
         progress(LoadingProgress(stage: "Reading branches and tags"))
-        let (info, branches, tags, workingState) = try await facts.value
+        async let infoTask = Task.detached(priority: .userInitiated) { try repository.info() }.value
+        async let tagsTask = Task.detached(priority: .userInitiated) { (try? repository.tags()) ?? [] }.value
+        async let workingTask = Task.detached(priority: .userInitiated) {
+            (try? repository.workingState()) ?? .clean
+        }.value
+
+        let info = try await infoTask
+        let branchScan = try await Task.detached(priority: .userInitiated) {
+            try repository.branches(
+                defaultBranch: info.defaultBranch,
+                currentBranch: info.currentBranch,
+                cachedDivergence: cachedDivergence
+            )
+        }.value
+        let branches = branchScan.branches
+        let computedDivergence = branchScan.computedDivergence
+        let tags = await tagsTask
+        let workingState = await workingTask
         let factsDuration = Date().timeIntervalSince(factsStart)
 
         // History: reuse, extend, or read in full.
@@ -165,13 +217,23 @@ enum AnalysisService {
             commits = try await repository.loadHistoryAsync()
         }
         let historyDuration = Date().timeIntervalSince(historyStart)
+        let currentPaths = Set(info.inventory.files.map(\.path))
+        let precomputedContributors = await Task.detached(priority: .userInitiated) {
+            ContributorStats.compute(commits: commits)
+        }.value
+        let precomputedOwnership = await Task.detached(priority: .userInitiated) {
+            OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
+        }.value
 
         partial(RepositoryAnalysis(
             root: validated, info: info, branches: branches, tags: tags,
             commits: commits, allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
             historyDuration: historyDuration, parseDuration: 0, factsDuration: factsDuration,
             attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
-            source: source, workingState: workingState), .withHistory)
+            source: source, workingState: workingState,
+            fullChurn: nil,
+            precomputedOwnership: precomputedOwnership,
+            precomputedContributors: precomputedContributors), .withHistory)
 
         // Reuse cached per-file units wherever byte size and modification timestamp still match;
         // scan only dirty or newly added files, dropping deleted files from the result.
@@ -242,15 +304,22 @@ enum AnalysisService {
                 units: unitsByPath[file.path] ?? []
             )
         }
-        AnalysisCache.save(
-            headSHA: head,
-            commits: commits,
-            fileEntries: fileEntries,
-            root: validated
-        )
+        if useCache {
+            AnalysisCache.save(
+                headSHA: head,
+                commits: commits,
+                fileEntries: fileEntries,
+                root: validated
+            )
+            if !computedDivergence.isEmpty {
+                AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+            }
+        }
 
-        // Join once over the unfiltered unit set purely for the diagnostic.
-        let fullJoin = ChurnJoiner.join(units: report.units, commits: commits)
+        // Join once over all parsed units off the main actor; RiskStore reuses this index.
+        let fullJoin = await Task.detached(priority: .userInitiated) {
+            ChurnJoiner.join(units: report.units, commits: commits)
+        }.value
 
         return RepositoryAnalysis(
             root: validated,
@@ -269,7 +338,10 @@ enum AnalysisService {
                                           unmatchedHunks: fullJoin.unmatchedHunks,
                                           unresolvedHunks: fullJoin.unresolvedPaths),
             source: source,
-            workingState: workingState
+            workingState: workingState,
+            fullChurn: fullJoin,
+            precomputedOwnership: precomputedOwnership,
+            precomputedContributors: precomputedContributors
         )
     }
 }

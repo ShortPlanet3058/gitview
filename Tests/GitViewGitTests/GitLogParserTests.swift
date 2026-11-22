@@ -287,6 +287,27 @@ final class GitLogParserTests: XCTestCase {
         XCTAssertEqual(commits[0].email, "alice@example.com")
         XCTAssertEqual(commits[0].subject, "Add email support")
     }
+
+    func testParsesParentSHAsForRootAndMergeCommits() {
+        let rootSHA = String(repeating: "0", count: 40)
+        let p1 = String(repeating: "a", count: 40)
+        let p2 = String(repeating: "b", count: 40)
+        let mergeSHA = String(repeating: "f", count: 40)
+        let commits = parse("""
+        @@@\(mergeSHA)\u{1F}\(p1) \(p2)\u{1F}Alice\u{1F}alice@example.com\u{1F}2025-02-01T10:00:00Z\u{1F}Merge branch 'feature'
+        @@@\(rootSHA)\u{1F}\u{1F}Bob\u{1F}bob@example.com\u{1F}2025-01-01T10:00:00Z\u{1F}Initial commit
+        diff --git a/README.md b/README.md
+        --- /dev/null
+        +++ b/README.md
+        @@ -0,0 +1,1 @@
+        +# GitView
+        """)
+        XCTAssertEqual(commits.count, 2)
+        XCTAssertEqual(commits[0].parents, [p1, p2])
+        XCTAssertEqual(commits[0].subject, "Merge branch 'feature'")
+        XCTAssertEqual(commits[1].parents, [])
+        XCTAssertEqual(commits[1].author, "Bob")
+    }
 }
 
 final class ISO8601Tests: XCTestCase {

@@ -13,7 +13,17 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 /// Stored under Caches on purpose: it is reconstructible, and the system may evict it.
 public enum AnalysisCache {
     /// Bumped whenever the meaning of stored results or schema changes.
-    public static let formatVersion = 5
+    public static let formatVersion = 6
+
+    public struct DivergencePair: Hashable, Sendable {
+        public let baseSHA: String
+        public let tipSHA: String
+
+        public init(baseSHA: String, tipSHA: String) {
+            self.baseSHA = baseSHA
+            self.tipSHA = tipSHA
+        }
+    }
 
     public struct Payload: Codable, Sendable {
         public let formatVersion: Int
@@ -225,6 +235,7 @@ public enum AnalysisCache {
             DROP TABLE IF EXISTS authors;
             DROP TABLE IF EXISTS commits;
             DROP TABLE IF EXISTS branch_heads;
+            DROP TABLE IF EXISTS branch_divergence;
             DROP TABLE IF EXISTS file_units;
             """
             guard exec(db, resetSQL), exec(db, schemaSQL) else {
@@ -245,6 +256,108 @@ public enum AnalysisCache {
             return false
         }
         return true
+    }
+
+    public static func loadBranchDivergence(root: URL) -> [DivergencePair: (behind: Int, ahead: Int)] {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+
+        let dbURL = url(for: root)
+        guard FileManager.default.fileExists(atPath: dbURL.path),
+              let db = openReadOnly(at: dbURL) else { return [:] }
+        defer { sqlite3_close_v2(db) }
+
+        guard readMetaInt(db, key: "format_version") == formatVersion else { return [:] }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "SELECT base_sha, tip_sha, behind, ahead FROM branch_divergence;",
+            -1, &stmt, nil
+        ) == SQLITE_OK, let stmt else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+
+        var result: [DivergencePair: (behind: Int, ahead: Int)] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let baseC = sqlite3_column_text(stmt, 0),
+                  let tipC = sqlite3_column_text(stmt, 1) else { continue }
+            let pair = DivergencePair(baseSHA: String(cString: baseC), tipSHA: String(cString: tipC))
+            result[pair] = (behind: Int(sqlite3_column_int(stmt, 2)),
+                            ahead: Int(sqlite3_column_int(stmt, 3)))
+        }
+        return result
+    }
+
+    @discardableResult
+    public static func saveBranchDivergence(
+        _ entries: [DivergencePair: (behind: Int, ahead: Int)],
+        root: URL
+    ) -> Bool {
+        guard !entries.isEmpty else { return true }
+        writeLock.lock()
+        defer { writeLock.unlock() }
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
+        let dbURL = url(for: root)
+        guard let db = openWritableRecovering(at: dbURL) else { return false }
+        defer {
+            _ = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil)
+            sqlite3_close_v2(db)
+        }
+
+        let existingVersion = readMetaInt(db, key: "format_version")
+        guard exec(db, "BEGIN IMMEDIATE TRANSACTION;") else { return false }
+
+        if existingVersion != formatVersion {
+            let resetSQL = """
+            DROP TABLE IF EXISTS meta;
+            DROP TABLE IF EXISTS authors;
+            DROP TABLE IF EXISTS commits;
+            DROP TABLE IF EXISTS branch_heads;
+            DROP TABLE IF EXISTS branch_divergence;
+            DROP TABLE IF EXISTS file_units;
+            """
+            guard exec(db, resetSQL), exec(db, schemaSQL),
+                  writeMeta(db, key: "format_version", value: String(formatVersion)) else {
+                _ = exec(db, "ROLLBACK;")
+                return false
+            }
+        }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "INSERT OR REPLACE INTO branch_divergence (base_sha, tip_sha, behind, ahead) VALUES (?, ?, ?, ?);",
+            -1, &stmt, nil
+        ) == SQLITE_OK, let stmt else {
+            _ = exec(db, "ROLLBACK;")
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        for (pair, counts) in entries.prefix(1000) {
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+            bindText(stmt, index: 1, pair.baseSHA)
+            bindText(stmt, index: 2, pair.tipSHA)
+            sqlite3_bind_int(stmt, 3, Int32(counts.behind))
+            sqlite3_bind_int(stmt, 4, Int32(counts.ahead))
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                _ = exec(db, "ROLLBACK;")
+                return false
+            }
+        }
+        // Bound stored pairs so branch turnover across remote updates never grows unboundedly.
+        _ = exec(
+            db,
+            "DELETE FROM branch_divergence WHERE base_sha || '|' || tip_sha NOT IN (SELECT base_sha || '|' || tip_sha FROM branch_divergence LIMIT 1000);"
+        )
+        return exec(db, "COMMIT;")
     }
 
     // MARK: - Cleanup & Sizing
@@ -296,6 +409,7 @@ public enum AnalysisCache {
     );
     CREATE TABLE IF NOT EXISTS commits (
         sha TEXT PRIMARY KEY,
+        parents TEXT NOT NULL DEFAULT '',
         author_id INTEGER NOT NULL,
         timestamp REAL NOT NULL,
         subject TEXT NOT NULL,
@@ -305,6 +419,13 @@ public enum AnalysisCache {
         head_sha TEXT PRIMARY KEY,
         created_at REAL NOT NULL,
         shas_blob BLOB NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS branch_divergence (
+        base_sha TEXT NOT NULL,
+        tip_sha TEXT NOT NULL,
+        behind INTEGER NOT NULL,
+        ahead INTEGER NOT NULL,
+        PRIMARY KEY (base_sha, tip_sha)
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS file_units (
         path TEXT PRIMARY KEY,
@@ -460,7 +581,7 @@ public enum AnalysisCache {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(
             db,
-            "INSERT OR IGNORE INTO commits (sha, author_id, timestamp, subject, changes_blob) VALUES (?, ?, ?, ?, ?);",
+            "INSERT OR IGNORE INTO commits (sha, parents, author_id, timestamp, subject, changes_blob) VALUES (?, ?, ?, ?, ?, ?);",
             -1, &stmt, nil
         ) == SQLITE_OK, let stmt else { return false }
         defer { sqlite3_finalize(stmt) }
@@ -485,10 +606,11 @@ public enum AnalysisCache {
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
             bindText(stmt, index: 1, commit.sha)
-            sqlite3_bind_int64(stmt, 2, authorID)
-            sqlite3_bind_double(stmt, 3, commit.date.timeIntervalSince1970)
-            bindText(stmt, index: 4, commit.subject)
-            bindBlob(stmt, index: 5, encodedChanges)
+            bindText(stmt, index: 2, commit.parents.joined(separator: " "))
+            sqlite3_bind_int64(stmt, 3, authorID)
+            sqlite3_bind_double(stmt, 4, commit.date.timeIntervalSince1970)
+            bindText(stmt, index: 5, commit.subject)
+            bindBlob(stmt, index: 6, encodedChanges)
             guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
         }
         return true
@@ -499,7 +621,7 @@ public enum AnalysisCache {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(
             db,
-            "SELECT sha, author_id, timestamp, subject, changes_blob FROM commits;",
+            "SELECT sha, parents, author_id, timestamp, subject, changes_blob FROM commits;",
             -1, &stmt, nil
         ) == SQLITE_OK, let stmt else { return [:] }
         defer { sqlite3_finalize(stmt) }
@@ -507,17 +629,22 @@ public enum AnalysisCache {
         var commits: [String: Commit] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let shaC = sqlite3_column_text(stmt, 0),
-                  let subjectC = sqlite3_column_text(stmt, 3),
-                  let blob = columnBlob(stmt, index: 4),
+                  let parentsC = sqlite3_column_text(stmt, 1),
+                  let subjectC = sqlite3_column_text(stmt, 4),
+                  let blob = columnBlob(stmt, index: 5),
                   let changes = decodeFileChanges(blob) else { continue }
             let sha = String(cString: shaC)
-            let authorID = sqlite3_column_int64(stmt, 1)
+            let parents = String(cString: parentsC)
+                .split(separator: " ", omittingEmptySubsequences: true)
+                .map(String.init)
+            let authorID = sqlite3_column_int64(stmt, 2)
             let identity = authors[authorID] ?? AuthorKey(name: "", email: "")
             commits[sha] = Commit(
                 sha: sha,
+                parents: parents,
                 author: identity.name,
                 email: identity.email,
-                date: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
+                date: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3)),
                 subject: String(cString: subjectC),
                 fileChanges: changes
             )
