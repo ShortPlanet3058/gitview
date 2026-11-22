@@ -199,12 +199,12 @@ struct CouplingGraphView: View {
         .allowsHitTesting(false)
     }
 
-    static func radius(for node: CouplingGraph.Node, maxSize: Double) -> CGFloat {
+    nonisolated static func radius(for node: CouplingGraph.Node, maxSize: Double) -> CGFloat {
         4 + 7 * CGFloat((node.size / max(maxSize, 1)).squareRoot())
     }
 
     /// Last two components, so `NIOAsyncChannel.Storage.next` reads as `Storage.next`.
-    static func shortLabel(_ label: String) -> String {
+    nonisolated static func shortLabel(_ label: String) -> String {
         let parts = label.split(separator: ".")
         let short = parts.suffix(2).joined(separator: ".")
         return short.count > 28 ? String(short.prefix(27)) + "…" : short

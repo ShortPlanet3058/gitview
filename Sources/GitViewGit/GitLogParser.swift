@@ -33,14 +33,18 @@ public struct GitLogParser {
     public init() {}
 
     public mutating func consume(line: ArraySlice<UInt8>) {
-        if line.hasPrefix(Self.sentinel), let header = Self.parseCommitHeader(line) {
-            flushFile()
-            flushCommit()
-            sha = header.sha
-            author = header.author
-            date = header.date
-            subject = header.subject
-            return
+        if line.hasPrefix(Self.sentinel) {
+            if let header = Self.parseCommitHeader(line) {
+                flushFile()
+                flushCommit()
+                sha = header.sha
+                author = header.author
+                date = header.date
+                subject = header.subject
+                return
+            } else if line.contains(0x1F) {
+                malformedHeaderCount += 1
+            }
         }
 
         // Everything below only makes sense inside a commit.

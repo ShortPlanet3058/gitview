@@ -36,8 +36,6 @@ public struct LanguageSupport: Sendable {
 
     /// Nodes that add a level of nesting.
     public let nesting: Set<String>
-    /// Bodies whose direct declarations are methods rather than free functions.
-    public let typeBodies: Set<String>
     /// Declarations that contribute a component to a qualified name.
     public let typeDeclarations: Set<String>
     /// Node types that can serve as a unit's name when no `@name` capture matched.
@@ -58,7 +56,6 @@ public struct LanguageSupport: Sendable {
         defaultCaseMarkers: Set<String> = ["default", "default_keyword", "else"],
         caseRequiresChildContaining: String? = nil,
         nesting: Set<String> = [],
-        typeBodies: Set<String> = [],
         typeDeclarations: Set<String> = [],
         identifierTypes: Set<String> = ["identifier"],
         countsDeclarations: Bool = false,
@@ -70,7 +67,7 @@ public struct LanguageSupport: Sendable {
         self.logicalOperators = logicalOperators
         self.caseNodes = caseNodes; self.defaultCaseMarkers = defaultCaseMarkers
         self.caseRequiresChildContaining = caseRequiresChildContaining
-        self.nesting = nesting; self.typeBodies = typeBodies
+        self.nesting = nesting
         self.typeDeclarations = typeDeclarations; self.identifierTypes = identifierTypes
         self.countsDeclarations = countsDeclarations; self.declarationNodes = declarationNodes
     }

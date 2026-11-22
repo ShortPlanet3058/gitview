@@ -153,9 +153,10 @@ extension GitRepository {
         // was the slowest part of opening a repository with many branches (4.6s of
         // swift-nio's 5.9s), and each call is an independent process.
         let counts = AheadBehindBox(count: rows.count)
-        let limit = min(rows.count, detailLimit)
+        let snapshot = rows
+        let limit = min(snapshot.count, detailLimit)
         DispatchQueue.concurrentPerform(iterations: limit) { index in
-            let row = rows[index]
+            let row = snapshot[index]
             guard row.name != defaultBranch,
                   let output = try? GitProcess.capture(
                       arguments: ["rev-list", "--left-right", "--count", "\(defaultBranch)...\(row.fullName)"],

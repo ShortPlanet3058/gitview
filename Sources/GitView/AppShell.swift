@@ -22,9 +22,9 @@ struct AppShell: View {
                         // anything that moves the text sideways makes it harder to read
                         // the thing you just asked for. Short enough not to be a wait.
                         .transition(.opacity)
-                    if let detail {
+                    if hasDetail {
                         Rectangle().fill(Theme.hairline).frame(width: 1)
-                        detail
+                        detailContent
                             .frame(width: 420)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
@@ -95,29 +95,45 @@ struct AppShell: View {
         }
     }
 
-    private var detail: AnyView? {
-        guard case .loaded = model.state else { return nil }
-        // A selected commit wins on any screen: it is the most recent thing the user asked for.
-        if let commit = model.selectedCommit {
-            return AnyView(CommitDetailPanel(commit: commit).id(commit.sha))
-        }
-        if model.screen == .contributors, let author = model.selectedAuthor {
-            return AnyView(AuthorDetailPanel(author: author).id(author))
-        }
+    private var hasDetail: Bool {
+        guard case .loaded = model.state else { return false }
+        if model.selectedCommit != nil { return true }
+        if model.screen == .contributors && model.selectedAuthor != nil { return true }
         switch model.screen {
         case .coupling:
-            if let pair = model.selectedPair { return AnyView(PairDetailPanel(row: pair).id(pair.id)) }
-            if let unit = model.selectedUnit, let row = model.selectedRow {
-                return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
-            }
+            return model.selectedPair != nil || (model.selectedUnit != nil && model.selectedRow != nil)
         case .overview, .hotspots, .files:
-            if let unit = model.selectedUnit, let row = model.selectedRow {
-                return AnyView(UnitDetailPanel(unit: unit, row: row).id(unit.id))
-            }
+            return model.selectedUnit != nil && model.selectedRow != nil
         default:
-            break
+            return false
         }
-        return nil
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        if case .loaded = model.state {
+            // A selected commit wins on any screen: it is the most recent thing the user asked for.
+            if let commit = model.selectedCommit {
+                CommitDetailPanel(commit: commit).id(commit.sha)
+            } else if model.screen == .contributors, let author = model.selectedAuthor {
+                AuthorDetailPanel(author: author).id(author)
+            } else {
+                switch model.screen {
+                case .coupling:
+                    if let pair = model.selectedPair {
+                        PairDetailPanel(row: pair).id(pair.id)
+                    } else if let unit = model.selectedUnit, let row = model.selectedRow {
+                        UnitDetailPanel(unit: unit, row: row).id(unit.id)
+                    }
+                case .overview, .hotspots, .files:
+                    if let unit = model.selectedUnit, let row = model.selectedRow {
+                        UnitDetailPanel(unit: unit, row: row).id(unit.id)
+                    }
+                default:
+                    EmptyView()
+                }
+            }
+        }
     }
 
 }
@@ -440,11 +456,6 @@ struct TopBar: View {
         .padding(.top, 14)
         .padding(.bottom, 12)
         .frame(height: 64)
-    }
-
-    private func abbreviated(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 }
 
