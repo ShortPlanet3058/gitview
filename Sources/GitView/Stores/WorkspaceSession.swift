@@ -154,7 +154,19 @@ public final class WorkspaceSession {
 
     var selectedCommit: Commit? {
         guard let sha = navigation.selectedCommitSHA else { return nil }
-        return analysis?.commits.first { $0.sha == sha }
+        if let existing = analysis?.commits.first(where: { $0.sha == sha }) {
+            return existing
+        }
+        guard let detail = inspector.commitDetails[sha] else { return nil }
+        return Commit(
+            sha: detail.sha,
+            parents: detail.parents,
+            author: detail.authorName,
+            email: detail.authorEmail,
+            date: detail.authorDate,
+            subject: detail.subject,
+            fileChanges: detail.deltas.map { FileChange(path: $0.path, hunks: []) }
+        )
     }
 
     var canGoBack: Bool {
