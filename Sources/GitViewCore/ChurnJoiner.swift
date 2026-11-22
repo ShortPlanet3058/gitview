@@ -71,6 +71,7 @@ public enum ChurnJoiner {
                         byCommit[commitIndex32, default: []].append(id)
                     }
                 }
+                indexByPath[resolved]?.applyReverseChange(change)
             }
         }
 

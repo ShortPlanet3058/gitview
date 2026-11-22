@@ -6,6 +6,8 @@ final class HunkHeaderParserTests: XCTestCase {
 
     func testStandardHeader() {
         let hunk = HunkHeaderParser.parse("@@ -12,3 +14,5 @@")
+        XCTAssertEqual(hunk?.oldStart, 12)
+        XCTAssertEqual(hunk?.oldLineCount, 3)
         XCTAssertEqual(hunk?.newStart, 14)
         XCTAssertEqual(hunk?.newLineCount, 5)
     }
@@ -13,6 +15,8 @@ final class HunkHeaderParserTests: XCTestCase {
     func testOmittedCountsDefaultToOne() {
         // "@@ -3 +7 @@" means one line on each side.
         let hunk = HunkHeaderParser.parse("@@ -3 +7 @@")
+        XCTAssertEqual(hunk?.oldStart, 3)
+        XCTAssertEqual(hunk?.oldLineCount, 1)
         XCTAssertEqual(hunk?.newStart, 7)
         XCTAssertEqual(hunk?.newLineCount, 1)
     }
@@ -33,18 +37,24 @@ final class HunkHeaderParserTests: XCTestCase {
     func testPureDeletionHasZeroNewLines() {
         // Deleting lines adds nothing: git reports "+start,0".
         let hunk = HunkHeaderParser.parse("@@ -42,7 +41,0 @@")
+        XCTAssertEqual(hunk?.oldStart, 42)
+        XCTAssertEqual(hunk?.oldLineCount, 7)
         XCTAssertEqual(hunk?.newStart, 41)
         XCTAssertEqual(hunk?.newLineCount, 0)
     }
 
     func testNewFileStartsAtLineOne() {
         let hunk = HunkHeaderParser.parse("@@ -0,0 +1,120 @@")
+        XCTAssertEqual(hunk?.oldStart, 0)
+        XCTAssertEqual(hunk?.oldLineCount, 0)
         XCTAssertEqual(hunk?.newStart, 1)
         XCTAssertEqual(hunk?.newLineCount, 120)
     }
 
     func testMultiDigitValues() {
         let hunk = HunkHeaderParser.parse("@@ -10234,17 +98765,4321 @@")
+        XCTAssertEqual(hunk?.oldStart, 10234)
+        XCTAssertEqual(hunk?.oldLineCount, 17)
         XCTAssertEqual(hunk?.newStart, 98765)
         XCTAssertEqual(hunk?.newLineCount, 4321)
     }
