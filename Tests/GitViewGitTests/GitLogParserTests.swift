@@ -272,6 +272,21 @@ final class GitLogParserTests: XCTestCase {
         XCTAssertTrue(commits[0].fileChanges[0].isNewFile)
         XCTAssertFalse(commits[0].fileChanges[1].isNewFile)
     }
+
+    func testParsesFiveFieldHeaderIncludingAuthorEmail() {
+        let commits = parse("""
+        @@@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1F}Alice\u{1F}alice@example.com\u{1F}2024-02-12T10:00:00Z\u{1F}Add email support
+        diff --git a/File.swift b/File.swift
+        --- a/File.swift
+        +++ b/File.swift
+        @@ -1,1 +1,2 @@
+        +line
+        """)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits[0].author, "Alice")
+        XCTAssertEqual(commits[0].email, "alice@example.com")
+        XCTAssertEqual(commits[0].subject, "Add email support")
+    }
 }
 
 final class ISO8601Tests: XCTestCase {

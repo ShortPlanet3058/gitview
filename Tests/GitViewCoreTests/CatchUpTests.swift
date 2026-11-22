@@ -159,4 +159,13 @@ final class IdentityTests: XCTestCase {
         XCTAssertTrue(identity.wrote(commit("y", "finn", daysAgo: 1)))
         XCTAssertFalse(identity.wrote(commit("z", "Someone Else", daysAgo: 1)))
     }
+
+    func testMatchesByEmailCaseInsensitively() {
+        let identity = Identity(names: [], emails: ["Finn@Example.com"])
+        let matching = Commit(sha: "a", author: "Different Display Name", email: "finn@example.com",
+                              date: now, subject: "msg", fileChanges: [])
+        let nonMatching = Commit(sha: "b", author: "Finn", email: "", date: now, subject: "msg", fileChanges: [])
+        XCTAssertTrue(identity.wrote(matching))
+        XCTAssertFalse(identity.wrote(nonMatching))
+    }
 }

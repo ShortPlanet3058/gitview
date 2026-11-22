@@ -55,9 +55,20 @@ public enum VisitLog {
 /// differs from the global one.
 public struct Identity: Hashable, Sendable {
     public let names: Set<String>
-    public init(names: Set<String>) { self.names = names }
-    public func wrote(_ commit: Commit) -> Bool { names.contains(commit.author) }
-    public var isEmpty: Bool { names.isEmpty }
+    public let emails: Set<String>
+
+    public init(names: Set<String>, emails: Set<String> = []) {
+        self.names = names
+        self.emails = Set(emails.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+    }
+
+    public func wrote(_ commit: Commit) -> Bool {
+        if names.contains(commit.author) { return true }
+        guard !commit.email.isEmpty else { return false }
+        return emails.contains(commit.email.lowercased())
+    }
+
+    public var isEmpty: Bool { names.isEmpty && emails.isEmpty }
 }
 
 /// What changed since the last visit — the question a repository dashboard should open with.

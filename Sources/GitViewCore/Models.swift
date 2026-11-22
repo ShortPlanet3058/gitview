@@ -46,14 +46,17 @@ public struct CodeUnit: Identifiable, Hashable, Sendable, Codable {
 public struct Commit: Hashable, Sendable, Codable {
     public let sha: String
     public let author: String
+    public let email: String
     public let date: Date
     /// First line of the commit message.
     public let subject: String
     public let fileChanges: [FileChange]
 
-    public init(sha: String, author: String, date: Date, subject: String = "", fileChanges: [FileChange]) {
+    public init(sha: String, author: String, email: String = "", date: Date,
+                subject: String = "", fileChanges: [FileChange]) {
         self.sha = sha
         self.author = author
+        self.email = email
         self.date = date
         self.subject = subject
         self.fileChanges = fileChanges

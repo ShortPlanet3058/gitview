@@ -20,7 +20,8 @@ final class AnalysisCacheTests: XCTestCase {
         AnalysisCache.Payload(
             headSHA: head,
             commits: (0..<commits).map { index in
-                Commit(sha: "sha\(index)", author: "Ann", date: Date(timeIntervalSince1970: TimeInterval(index)),
+                Commit(sha: "sha\(index)", author: "Ann", email: "ann@example.com",
+                       date: Date(timeIntervalSince1970: TimeInterval(index)),
                        subject: "commit \(index)",
                        fileChanges: [FileChange(path: "A.swift", oldPath: nil,
                                                 hunks: [Hunk(oldStart: index + 1, oldLineCount: 1,
@@ -47,6 +48,7 @@ final class AnalysisCacheTests: XCTestCase {
         XCTAssertEqual(loaded.units.map(\.id), original.units.map(\.id))
         XCTAssertEqual(loaded.units.first?.language, "swift")
         XCTAssertEqual(loaded.commits.first?.subject, "commit 0")
+        XCTAssertEqual(loaded.commits.first?.email, "ann@example.com")
     }
 
     func testMissingCacheIsNotAnError() {
