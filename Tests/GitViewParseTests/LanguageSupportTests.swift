@@ -120,4 +120,33 @@ final class LanguageSupportTests: XCTestCase {
             XCTAssertNoThrow(try extractor.extract(source: "", filePath: "x"))
         }
     }
+
+    func testVendoredScannerVersionsMatchPackageResolved() throws {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var resolvedURL: URL?
+        for _ in 0..<6 {
+            let candidate = dir.appendingPathComponent("Package.resolved")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                resolvedURL = candidate
+                break
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        let url = try XCTUnwrap(resolvedURL, "Package.resolved not found")
+        struct Resolved: Decodable {
+            struct Pin: Decodable {
+                struct State: Decodable { let version: String? }
+                let identity: String
+                let state: State
+            }
+            let pins: [Pin]
+        }
+        let decoded = try JSONDecoder().decode(Resolved.self, from: Data(contentsOf: url))
+        let versions = Dictionary(uniqueKeysWithValues: decoded.pins.compactMap { pin in
+            pin.state.version.map { (pin.identity, $0) }
+        })
+        XCTAssertEqual(versions["tree-sitter-python"], "0.25.0")
+        XCTAssertEqual(versions["tree-sitter-javascript"], "0.25.0")
+        XCTAssertEqual(versions["tree-sitter-css"], "0.25.0")
+    }
 }

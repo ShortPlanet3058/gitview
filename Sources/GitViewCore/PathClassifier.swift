@@ -2,18 +2,42 @@ import Foundation
 
 /// Classifies source paths so the CLI and the app agree on what a test is.
 public enum PathClassifier {
-    /// Matches SwiftPM's `Tests/` convention, Xcode's `…Tests` group convention, and the
-    /// common `FooTests.swift` / `FooTest.swift` file naming.
+    private static let testDirectoryNames: Set<String> = [
+        "tests", "test", "__tests__", "spec", "specs", "testing", "testdata", "fixtures", "mocks",
+    ]
+
+    /// Matches test directories and filename conventions across all supported languages.
     public static func isTest(path: String) -> Bool {
         let components = path.split(separator: "/")
         for component in components.dropLast() {
-            if component == "Tests" || component == "Test" { return true }
-            if component.hasSuffix("Tests") { return true }
+            let lower = component.lowercased()
+            if testDirectoryNames.contains(lower) { return true }
+            if component.hasSuffix("Tests") || lower.hasSuffix("_tests") || lower.hasSuffix("-tests") {
+                return true
+            }
         }
         guard let file = components.last else { return false }
-        let stem = file.hasSuffix(".swift") ? String(file.dropLast(6)) : String(file)
+        let lowerFile = file.lowercased()
+        if lowerFile.contains(".test.") || lowerFile.contains(".tests.")
+            || lowerFile.contains(".spec.") || lowerFile.contains(".specs.")
+            || lowerFile.hasPrefix("test_") || lowerFile.hasPrefix("test.") {
+            return true
+        }
+        let stem: String
+        if let dot = file.lastIndex(of: ".") {
+            stem = String(file[..<dot])
+        } else {
+            stem = String(file)
+        }
+        let lowerStem = stem.lowercased()
         return stem.hasSuffix("Tests") || stem.hasSuffix("Test")
-            || stem.hasPrefix("Test") || stem.hasSuffix("Mock") || stem.hasSuffix("Fixtures")
+            || stem.hasPrefix("Test") || stem.hasSuffix("Spec")
+            || stem.hasSuffix("Mock") || stem.hasSuffix("Mocks")
+            || stem.hasSuffix("Fixtures")
+            || lowerStem.hasSuffix("_test") || lowerStem.hasSuffix("_tests")
+            || lowerStem.hasSuffix("_spec") || lowerStem.hasSuffix("_mock")
+            || lowerStem.hasSuffix("_mocks") || lowerStem.hasSuffix("_fixture")
+            || lowerStem.hasSuffix("_fixtures")
     }
 
     /// Directories that hold code the repository did not write.
