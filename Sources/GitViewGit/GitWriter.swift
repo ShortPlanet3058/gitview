@@ -235,4 +235,110 @@ extension GitRepository {
         let normalized = patch.hasSuffix("\n") ? patch : patch + "\n"
         try write(arguments, stdin: Data(normalized.utf8))
     }
+
+    // MARK: - Conflict Inspection & Safe Operation Abort
+
+    /// Index stage contents and working-tree conflict line for a conflicted path.
+    public struct ConflictFileVersions: Sendable, Hashable {
+        public let path: String
+        public let base: String?
+        public let ours: String?
+        public let theirs: String?
+        public let firstConflictLine: Int?
+
+        public init(path: String, base: String?, ours: String?, theirs: String?, firstConflictLine: Int?) {
+            self.path = path
+            self.base = base
+            self.ours = ours
+            self.theirs = theirs
+            self.firstConflictLine = firstConflictLine
+        }
+    }
+
+    /// Reads `:1:` (base), `:2:` (ours), and `:3:` (theirs) stages for `path`, plus the first `<<<<<<<` line.
+    public func conflictVersions(path: String) throws -> ConflictFileVersions {
+        let root = try validate()
+        let base = try? GitProcess.capture(arguments: ["show", ":1:\(path)"], in: root)
+        let ours = try? GitProcess.capture(arguments: ["show", ":2:\(path)"], in: root)
+        let theirs = try? GitProcess.capture(arguments: ["show", ":3:\(path)"], in: root)
+
+        var conflictLine: Int?
+        let fileURL = root.appendingPathComponent(path)
+        if let text = try? String(contentsOf: fileURL, encoding: .utf8) {
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            if let idx = lines.firstIndex(where: { $0.hasPrefix("<<<<<<<") }) {
+                conflictLine = idx + 1
+            }
+        }
+        return ConflictFileVersions(
+            path: path,
+            base: base,
+            ours: ours,
+            theirs: theirs,
+            firstConflictLine: conflictLine
+        )
+    }
+
+    /// Safely aborts an interrupted merge, rebase, cherry-pick, revert, or bisect session.
+    public func abortOperation(_ operation: WorkingState.Operation) throws {
+        switch operation {
+        case .merge:      try write(["merge", "--abort"])
+        case .rebase:     try write(["rebase", "--abort"])
+        case .cherryPick: try write(["cherry-pick", "--abort"])
+        case .revert:     try write(["revert", "--abort"])
+        case .bisect:     try write(["bisect", "reset"])
+        }
+    }
+
+    /// Resolves a conflicted path by accepting either ours (`:2:`) or theirs (`:3:`) and updating the index.
+    public func resolveConflictUsingSide(path: String, acceptOurs: Bool) throws {
+        let root = try validate()
+        let indexStage = acceptOurs ? 2 : 3
+        let hasStage = (try? GitProcess.capture(
+            arguments: ["cat-file", "-e", ":\(indexStage):\(path)"], in: root
+        )) != nil
+
+        if hasStage {
+            try write(["checkout", acceptOurs ? "--ours" : "--theirs", "--", path])
+            try stage(paths: [path])
+        } else {
+            try write(["rm", "-f", "--", path])
+        }
+    }
+
+    // MARK: - Tags
+
+    /// Creates a lightweight or annotated tag (annotated when `message` is non-empty).
+    public func createTag(name: String, target: String = "HEAD", message: String? = nil) throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw GitWriteError(command: "tag", message: "Tag name cannot be empty.")
+        }
+        let trimmedTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refTarget = trimmedTarget.isEmpty ? "HEAD" : trimmedTarget
+        if let msg = message?.trimmingCharacters(in: .whitespacesAndNewlines), !msg.isEmpty {
+            try write(["tag", "-a", trimmedName, "-m", msg, refTarget])
+        } else {
+            try write(["tag", trimmedName, refTarget])
+        }
+    }
+
+    /// Deletes a local tag (`git tag -d`). Does not delete remote tags.
+    public func deleteTag(name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "tag", message: "Tag name cannot be empty.")
+        }
+        try write(["tag", "-d", trimmed])
+    }
+
+    /// Pushes an existing local tag ref to `remote`.
+    public func pushTag(remote: String = "origin", name: String) throws {
+        let trimmedRemote = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRemote.isEmpty, !trimmedName.isEmpty else {
+            throw GitWriteError(command: "push", message: "Remote and tag name cannot be empty.")
+        }
+        try write(["push", trimmedRemote, "refs/tags/\(trimmedName)"])
+    }
 }

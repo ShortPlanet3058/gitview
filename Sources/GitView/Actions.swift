@@ -173,6 +173,16 @@ struct CommitActions: View {
 
     var body: some View {
         Button("Show This Commit") { session.navigation.selectedCommitSHA = commit.sha }
+        if let selected = session.navigation.selectedCommitSHA,
+           selected != commit.sha,
+           let root = session.analysis?.root {
+            Button("Compare with Selected (\(String(selected.prefix(7))))") {
+                session.show(.releases)
+                session.navigation.compareFrom = commit.sha
+                session.navigation.compareTo = selected
+                session.navigation.runComparison(in: root)
+            }
+        }
         Divider()
         Button("Copy SHA") { copyToPasteboard(commit.sha) }
         Button("Copy Short SHA") { copyToPasteboard(String(commit.sha.prefix(7))) }
