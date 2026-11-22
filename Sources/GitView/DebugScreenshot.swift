@@ -1,38 +1,40 @@
 import SwiftUI
 import AppKit
 
-/// `GitView --repo <path> --screenshot out.png [--screenshot-delay 10] [--quit]` (`--quit` last)
+/// `GitView --repo <path> [--screen <name>] [--mode standard|advanced] [--view list|graph]
+/// [--select <unit>] [--select-pair <name>] --screenshot out.png [--screenshot-delay 10] [--quit]`
 ///
-/// Renders the root view offscreen with `ImageRenderer` after the delay. Used to verify
-/// screens from the command line: it needs no screen-recording permission, does not care
-/// which Space or app is in front, and never steals focus. Pure-SwiftUI content renders
-/// fully; AppKit-backed views (the Advanced table) may come out blank.
+/// Renders the root view offscreen with `ImageRenderer` after the delay.
 @MainActor
 enum DebugScreenshot {
-    static func scheduleIfRequested(model: AnalysisModel) {
+    static func scheduleIfRequested(session: WorkspaceSession) {
         let arguments = CommandLine.arguments
         guard let flag = arguments.firstIndex(of: "--screenshot"), flag + 1 < arguments.count else { return }
         let path = arguments[flag + 1]
         var delay = 10.0
-        if let d = arguments.firstIndex(of: "--screenshot-delay"), d + 1 < arguments.count, let value = Double(arguments[d + 1]) {
+        if let d = arguments.firstIndex(of: "--screenshot-delay"),
+           d + 1 < arguments.count,
+           let value = Double(arguments[d + 1]) {
             delay = value
         }
         let quit = arguments.contains("--quit")
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            render(model: model, to: path)
+            render(session: session, to: path)
             if quit { NSApplication.shared.terminate(nil) }
         }
     }
 
-    static func render(model: AnalysisModel, to path: String) {
+    static func render(session: WorkspaceSession, to path: String) {
         var height: CGFloat = 820
         let arguments = CommandLine.arguments
-        if let h = arguments.firstIndex(of: "--screenshot-height"), h + 1 < arguments.count, let value = Double(arguments[h + 1]) {
-            height = CGFloat(value)   // taller renders show below-the-fold cards
+        if let h = arguments.firstIndex(of: "--screenshot-height"),
+           h + 1 < arguments.count,
+           let value = Double(arguments[h + 1]) {
+            height = CGFloat(value)
         }
         let content = AppShell()
-            .environmentObject(model)
+            .withWorkspaceEnvironment(session)
             .environment(\.staticRendering, true)
             .frame(width: 1380, height: height)
             .background(Theme.page)

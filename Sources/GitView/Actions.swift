@@ -33,18 +33,18 @@ func openInEditor(_ url: URL) {
 /// Right-click actions for a path inside the repository. `path` is repository-relative,
 /// which is what every model in GitView carries.
 struct PathActions: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let path: String
     /// Hidden when the menu is already attached to the file-history view itself.
     var showsHistory = true
 
     private var absolute: URL? {
-        model.analysis.map { $0.root.appendingPathComponent(path) }
+        session.analysis.map { $0.root.appendingPathComponent(path) }
     }
 
     var body: some View {
         if showsHistory {
-            Button("Show File History") { model.showFileHistory(path) }
+            Button("Show File History") { session.inspector.showFileHistory(path) }
             Divider()
         }
         if let absolute, FileManager.default.fileExists(atPath: absolute.path) {
@@ -56,8 +56,8 @@ struct PathActions: View {
         if let absolute {
             Button("Copy Full Path") { copyToPasteboard(absolute.path) }
         }
-        if let web = model.analysis?.info.remoteWebURL,
-           let branch = model.analysis?.info.currentBranch {
+        if let web = session.analysis?.info.remoteWebURL,
+           let branch = session.analysis?.info.currentBranch {
             Button("View on \(web.host ?? "Web")") {
                 // Both GitHub and GitLab use /blob/<ref>/<path>; a host that does not will
                 // land on its own 404 rather than somewhere misleading.
@@ -70,17 +70,17 @@ struct PathActions: View {
 
 /// Right-click actions for a commit.
 struct CommitActions: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let commit: Commit
 
     var body: some View {
-        Button("Show This Commit") { model.selectedCommitSHA = commit.sha }
+        Button("Show This Commit") { session.navigation.selectedCommitSHA = commit.sha }
         Divider()
         Button("Copy SHA") { copyToPasteboard(commit.sha) }
         Button("Copy Short SHA") { copyToPasteboard(String(commit.sha.prefix(7))) }
         Button("Copy Subject") { copyToPasteboard(commit.subject) }
         Button("Copy Author") { copyToPasteboard(commit.author) }
-        if let web = model.analysis?.info.remoteWebURL {
+        if let web = session.analysis?.info.remoteWebURL {
             Divider()
             Button("View on \(web.host ?? "Web")") {
                 NSWorkspace.shared.open(web.appendingPathComponent("commit").appendingPathComponent(commit.sha))
@@ -91,12 +91,12 @@ struct CommitActions: View {
 
 /// Right-click actions for a person.
 struct PersonActions: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let name: String
 
     var body: some View {
-        Button("Show Their Work") { model.selectedAuthor = name }
-        Button("Find Their Commits") { model.globalSearch = "author:\(name)" }
+        Button("Show Their Work") { session.navigation.selectedAuthor = name }
+        Button("Find Their Commits") { session.search.globalSearch = "author:\(name)" }
         Divider()
         Button("Copy Name") { copyToPasteboard(name) }
     }

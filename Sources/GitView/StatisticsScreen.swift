@@ -3,19 +3,20 @@ import GitViewCore
 
 /// Advanced only: how the analysis ran and what the model is doing.
 struct StatisticsScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(RiskStore.self) private var risk
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        if let analysis = model.analysis {
+        if let analysis = session.analysis {
             Page {
                 ScreenHeader(title: "Statistics",
                              subtitle: "How this analysis was produced, and the model behind the risk scores.")
-                // The dashboard shows the score and whatever is failing; the whole
-                // five-check breakdown belongs somewhere it can be read properly.
-                if let health = model.health {
+                if let health = risk.health {
                     HStack(alignment: .top, spacing: Theme.Space.l) {
                         HealthCard(health: health).frame(maxWidth: .infinity)
-                        RepositoryInfoCard(analysis: analysis, contributors: model.contributors.count).frame(maxWidth: .infinity)
+                        RepositoryInfoCard(analysis: analysis, contributors: session.contributors.count).frame(maxWidth: .infinity)
                     }
                 }
                 Text(analysis.source.summary + ". History is cached per repository and extended incrementally; "
@@ -32,7 +33,7 @@ struct StatisticsScreen: View {
                                 ? (analysis.filesFailed.isEmpty ? "none failed" : "\(analysis.filesFailed.count) failed")
                                 : "\(analysis.generatedFiles.count) vendored or generated")
                     StatCard(icon: "function", tint: .violet, value: analysis.allUnits.count.formatted(), label: "Functions found",
-                             delta: "\(model.rows.count.formatted()) ranked with the current filters")
+                             delta: "\(risk.rows.count.formatted()) ranked with the current filters")
                     StatCard(icon: "arrow.left.arrow.right", tint: .orange,
                              value: "\(Int((analysis.attribution.matchRate * 100).rounded()))%",
                              label: "Hunks inside a function",
@@ -41,24 +42,24 @@ struct StatisticsScreen: View {
                 HStack(alignment: .top, spacing: Theme.Space.l) {
                     Card {
                         VStack(alignment: .leading, spacing: Theme.Space.m) {
-                            CardHeader(title: "Risk model", subtitle: "half-life \(Int(model.halfLifeDays)) days")
+                            CardHeader(title: "Risk model", subtitle: "half-life \(Int(preferences.halfLifeDays)) days")
                             Text("score = log1p(complexity) × log1p(Σ 0.5^(age / half-life))")
                                 .font(Theme.Text.mono).foregroundStyle(Theme.inkSoft)
                             Text("Complexity counts branch points in the function (if, guard, loops, switch cases, catch, "
                                  + "ternary, &&, ||, ??). Each commit that touched the function adds a weight that halves every "
                                  + "half-life. Both factors are log-damped so one giant switch cannot flatten the ranking.")
                                 .font(Theme.Text.body).foregroundStyle(Theme.inkSoft).fixedSize(horizontal: false, vertical: true)
-                            LevelDistributionBar(counts: model.levelCounts)
+                            LevelDistributionBar(counts: risk.levelCounts)
                             Text("Bands are relative to this repository: top 2% critical, next 8% high, next 20% elevated, "
                                  + "with an activity floor so a quiet repository does not always show a critical function.")
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).fixedSize(horizontal: false, vertical: true)
-                            if model.excludedUnitCount > 0 {
-                                Text("\(model.excludedUnitCount.formatted()) units are excluded by the current filters "
+                            if risk.excludedUnitCount > 0 {
+                                Text("\(risk.excludedUnitCount.formatted()) units are excluded by the current filters "
                                      + "(tests, vendored and generated code, ignored paths).")
                                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
-                            Button("Change parameters…") { model.showSettings = true }.buttonStyle(SecondaryButtonStyle())
+                            Button("Change parameters…") { openSettings() }.buttonStyle(SecondaryButtonStyle())
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -87,14 +88,14 @@ struct StatisticsScreen: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
-                if let coupling = model.coupling {
+                if let coupling = risk.coupling {
                     Card {
                         VStack(alignment: .leading, spacing: Theme.Space.m) {
-                            CardHeader(title: "Change together", subtitle: "\(coupling.pairs.count.formatted()) pairs with ≥ \(model.minSharedCommits) shared commits")
+                            CardHeader(title: "Change together", subtitle: "\(coupling.pairs.count.formatted()) pairs with ≥ \(preferences.minSharedCommits) shared commits")
                             HStack(spacing: Theme.Space.xl) {
                                 metric("Commits that paired functions", coupling.pairingCommits.formatted())
                                 metric("Skipped as sweeps (> 50 functions)", coupling.skippedCommits.formatted())
-                                metric("Across folders", model.couplingRows.filter(\.crossDirectory).count.formatted())
+                                metric("Across folders", risk.couplingRows.filter(\.crossDirectory).count.formatted())
                             }
                             Text("A pair needs two correct line attributions, so pairs are weighted by recency as well; "
                                  + "repository-wide sweeps (formatting, renames) are not counted as coupling.")

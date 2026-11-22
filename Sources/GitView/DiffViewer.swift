@@ -2,19 +2,13 @@ import SwiftUI
 import GitViewCore
 import GitViewGit
 
-struct DiffRequest: Hashable, Sendable {
-    let source: DiffSource
-    let path: String
-    /// What this diff belongs to — a commit subject, "Uncommitted changes", a comparison.
-    let title: String
-}
-
 /// A unified diff for one file.
 ///
 /// Unified rather than side by side: at the width left over beside the sidebar and detail
 /// panel, two columns would wrap almost every line of real code.
 struct DiffViewer: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(InspectorStore.self) private var inspector
     let request: DiffRequest
 
     var body: some View {
@@ -27,30 +21,31 @@ struct DiffViewer: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.s) {
+        @Bindable var inspector = inspector
+        return VStack(alignment: .leading, spacing: Theme.Space.s) {
             HStack(spacing: Theme.Space.s) {
-                Button { model.closeDiff() } label: {
+                Button { inspector.closeDiff() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
                         // Closing a diff opened from a history returns to that history.
-                        Text(model.fileHistoryPath == nil ? "Back" : "Back to history")
+                        Text(inspector.fileHistoryPath == nil ? "Back" : "Back to history")
                     }
                     .font(Theme.Text.body).foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                if let diff = model.loadedDiff, !diff.isBinary {
+                if let diff = inspector.loadedDiff, !diff.isBinary {
                     Text("+\(diff.additions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.good)
                     Text("−\(diff.deletions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.critical)
                 }
-                Picker("", selection: $model.diffContext) {
+                Picker("", selection: $inspector.diffContext) {
                     Text("3 lines").tag(3)
                     Text("10 lines").tag(10)
                     Text("25 lines").tag(25)
                 }
                 .labelsHidden().frame(width: 110)
                 .help("Lines of unchanged context shown around each change")
-                Button("File history") { model.showFileHistory(request.path) }
+                Button("File history") { inspector.showFileHistory(request.path) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 if let url = fileURL {
                     Button("Open file") { NSWorkspace.shared.open(url) }
@@ -61,7 +56,7 @@ struct DiffViewer: View {
                 Text(request.path).font(Theme.Text.title).foregroundStyle(Theme.ink)
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 HStack(spacing: Theme.Space.s) {
-                    if let diff = model.loadedDiff {
+                    if let diff = inspector.loadedDiff {
                         if diff.isNew { Chip(text: "new file", tint: Theme.good) }
                         if diff.isDeleted { Chip(text: "deleted", tint: Theme.critical) }
                         if diff.isRename, let old = diff.oldPath {
@@ -76,20 +71,20 @@ struct DiffViewer: View {
     }
 
     private var fileURL: URL? {
-        guard let root = model.analysis?.root else { return nil }
+        guard let root = session.analysis?.root else { return nil }
         let url = root.appendingPathComponent(request.path)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     @ViewBuilder
     private var content: some View {
-        if model.diffInFlight && model.loadedDiff == nil {
+        if inspector.diffInFlight && inspector.loadedDiff == nil {
             VStack(spacing: Theme.Space.s) {
                 ProgressView().controlSize(.small)
                 Text("Reading the diff…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let diff = model.loadedDiff {
+        } else if let diff = inspector.loadedDiff {
             if diff.isBinary {
                 message("Binary file", "Its contents changed, but there are no text lines to show.")
             } else if diff.isEmpty {

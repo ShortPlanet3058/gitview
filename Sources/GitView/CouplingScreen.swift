@@ -2,27 +2,31 @@ import SwiftUI
 import GitViewCore
 
 struct CouplingScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(RiskStore.self) private var risk
+    @Environment(NavigationStore.self) private var navigation
 
     var body: some View {
+        @Bindable var risk = risk
+        @Bindable var preferences = preferences
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 ScreenHeader(title: "Change together",
                              subtitle: "Functions that keep being edited in the same commits. When they live in "
                                      + "different folders, changing one and forgetting the other is a classic bug.")
                 HStack(spacing: Theme.Space.m) {
-                    SegmentPicker(options: AnalysisModel.CouplingViewMode.allCases.map { ($0, $0.rawValue) },
-                                  selection: $model.couplingViewMode)
-                    SegmentPicker(options: AnalysisModel.CouplingScope.allCases.map { ($0, $0.rawValue) },
-                                  selection: $model.couplingScope)
-                    if model.advanced {
-                        Stepper("At least \(model.minSharedCommits) shared commits", value: $model.minSharedCommits, in: 2...20)
+                    SegmentPicker(options: RiskStore.CouplingViewMode.allCases.map { ($0, $0.rawValue) },
+                                  selection: $risk.couplingViewMode)
+                    SegmentPicker(options: RiskStore.CouplingScope.allCases.map { ($0, $0.rawValue) },
+                                  selection: $risk.couplingScope)
+                    if preferences.advanced {
+                        Stepper("At least \(preferences.minSharedCommits) shared commits", value: $preferences.minSharedCommits, in: 2...20)
                             .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
                     }
                     Spacer()
-                    if let coupling = model.coupling {
-                        Text("\(model.couplingRows.count.formatted()) pairs"
-                             + (model.advanced ? " · \(coupling.pairingCommits) commits paired, \(coupling.skippedCommits) sweeps skipped" : ""))
+                    if let coupling = risk.coupling {
+                        Text("\(risk.couplingRows.count.formatted()) pairs"
+                             + (preferences.advanced ? " · \(coupling.pairingCommits) commits paired, \(coupling.skippedCommits) sweeps skipped" : ""))
                             .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                     }
                 }
@@ -31,19 +35,19 @@ struct CouplingScreen: View {
             .padding(.top, Theme.Space.xl)
             .padding(.bottom, Theme.Space.l)
 
-            if model.couplingViewMode == .graph {
+            if risk.couplingViewMode == .graph {
                 graph
                     .padding(.horizontal, Theme.Space.xl)
                     .padding(.bottom, Theme.Space.xl)
             } else {
             ScrollColumn {
                 LazyVStack(spacing: Theme.Space.s) {
-                    ForEach(model.couplingRows.prefix(300)) { row in
-                        CouplingCard(row: row, selected: model.selectedPairID == row.id) {
-                            model.selectedPairID = row.id
+                    ForEach(risk.couplingRows.prefix(300)) { row in
+                        CouplingCard(row: row, selected: navigation.selectedPairID == row.id) {
+                            navigation.selectedPairID = row.id
                         }
                     }
-                    if model.couplingRows.isEmpty {
+                    if risk.couplingRows.isEmpty {
                         Text("No pairs in this scope. Try “Across files” or “All”.")
                             .font(Theme.Text.body).foregroundStyle(Theme.inkMuted).padding(.top, Theme.Space.xl)
                     }
@@ -59,15 +63,16 @@ struct CouplingScreen: View {
 
     @ViewBuilder
     private var graph: some View {
-        if let graph = model.graph, !graph.nodes.isEmpty {
+        @Bindable var navigation = navigation
+        if let graph = risk.graph, !graph.nodes.isEmpty {
             CouplingGraphView(
                 graph: graph,
-                positions: model.graphPositions,
-                layingOut: model.graphLayoutInProgress,
-                level: { model.rowsByID[$0]?.level },
-                location: { model.rowsByID[$0]?.location },
-                selectedUnitID: $model.selectedUnitID,
-                selectedPairID: $model.selectedPairID
+                positions: risk.graphPositions,
+                layingOut: risk.graphLayoutInProgress,
+                level: { risk.rowsByID[$0]?.level },
+                location: { risk.rowsByID[$0]?.location },
+                selectedUnitID: $navigation.selectedUnitID,
+                selectedPairID: $navigation.selectedPairID
             )
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.hairline))
@@ -127,7 +132,9 @@ struct CouplingCard: View {
 }
 
 struct PairDetailPanel: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(RiskStore.self) private var risk
+    @Environment(NavigationStore.self) private var navigation
     let row: CouplingRow
 
     var body: some View {
@@ -137,7 +144,7 @@ struct PairDetailPanel: View {
                     Chip(text: row.crossDirectory ? "different folders" : (row.pair.crossFile ? "different files" : "same file"),
                          tint: row.crossDirectory ? Theme.serious : Theme.inkSoft)
                     Spacer()
-                    Button { model.selectedPairID = nil } label: {
+                    Button { navigation.selectedPairID = nil } label: {
                         Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             .padding(6).background(Theme.wash, in: Circle())
                     }.buttonStyle(.plain)
@@ -154,7 +161,7 @@ struct PairDetailPanel: View {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     unitCard(id: row.pair.a, name: row.nameA, location: row.locationA)
                     unitCard(id: row.pair.b, name: row.nameB, location: row.locationB)
-                    if let churn = model.churn, let coupling = model.coupling {
+                    if let churn = risk.churn, let coupling = risk.coupling {
                         let shared = coupling.sharedCommits(of: row.pair, in: churn)
                         let sweeps = coupling.sweepSharedCommits(of: row.pair, in: churn)
                         Card(padding: Theme.Space.m) {
@@ -183,11 +190,11 @@ struct PairDetailPanel: View {
     }
 
     private func unitCard(id: UUID, name: String, location: String) -> some View {
-        let unitRow = model.rowsByID[id]
+        let unitRow = risk.rowsByID[id]
         return Button {
-            model.show(.hotspots)
-            model.selectedPairID = nil
-            model.selectedUnitID = id
+            session.show(.hotspots)
+            navigation.selectedPairID = nil
+            navigation.selectedUnitID = id
         } label: {
             HStack(spacing: Theme.Space.m) {
                 if let unitRow { RiskBadge(level: unitRow.level, compact: true) }

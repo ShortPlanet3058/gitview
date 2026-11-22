@@ -453,13 +453,13 @@ extension Double {
 /// arriving any more, and a page that goes on claiming to be reading would be waiting for
 /// something that is never coming — so it says what happened and offers to finish.
 struct StillReading: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let what: String
     var compact = false
 
     var body: some View {
         VStack(spacing: Theme.Space.s) {
-            if model.loadProgress != nil {
+            if session.loadProgress != nil {
                 ProgressView().controlSize(.small)
                 Text("Still reading \(what)…")
                     .font(compact ? Theme.Text.caption : Theme.Text.body)
@@ -468,7 +468,7 @@ struct StillReading: View {
                 Text("Stopped before \(what) was read.")
                     .font(compact ? Theme.Text.caption : Theme.Text.body)
                     .foregroundStyle(Theme.inkMuted)
-                Button("Finish reading") { model.refresh() }
+                Button("Finish reading") { session.refresh() }
                     .buttonStyle(SecondaryButtonStyle())
                     .controlSize(.small)
             }

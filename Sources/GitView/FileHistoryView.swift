@@ -5,16 +5,16 @@ import GitViewGit
 
 /// One file's life: every commit that touched it, following renames, each opening its diff.
 struct FileHistoryView: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(InspectorStore.self) private var inspector
     let path: String
 
-    private var entries: [FileHistoryEntry] { model.fileHistory }
+    private var entries: [FileHistoryEntry] { inspector.fileHistory }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Rectangle().fill(Theme.hairline).frame(height: 1)
-            if model.fileHistoryInFlight && entries.isEmpty {
+            if inspector.fileHistoryInFlight && entries.isEmpty {
                 VStack(spacing: Theme.Space.s) {
                     ProgressView().controlSize(.small)
                     Text("Reading this file's history…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -46,7 +46,7 @@ struct FileHistoryView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             HStack {
-                Button { model.closeFileHistory() } label: {
+                Button { inspector.closeFileHistory() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
                         Text("Back")
@@ -74,11 +74,11 @@ struct FileHistoryView: View {
         let people = Set(entries.map(\.commit.author)).count
         // When the history is capped, the count and the earliest date are both about what
         // was read, not about the file — so say that rather than implying a total.
-        var text = model.fileHistoryTruncated
+        var text = inspector.fileHistoryTruncated
             ? "most recent \(entries.count) commits, by \(people) \(people == 1 ? "person" : "people")"
             : "\(entries.count) commit\(entries.count == 1 ? "" : "s") by "
               + "\(people) \(people == 1 ? "person" : "people")"
-        if !model.fileHistoryTruncated, let oldest = entries.last?.commit.date {
+        if !inspector.fileHistoryTruncated, let oldest = entries.last?.commit.date {
             text += ", since \(oldest.formatted(.dateTime.year().month(.abbreviated)))"
         }
         if entries.contains(where: \.isRename) { text += " · renamed along the way" }
@@ -113,7 +113,7 @@ struct FileHistoryView: View {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                     Button {
                         // The path as of that commit, so an old revision resolves correctly.
-                        model.showDiff(.commit(sha: entry.commit.sha), path: entry.path,
+                        inspector.showDiff(.commit(sha: entry.commit.sha), path: entry.path,
                                        title: entry.commit.subject)
                     } label: {
                         HStack(alignment: .top, spacing: Theme.Space.m) {

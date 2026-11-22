@@ -14,8 +14,18 @@ if [[ "${1:-}" == "--universal" ]]; then
     ARCH_FLAGS=(--arch arm64 --arch x86_64)
 fi
 
-swift build -c release --product GitView "${ARCH_FLAGS[@]}"
-BIN="$(swift build -c release --product GitView "${ARCH_FLAGS[@]}" --show-bin-path)/GitView"
+BUILD_FLAGS=()
+if [[ -n "${GITVIEW_SCRATCH_PATH:-}" ]]; then
+    BUILD_FLAGS=(--scratch-path "$GITVIEW_SCRATCH_PATH" --disable-automatic-resolution)
+fi
+
+VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+if [[ -z "$VERSION" ]]; then
+    VERSION="0.2.0"
+fi
+
+swift build -c release --product GitView "${ARCH_FLAGS[@]}" "${BUILD_FLAGS[@]}"
+BIN="$(swift build -c release --product GitView "${ARCH_FLAGS[@]}" "${BUILD_FLAGS[@]}" --show-bin-path)/GitView"
 
 APP="build/GitView.app"
 rm -rf "$APP"
@@ -42,9 +52,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>               <string>GitView</string>
     <key>CFBundleDisplayName</key>        <string>GitView</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key> <string>$VERSION</string>
     <key>CFBundleVersion</key>            <string>1</string>
-    <key>LSMinimumSystemVersion</key>     <string>13.0</string>
+    <key>LSMinimumSystemVersion</key>     <string>14.0</string>
     <key>NSHighResolutionCapable</key>    <true/>
     <key>NSPrincipalClass</key>           <string>NSApplication</string>
     <key>LSApplicationCategoryType</key>  <string>public.app-category.developer-tools</string>

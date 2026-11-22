@@ -2,7 +2,7 @@ import SwiftUI
 import GitViewCore
 
 struct CommitsScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     @State private var query = ""
     @State private var range: TimeRange = .all
     @State private var author: String = ""
@@ -22,7 +22,7 @@ struct CommitsScreen: View {
     }
 
     private var filtered: [Commit] {
-        guard let commits = model.analysis?.commits else { return [] }
+        guard let commits = session.analysis?.commits else { return [] }
         let q = query.trimmingCharacters(in: .whitespaces)
         return commits.filter { commit in
             if let since = range.since, commit.date < since { return false }
@@ -45,21 +45,21 @@ struct CommitsScreen: View {
                     .labelsHidden().frame(width: 140)
                 Picker("", selection: $author) {
                     Text("All authors").tag("")
-                    ForEach(model.contributors.prefix(30)) { Text($0.name).tag($0.name) }
+                    ForEach(session.contributors.prefix(30)) { Text($0.name).tag($0.name) }
                 }
                 .labelsHidden().frame(width: 180)
                 Spacer()
                 Text("\(commits.count.formatted()) commits").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             Card(padding: Theme.Space.s) {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(grouped, id: \.day) { group in
                         Text(group.day.formatted(.dateTime.year().month(.abbreviated).day()))
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.m).padding(.bottom, 4)
                         ForEach(group.commits, id: \.sha) { commit in
-                            Button { model.selectedCommitSHA = commit.sha } label: {
-                                CommitRowView(commit: commit, selected: model.selectedCommitSHA == commit.sha)
+                            Button { session.navigation.selectedCommitSHA = commit.sha } label: {
+                                CommitRowView(commit: commit, selected: session.navigation.selectedCommitSHA == commit.sha)
                             }
                             .buttonStyle(.plain)
                         }
@@ -85,13 +85,22 @@ struct CommitsScreen: View {
     static func groupByDay(_ commits: [Commit]) -> [DayGroup] {
         let calendar = Calendar.current
         var groups: [DayGroup] = []
+        var currentDay: Date?
+        var bucket: [Commit] = []
         for commit in commits {
             let day = calendar.startOfDay(for: commit.date)
-            if let last = groups.last, last.day == day {
-                groups[groups.count - 1] = DayGroup(day: day, commits: last.commits + [commit])
+            if currentDay == day {
+                bucket.append(commit)
             } else {
-                groups.append(DayGroup(day: day, commits: [commit]))
+                if let prev = currentDay {
+                    groups.append(DayGroup(day: prev, commits: bucket))
+                }
+                currentDay = day
+                bucket = [commit]
             }
+        }
+        if let lastDay = currentDay {
+            groups.append(DayGroup(day: lastDay, commits: bucket))
         }
         return groups
     }

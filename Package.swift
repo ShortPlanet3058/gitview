@@ -3,11 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "GitView",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "GitViewCore", targets: ["GitViewCore"]),
         .library(name: "GitViewParse", targets: ["GitViewParse"]),
         .library(name: "GitViewGit", targets: ["GitViewGit"]),
+        .library(name: "GitViewUI", targets: ["GitViewUI"]),
         .executable(name: "gitview-cli", targets: ["gitview-cli"]),
         .executable(name: "GitView", targets: ["GitView"]),
     ],
@@ -71,14 +72,24 @@ let package = Package(
 
         .executableTarget(name: "gitview-cli", dependencies: ["GitViewCore", "GitViewGit", "GitViewParse"]),
 
-        // SwiftUI app. Nothing below this line may be imported by Core/Git/Parse.
+        // SwiftUI app library + thin executable entrypoint.
+        .target(
+            name: "GitViewUI",
+            dependencies: ["GitViewCore", "GitViewGit", "GitViewParse"],
+            path: "Sources/GitView"
+        ),
         .executableTarget(
             name: "GitView",
-            dependencies: ["GitViewCore", "GitViewGit", "GitViewParse"]
+            dependencies: ["GitViewUI"],
+            path: "Sources/GitViewAppMain"
         ),
 
         .testTarget(name: "GitViewCoreTests", dependencies: ["GitViewCore"]),
         .testTarget(name: "GitViewGitTests", dependencies: ["GitViewGit", "GitViewCore"]),
         .testTarget(name: "GitViewParseTests", dependencies: ["GitViewParse", "GitViewCore"]),
+        .testTarget(
+            name: "GitViewUITests",
+            dependencies: ["GitViewUI", "GitViewCore", "GitViewGit", "GitViewParse"]
+        ),
     ]
 )

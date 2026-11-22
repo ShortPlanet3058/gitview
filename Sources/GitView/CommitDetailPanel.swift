@@ -4,13 +4,14 @@ import GitViewCore
 /// What one commit actually changed — including which functions it touched, which is the
 /// thing GitView knows and a commit viewer normally cannot tell you.
 struct CommitDetailPanel: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(RiskStore.self) private var risk
     let commit: Commit
 
     private var touched: [RiskRow] {
-        guard let churn = model.churn else { return [] }
+        guard let churn = risk.churn else { return [] }
         return churn.units(touchedBy: commit.sha)
-            .compactMap { model.rowsByID[$0] }
+            .compactMap { risk.rowsByID[$0] }
             .sorted { $0.score > $1.score }
     }
 
@@ -33,7 +34,7 @@ struct CommitDetailPanel: View {
             HStack {
                 ShaChip(sha: commit.sha)
                 Spacer()
-                Button { model.selectedCommitSHA = nil } label: {
+                Button { session.navigation.selectedCommitSHA = nil } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Theme.inkMuted).padding(6).background(Theme.wash, in: Circle())
                 }
@@ -54,7 +55,7 @@ struct CommitDetailPanel: View {
                     NSPasteboard.general.setString(commit.sha, forType: .string)
                 }
                 .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
-                if let web = model.analysis?.info.remoteWebURL {
+                if let web = session.analysis?.info.remoteWebURL {
                     Button("View on \(web.host ?? "remote")") {
                         NSWorkspace.shared.open(web.appendingPathComponent("commit").appendingPathComponent(commit.sha))
                     }
@@ -87,7 +88,7 @@ struct CommitDetailPanel: View {
                     }
                     VStack(spacing: 2) {
                         ForEach(rows.prefix(25)) { row in
-                            Button { model.selectedCommitSHA = nil; model.selectedUnitID = row.id } label: {
+                            Button { session.navigation.selectedCommitSHA = nil; session.navigation.selectedUnitID = row.id } label: {
                                 HStack(spacing: Theme.Space.s) {
                                     RiskBadge(level: row.level, compact: true)
                                     VStack(alignment: .leading, spacing: 1) {
@@ -131,7 +132,7 @@ struct CommitDetailPanel: View {
                     VStack(spacing: 0) {
                         ForEach(commit.fileChanges.prefix(60), id: \.path) { change in
                             Button {
-                                model.showDiff(.commit(sha: commit.sha), path: change.path,
+                                session.inspector.showDiff(.commit(sha: commit.sha), path: change.path,
                                                title: commit.subject.isEmpty ? commit.sha : commit.subject)
                             } label: {
                             HStack(spacing: Theme.Space.s) {

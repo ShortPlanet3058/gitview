@@ -3,28 +3,27 @@ import GitViewCore
 import GitViewGit
 
 struct GlobalSearchField: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(SearchStore.self) private var search
+    @Environment(NavigationStore.self) private var navigation
     @Environment(\.staticRendering) private var staticRendering
     @FocusState private var focused: Bool
 
     var body: some View {
+        @Bindable var search = search
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
             if staticRendering {
-                // A real TextField is AppKit-backed and draws as a blank placeholder in the
-                // offscreen renderer, which is no use for a screenshot. Same metrics, plain
-                // text, only ever used when rendering to an image.
-                Text(model.globalSearch.isEmpty ? "Search commits, files, functions…" : model.globalSearch)
+                Text(search.globalSearch.isEmpty ? "Search commits, files, functions…" : search.globalSearch)
                     .font(Theme.Text.body)
-                    .foregroundStyle(model.globalSearch.isEmpty ? Theme.inkMuted : Theme.ink)
+                    .foregroundStyle(search.globalSearch.isEmpty ? Theme.inkMuted : Theme.ink)
                     .frame(width: 260, alignment: .leading)
             } else {
-            TextField("Search commits, files, functions…", text: $model.globalSearch)
-                .textFieldStyle(.plain).font(Theme.Text.body).focused($focused)
-                .frame(width: 260)
+                TextField("Search commits, files, functions…", text: $search.globalSearch)
+                    .textFieldStyle(.plain).font(Theme.Text.body).focused($focused)
+                    .frame(width: 260)
             }
-            if model.isSearching {
-                Button { model.clearSearch() } label: {
+            if search.isSearching {
+                Button { search.clear() } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
                 }
                 .buttonStyle(.plain)
@@ -36,27 +35,29 @@ struct GlobalSearchField: View {
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
             .strokeBorder(focused ? Theme.accent.opacity(0.6) : Theme.hairline))
-        .onChange(of: model.focusSearchRequest) { _ in focused = true }
+        .onChange(of: navigation.focusSearchRequest) { focused = true }
     }
 }
 
 /// Everything that matches, grouped by what it is.
 struct SearchScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(SearchStore.self) private var search
+    @Environment(RiskStore.self) private var risk
 
     var body: some View {
         Page {
             header
-            if let results = model.searchResults {
-                if results.isEmpty && model.codeMatches.isEmpty && model.historyMatches.isEmpty
-                    && !model.deepSearchInFlight {
+            if let results = search.searchResults {
+                if results.isEmpty && search.codeMatches.isEmpty && search.historyMatches.isEmpty
+                    && !search.deepSearchInFlight {
                     emptyState
                 } else {
                     if !results.commits.isEmpty { commitsSection(results.commits) }
                     if !results.units.isEmpty { unitsSection(results.units) }
                     if !results.files.isEmpty { filesSection(results.files) }
-                    if !model.codeMatches.isEmpty || model.deepSearchInFlight { codeSection }
-                    if !model.historyMatches.isEmpty { historySection }
+                    if !search.codeMatches.isEmpty || search.deepSearchInFlight { codeSection }
+                    if !search.historyMatches.isEmpty { historySection }
                     if !results.people.isEmpty || !results.branches.isEmpty || !results.tags.isEmpty {
                         othersSection(results)
                     }
@@ -74,18 +75,18 @@ struct SearchScreen: View {
     }
 
     private var summary: String {
-        guard let results = model.searchResults else { return "" }
+        guard let results = search.searchResults else { return "" }
         var parts: [String] = []
         if results.total > 0 { parts.append("\(results.total) match\(results.total == 1 ? "" : "es")") }
-        if !model.codeMatches.isEmpty { parts.append("\(model.codeMatches.count) in file contents") }
-        if !model.historyMatches.isEmpty { parts.append("\(model.historyMatches.count) commits changed it") }
+        if !search.codeMatches.isEmpty { parts.append("\(search.codeMatches.count) in file contents") }
+        if !search.historyMatches.isEmpty { parts.append("\(search.historyMatches.count) commits changed it") }
         return parts.isEmpty ? "No matches for “\(results.query)”" : parts.joined(separator: " · ")
     }
 
     private var emptyState: some View {
         Card {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
-                Text("Nothing matches “\(model.globalSearch)”").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                Text("Nothing matches “\(search.globalSearch)”").font(Theme.Text.heading).foregroundStyle(Theme.ink)
                 Text("Searched commit messages, authors, commit ids, file paths, function names, "
                      + "branches, tags, and the contents of tracked files.")
                     .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
@@ -108,7 +109,7 @@ struct SearchScreen: View {
         section("Commits", commits.count) {
             VStack(spacing: 0) {
                 ForEach(commits, id: \.sha) { commit in
-                    Button { model.selectedCommitSHA = commit.sha } label: {
+                    Button { session.navigation.selectedCommitSHA = commit.sha } label: {
                         HStack(spacing: Theme.Space.s) {
                             Avatar(name: commit.author, size: 22)
                             VStack(alignment: .leading, spacing: 1) {
@@ -133,12 +134,11 @@ struct SearchScreen: View {
             VStack(spacing: 0) {
                 ForEach(units) { unit in
                     Button {
-                        model.show(.hotspots)
-                        model.selectedUnitID = unit.id
-                        model.clearSearch()
+                        session.show(.hotspots)
+                        session.navigation.selectedUnitID = unit.id
                     } label: {
                         HStack(spacing: Theme.Space.s) {
-                            if let row = model.rowsByID[unit.id] { RiskBadge(level: row.level, compact: true) }
+                            if let row = risk.rowsByID[unit.id] { RiskBadge(level: row.level, compact: true) }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(unit.name).font(Theme.Text.body).foregroundStyle(Theme.ink)
                                     .lineLimit(1).truncationMode(.middle)
@@ -163,9 +163,8 @@ struct SearchScreen: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(files, id: \.self) { path in
                     Button {
-                        model.pendingFileSelection = path
-                        model.show(.files)
-                        model.clearSearch()
+                        session.show(.files)
+                        session.navigation.pendingFileSelection = path
                     } label: {
                         HStack(spacing: Theme.Space.s) {
                             Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
@@ -182,21 +181,20 @@ struct SearchScreen: View {
     }
 
     private var codeSection: some View {
-        section("In file contents", model.codeMatches.count,
+        section("In file contents", search.codeMatches.count,
                 info: "Matching lines in tracked files as they stand now, from `git grep`. "
                     + "Binary files are skipped.") {
-            if model.deepSearchInFlight && model.codeMatches.isEmpty {
+            if search.deepSearchInFlight && search.codeMatches.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Searching file contents…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(model.codeMatches.prefix(30)) { match in
+                    ForEach(search.codeMatches.prefix(30)) { match in
                         Button {
-                            model.pendingFileSelection = match.path
-                            model.show(.files)
-                            model.clearSearch()
+                            session.show(.files)
+                            session.navigation.pendingFileSelection = match.path
                         } label: {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("\(match.path):\(match.line)")
@@ -216,12 +214,12 @@ struct SearchScreen: View {
     }
 
     private var historySection: some View {
-        section("Commits that added or removed it", model.historyMatches.count,
+        section("Commits that added or removed it", search.historyMatches.count,
                 info: "Commits where the number of occurrences of this text changed — git's "
                     + "\"pickaxe\". This is how to find when something was introduced or deleted.") {
             VStack(spacing: 0) {
-                ForEach(model.historyMatches, id: \.sha) { commit in
-                    Button { model.selectedCommitSHA = commit.sha } label: {
+                ForEach(search.historyMatches, id: \.sha) { commit in
+                    Button { session.navigation.selectedCommitSHA = commit.sha } label: {
                         HStack(spacing: Theme.Space.s) {
                             Avatar(name: commit.author, size: 20)
                             VStack(alignment: .leading, spacing: 1) {
@@ -246,9 +244,8 @@ struct SearchScreen: View {
             FlowRow(spacing: Theme.Space.s) {
                 ForEach(results.people) { person in
                     Button {
-                        model.show(.contributors)
-                        model.selectedAuthor = person.name
-                        model.clearSearch()
+                        session.show(.contributors)
+                        session.navigation.selectedAuthor = person.name
                     } label: {
                         HStack(spacing: 5) {
                             Avatar(name: person.name, size: 18)
@@ -260,7 +257,7 @@ struct SearchScreen: View {
                     .buttonStyle(.plain)
                 }
                 ForEach(results.branches, id: \.self) { name in
-                    Button { model.show(.branches); model.clearSearch() } label: {
+                    Button { session.show(.branches) } label: {
                         Label(name, systemImage: "arrow.triangle.branch")
                             .font(Theme.Text.caption).foregroundStyle(Theme.ink)
                             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -270,9 +267,8 @@ struct SearchScreen: View {
                 }
                 ForEach(results.tags, id: \.self) { name in
                     Button {
-                        model.compareTo = name
-                        model.show(.releases)
-                        model.clearSearch()
+                        session.navigation.compareTo = name
+                        session.show(.releases)
                     } label: {
                         Label(name, systemImage: "tag")
                             .font(Theme.Text.caption).foregroundStyle(Theme.ink)

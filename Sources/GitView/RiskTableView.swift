@@ -3,7 +3,8 @@ import GitViewCore
 
 /// The expert view: every column, sortable. Shown only in Advanced mode.
 struct RiskTableView: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(NavigationStore.self) private var navigation
+    @Environment(RiskStore.self) private var risk
     let rows: [RiskRow]
     @State private var sortOrder = [KeyPathComparator(\RiskRow.score, order: .reverse)]
     /// Sorted copy held in state rather than computed in `body`. Re-sorting inside `body`
@@ -13,7 +14,8 @@ struct RiskTableView: View {
     @State private var topScore: Double = 0
 
     var body: some View {
-        Table(sortedRows, selection: $model.selectedUnitID, sortOrder: $sortOrder) {
+        @Bindable var navigation = navigation
+        Table(sortedRows, selection: $navigation.selectedUnitID, sortOrder: $sortOrder) {
             TableColumn("Level", value: \.level.rawValue) { row in
                 RiskBadge(level: row.level, compact: true)
             }
@@ -88,15 +90,15 @@ struct RiskTableView: View {
             .width(min: 50, ideal: 56, max: 70)
         }
         .onAppear(perform: resort)
-        .onChange(of: sortOrder) { _ in resort() }
-        .onChange(of: rows) { _ in resort() }
+        .onChange(of: sortOrder) { resort() }
+        .onChange(of: rows) { resort() }
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
         .overlay {
             if rows.isEmpty {
-                Text(model.searchText.isEmpty
+                Text(risk.searchText.isEmpty
                      ? "No units match the current filters."
-                     : "No units match “\(model.searchText)”.")
+                     : "No units match “\(risk.searchText)”.")
                     .foregroundStyle(.secondary)
             }
         }

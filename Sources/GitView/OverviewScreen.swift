@@ -18,12 +18,12 @@ import GitViewParse
 /// tile is a door: click it and the tab it belongs to has the whole story. That is the trade
 /// it makes — less detail here, one click to all of it.
 struct OverviewScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
 
     private let gap = Theme.Space.m
 
     var body: some View {
-        if let analysis = model.analysis {
+        if let analysis = session.analysis {
             GeometryReader { geometry in
                 // Rows are proportional, so the dashboard fills a tall window, and each has
                 // a height it would rather not go below. Those minimums can add up to more
@@ -113,11 +113,11 @@ struct OverviewScreen: View {
     private func numbersRow(_ analysis: RepositoryAnalysis) -> some View {
         HStack(spacing: gap) {
             NumberTile(icon: "clock.arrow.circlepath", tint: .blue, destination: .commits,
-                       value: model.readiness.hasHistory ? analysis.commits.count.formatted() : "—",
+                       value: session.readiness.hasHistory ? analysis.commits.count.formatted() : "—",
                        label: "Commits", detail: commitsThisMonth(analysis))
             NumberTile(icon: "person.2", tint: .aqua, destination: .contributors,
-                       value: model.readiness.hasHistory ? model.contributors.count.formatted() : "—",
-                       label: model.contributors.count == 1 ? "Contributor" : "Contributors",
+                       value: session.readiness.hasHistory ? session.contributors.count.formatted() : "—",
+                       label: session.contributors.count == 1 ? "Contributor" : "Contributors",
                        detail: activePeople())
             NumberTile(icon: "doc.text.fill", tint: .orange, destination: .files,
                        value: analysis.info.inventory.fileCount.formatted(),
@@ -138,7 +138,7 @@ struct OverviewScreen: View {
         HStack(spacing: gap) {
             HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
             HotspotsTile(limit: compact ? 2 : 4).frame(maxWidth: .infinity)
-            ActivityTile(commits: analysis.commits).frame(maxWidth: .infinity)
+            ActivityTile().frame(maxWidth: .infinity)
         }
     }
 
@@ -149,21 +149,21 @@ struct OverviewScreen: View {
     }
 
     private func commitsThisMonth(_ analysis: RepositoryAnalysis) -> String? {
-        guard model.readiness.hasHistory else { return nil }
+        guard session.readiness.hasHistory else { return nil }
         let start = Date().addingTimeInterval(-30 * 86_400)
         let count = analysis.commits.lazy.filter { $0.date >= start }.count
         return count == 0 ? "none in 30 days" : "+\(count) in 30 days"
     }
 
     private func activePeople() -> String? {
-        guard model.readiness.hasHistory else { return nil }
+        guard session.readiness.hasHistory else { return nil }
         let start = Date().addingTimeInterval(-90 * 86_400)
-        let active = model.contributors.filter { $0.lastCommit >= start }.count
+        let active = session.contributors.filter { $0.lastCommit >= start }.count
         return active == 0 ? "none in 90 days" : "\(active) active"
     }
 
     private func unreleasedDetail() -> String? {
-        guard let unreleased = model.unreleasedCount else { return nil }
+        guard let unreleased = session.unreleasedCount else { return nil }
         return unreleased == 0 ? "nothing unreleased" : "\(unreleased) unreleased"
     }
 }
@@ -171,24 +171,19 @@ struct OverviewScreen: View {
 // MARK: - The tile
 
 /// A fixed-size dashboard tile that opens the tab holding the full version of itself.
-///
-/// The whole tile is the target rather than a link in its corner — a small "see all →" asks
-/// people to find it, and there is nothing else to click on a dashboard anyway. It is a tap
-/// gesture rather than a `Button` so that an info popover inside the tile still works;
-/// nesting a button inside a button gives you one of them, unpredictably.
 struct DashTile<Content: View>: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let title: String
     var subtitle: String? = nil
     var info: String? = nil
-    var destination: AnalysisModel.Screen? = nil
+    var destination: NavigationStore.Screen? = nil
     var needs: KeyPath<Readiness, Bool>? = nil
     var waitingFor: String = "the commit history"
     @ViewBuilder let content: Content
 
     @State private var hovering = false
 
-    private var ready: Bool { needs.map { model.readiness[keyPath: $0] } ?? true }
+    private var ready: Bool { needs.map { session.readiness[keyPath: $0] } ?? true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
@@ -216,15 +211,13 @@ struct DashTile<Content: View>: View {
         }
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Clipped, not resized: a tile that would rather be taller loses the bottom of its
-        // content instead of pushing the row out of shape.
         .clipped()
         .background(hovering && destination != nil ? Theme.raised : Theme.surface,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
             .strokeBorder(hovering && destination != nil ? Theme.accent.opacity(0.45) : Theme.hairline))
         .contentShape(Rectangle())
-        .onTapGesture { if let destination { model.show(destination) } }
+        .onTapGesture { if let destination { session.show(destination) } }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help(destination.map { "Open \($0.title)" } ?? "")
@@ -234,26 +227,23 @@ struct DashTile<Content: View>: View {
 // MARK: - Tiles
 
 struct CatchUpTile: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     var limit = 3
 
     var body: some View {
         DashTile(title: "Since you were last here",
-                 subtitle: model.catchUp.map { $0.isEmpty ? nil : "\($0.authorCount) \($0.authorCount == 1 ? "person" : "people")" } ?? nil,
+                 subtitle: session.catchUp.map { $0.isEmpty ? nil : "\($0.authorCount) \($0.authorCount == 1 ? "person" : "people")" } ?? nil,
                  destination: .commits,
                  needs: \.hasHistory) {
-            if let catchUp = model.catchUp {
+            if let catchUp = session.catchUp {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(catchUp.headline(now: Date()))
                         .font(Theme.Text.title).foregroundStyle(Theme.ink)
                         .lineLimit(1).minimumScaleFactor(0.85)
                     if catchUp.isEmpty {
-                        // Nothing new is still a tile that has to fill its space, and "you
-                        // are up to date" alone leaves a hole. The latest work is the next
-                        // most useful thing to see, and the reason someone looks here.
                         Text("Up to date. The most recent work here:")
                             .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-                        ForEach(model.analysis?.commits.prefix(limit) ?? [], id: \.sha) { commit in
+                        ForEach(session.analysis?.commits.prefix(limit) ?? [], id: \.sha) { commit in
                             HStack(spacing: Theme.Space.s) {
                                 Avatar(name: commit.author, size: 20)
                                 Text(commit.subject.isEmpty ? "(no message)" : commit.subject)
@@ -291,7 +281,7 @@ struct CatchUpTile: View {
 }
 
 struct WorkingCopyTile: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let state: WorkingState
     var compact = false
 
@@ -318,7 +308,7 @@ struct WorkingCopyTile: View {
                             .font(Theme.Text.body).foregroundStyle(Theme.inkSoft).lineLimit(2)
                     }
                     // A clean tile would otherwise be three words and a lot of nothing.
-                    if let head = model.analysis?.commits.first, !compact {
+                    if let head = session.analysis?.commits.first, !compact {
                         Divider().overlay(Theme.hairline).padding(.vertical, 2)
                         Text("Last commit").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         Text(head.subject.isEmpty ? "(no message)" : head.subject)
@@ -359,10 +349,10 @@ struct WorkingCopyTile: View {
 
 /// One number, its label, and one line of context.
 struct NumberTile: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let icon: String
     let tint: Theme.Tint
-    let destination: AnalysisModel.Screen
+    let destination: NavigationStore.Screen
     let value: String
     let label: String
     var detail: String? = nil
@@ -395,7 +385,7 @@ struct NumberTile: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
             .strokeBorder(hovering ? Theme.accent.opacity(0.45) : Theme.hairline))
         .contentShape(Rectangle())
-        .onTapGesture { model.show(destination) }
+        .onTapGesture { session.show(destination) }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Open \(destination.title)")
@@ -405,7 +395,7 @@ struct NumberTile: View {
 /// The full-width language bar. Kept to one row: it answers "what is this written in", and
 /// the breakdown with every percentage lives on the Files tab.
 struct LanguageStrip: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     let inventory: FileInventory
     @State private var hovering = false
 
@@ -451,7 +441,7 @@ struct LanguageStrip: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
             .strokeBorder(hovering ? Theme.accent.opacity(0.45) : Theme.hairline))
         .contentShape(Rectangle())
-        .onTapGesture { model.show(.files) }
+        .onTapGesture { session.show(.files) }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Open Files")
@@ -464,7 +454,8 @@ struct LanguageStrip: View {
 }
 
 struct HealthTile: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(RiskStore.self) private var risk
     var checks = 3
 
     var body: some View {
@@ -473,9 +464,9 @@ struct HealthTile: View {
                      + "hygiene (15), large files (15), and complex code under change (25). The full "
                      + "breakdown is on the Statistics tab; the score is a heuristic to start a "
                      + "conversation, not a verdict.",
-                 destination: model.advanced ? .statistics : .hotspots,
+                 destination: preferences.advanced ? .statistics : .hotspots,
                  needs: \.hasUnits, waitingFor: "the source files") {
-            if let health = model.health {
+            if let health = risk.health {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     HStack(spacing: Theme.Space.m) {
                         // The ring is most of this tile's height. In a short window it is
@@ -534,22 +525,22 @@ struct HealthTile: View {
 }
 
 struct HotspotsTile: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(RiskStore.self) private var risk
     var limit = 4
 
     var body: some View {
         DashTile(title: "Risk hotspots",
-                 subtitle: model.rows.isEmpty ? nil : "\(model.rows.count.formatted()) ranked",
+                 subtitle: risk.rows.isEmpty ? nil : "\(risk.rows.count.formatted()) ranked",
                  info: "Functions with the highest combination of complexity and recent change — where a "
                      + "bug is most likely hiding and where a small refactor pays off most.",
                  destination: .hotspots,
                  needs: \.hasUnits, waitingFor: "the source files") {
-            if model.rows.isEmpty {
+            if risk.rows.isEmpty {
                 Text("No functions with history to rank.")
                     .font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(model.rows.prefix(limit)) { row in
+                    ForEach(risk.rows.prefix(limit)) { row in
                         HStack(spacing: Theme.Space.s) {
                             RiskBadge(level: row.level, compact: true)
                             VStack(alignment: .leading, spacing: 0) {
@@ -571,24 +562,18 @@ struct HotspotsTile: View {
 }
 
 struct ActivityTile: View {
-    @EnvironmentObject private var model: AnalysisModel
-    let commits: [Commit]
+    @Environment(WorkspaceSession.self) private var session
 
     var body: some View {
         DashTile(title: "Activity",
                  subtitle: "commits per week",
                  destination: .activity,
                  needs: \.hasHistory) {
-            let now = Date()
-            let buckets = ActivitySeries.buckets(
-                commits: commits, granularity: .week,
-                from: now.addingTimeInterval(-182 * 86_400), to: now)
+            let buckets = session.recentActivityBuckets
             if buckets.isEmpty {
                 Text("No commits in the last six months.")
                     .font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
             } else {
-                // A sparkline, not a chart: no axes, no gridlines, no labels. It answers
-                // "is this project busy or quiet, and is that changing" and nothing else.
                 Sparkline(buckets: buckets)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

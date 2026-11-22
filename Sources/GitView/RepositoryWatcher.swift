@@ -13,7 +13,7 @@ import CoreServices
 /// and several logs — so events are coalesced twice: by FSEvents' own latency window, and
 /// again by a debounce here. What arrives is "something changed", never "what changed": the
 /// model asks git that question, because only git can answer it correctly.
-final class RepositoryWatcher {
+final class RepositoryWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "com.gitview.watcher", qos: .utility)
     private var pending: DispatchWorkItem?

@@ -3,19 +3,21 @@ import AppKit
 import GitViewCore
 
 struct ContributorsScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(NavigationStore.self) private var navigation
     @State private var query = ""
     @State private var limit = 100
 
     var body: some View {
-        let people = model.contributors.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+        let people = session.contributors.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
         let top = people.map(\.share).max() ?? 1
         Page {
             HStack(alignment: .top) {
                 ScreenHeader(title: "Contributors",
                              subtitle: "Who works on this, and who to ask about what.")
                 Spacer()
-                if model.advanced {
+                if preferences.advanced {
                     Button { exportCSV(people) } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
                         .buttonStyle(SecondaryButtonStyle())
                 }
@@ -25,7 +27,7 @@ struct ContributorsScreen: View {
                 Spacer()
                 Text("\(people.count) people").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
-            if let ownership = model.ownership {
+            if let ownership = session.ownership {
                 KnowledgeRiskCard(index: ownership)
             }
 
@@ -35,7 +37,7 @@ struct ContributorsScreen: View {
                                            ("First commit", 110, .leading), ("Last commit", 110, .leading)])
                     HairlineDivider()
                     ForEach(people.prefix(limit)) { person in
-                        Button { model.selectedAuthor = person.name } label: {
+                        Button { navigation.selectedAuthor = person.name } label: {
                         HStack(spacing: Theme.Space.m) {
                             HStack(spacing: Theme.Space.s) {
                                 Avatar(name: person.name, size: 26)
@@ -57,7 +59,7 @@ struct ContributorsScreen: View {
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft).frame(width: 110, alignment: .leading)
                         }
                         .padding(.horizontal, Theme.Space.m).padding(.vertical, 8)
-                        .background(model.selectedAuthor == person.name ? Theme.accentWash : .clear)
+                        .background(navigation.selectedAuthor == person.name ? Theme.accentWash : .clear)
                         .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -70,7 +72,7 @@ struct ContributorsScreen: View {
                     }
                 }
             }
-            if model.advanced {
+            if preferences.advanced {
                 Text("Names are resolved through the repository's .mailmap, so a person who has committed under "
                      + "several spellings appears once. Automation is marked “bot” and is left out of the health "
                      + "check that counts active people.")

@@ -4,16 +4,19 @@ import GitViewCore
 import GitViewParse
 
 struct UnitDetailPanel: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(InspectorStore.self) private var inspector
+    @Environment(RiskStore.self) private var risk
     let unit: CodeUnit
     let row: RiskRow
 
     @State private var excerpt: SourceExcerpt?
     @State private var excerptError: String?
 
-    private var history: [UnitComplexityPoint]? { model.histories[unit.id] }
-    private var isLoadingHistory: Bool { model.loadingHistories.contains(unit.id) }
-    private var fileURL: URL? { model.analysis?.root.appendingPathComponent(unit.filePath) }
+    private var history: [UnitComplexityPoint]? { inspector.histories[unit.id] }
+    private var isLoadingHistory: Bool { inspector.loadingHistories.contains(unit.id) }
+    private var fileURL: URL? { session.analysis?.root.appendingPathComponent(unit.filePath) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,7 +25,7 @@ struct UnitDetailPanel: View {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     why
                     complexityCard
-                    if model.advanced { rawMetrics }
+                    if preferences.advanced { rawMetrics }
                     commitsCard
                     sourceCard
                 }
@@ -31,7 +34,7 @@ struct UnitDetailPanel: View {
         }
         .background(Theme.surface)
         .task(id: unit.id) {
-            model.ensureHistory(for: unit)
+            inspector.ensureHistory(for: unit, churn: risk.churn)
             loadExcerpt()
         }
     }
@@ -43,7 +46,7 @@ struct UnitDetailPanel: View {
             HStack(alignment: .top) {
                 RiskBadge(level: row.level)
                 Spacer()
-                Button { model.selectedUnitID = nil } label: {
+                Button { session.navigation.selectedUnitID = nil } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                         .padding(6).background(Theme.wash, in: Circle())
                 }
@@ -169,13 +172,13 @@ struct UnitDetailPanel: View {
     private var commitsCard: some View {
         Card(padding: Theme.Space.m) {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
-                if let churn = model.churn {
+                if let churn = risk.churn {
                     let commits = churn.commits(for: unit)
                     let bySHA = Dictionary(uniqueKeysWithValues: (history ?? []).map { ($0.sha, $0) })
                     CardHeader(title: "Changes", subtitle: "\(commits.count) commits")
                     VStack(spacing: 0) {
                         ForEach(commits.prefix(40), id: \.sha) { commit in
-                            Button { model.selectedCommitSHA = commit.sha } label: {
+                            Button { session.navigation.selectedCommitSHA = commit.sha } label: {
                                 CommitLine(commit: commit, point: bySHA[commit.sha], historyLoaded: history != nil)
                                     .contentShape(Rectangle())
                             }
