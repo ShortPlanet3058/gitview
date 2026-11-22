@@ -74,6 +74,8 @@ public final class NavigationStore {
     public var pendingFileHistory: String?
 
     public var focusSearchRequest: Int = 0
+    public var focusLocalFindRequest: Int = 0
+    public var isCommandPalettePresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
     public var compareFrom: String = ""
@@ -96,6 +98,7 @@ public final class NavigationStore {
 
     public func clearForOpen() {
         clearDetailSelections()
+        isCommandPalettePresented = false
         comparison = nil
         comparisonInFlight = false
     }

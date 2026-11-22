@@ -72,7 +72,8 @@ struct CommitsScreen: View {
         Page {
             ScreenHeader(title: "Commits", subtitle: "Browse the project history and branch topology.")
             HStack(spacing: Theme.Space.m) {
-                SearchField(text: $query, prompt: "Search commits, authors, or shas").frame(maxWidth: 340)
+                SearchField(text: $query, prompt: "Search commits, authors, or shas",
+                            focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 340)
                 Picker("", selection: $range) { ForEach(TimeRange.allCases) { Text($0.rawValue).tag($0) } }
                     .labelsHidden().frame(width: 140)
                 Picker("", selection: $author) {

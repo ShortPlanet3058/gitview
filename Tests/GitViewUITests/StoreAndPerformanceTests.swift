@@ -220,4 +220,46 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(store.rows.count, 1)
         XCTAssertGreaterThanOrEqual(store.fullRebuildCount, 2)
     }
+
+    func testCommandPaletteMatcherRanksExactPrefixSubstringAndFuzzy() {
+        let items = [
+            "Open Repository…",
+            "Changes",
+            "Change together",
+            "Sources/GitView/ChangesScreen.swift",
+            "Refresh Repository",
+        ]
+        let exact = CommandPaletteMatcher.rank(query: "Changes", items: items, title: { $0 })
+        XCTAssertEqual(exact.first, "Changes")
+
+        let boundary = CommandPaletteMatcher.rank(query: "ChangesScreen", items: items, title: { $0 })
+        XCTAssertEqual(boundary.first, "Sources/GitView/ChangesScreen.swift")
+
+        let fuzzy = CommandPaletteMatcher.rank(query: "oep", items: items, title: { $0 })
+        XCTAssertTrue(fuzzy.contains("Open Repository…"))
+
+        let unmatched = CommandPaletteMatcher.rank(query: "zzzzz", items: items, title: { $0 })
+        XCTAssertTrue(unmatched.isEmpty)
+    }
+
+    func testConvexHullComputesOuterBoundaryAndExcludesInteriorPoints() {
+        XCTAssertTrue(ConvexHull.compute([]).isEmpty)
+        XCTAssertEqual(ConvexHull.compute([CGPoint(x: 1, y: 1)]), [CGPoint(x: 1, y: 1)])
+
+        let squareWithInterior: [CGPoint] = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 10, y: 0),
+            CGPoint(x: 10, y: 10),
+            CGPoint(x: 0, y: 10),
+            CGPoint(x: 5, y: 5),
+            CGPoint(x: 2, y: 7),
+            CGPoint(x: 5, y: 0),
+        ]
+        let hull = ConvexHull.compute(squareWithInterior)
+        XCTAssertEqual(hull.count, 4)
+        XCTAssertFalse(hull.contains(CGPoint(x: 5, y: 5)))
+        XCTAssertFalse(hull.contains(CGPoint(x: 2, y: 7)))
+        XCTAssertTrue(hull.contains(CGPoint(x: 0, y: 0)))
+        XCTAssertTrue(hull.contains(CGPoint(x: 10, y: 10)))
+    }
 }

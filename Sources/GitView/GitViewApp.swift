@@ -97,9 +97,35 @@ public struct GitViewCommands: Commands {
         }
 
         CommandGroup(after: .textEditing) {
-            Button("Find…") { session?.navigation.focusSearchRequest += 1 }
-                .keyboardShortcut("f")
-                .disabled(!(session?.hasRepository ?? false))
+            Button("Command Palette…") {
+                session?.navigation.isCommandPalettePresented.toggle()
+            }
+            .keyboardShortcut("k")
+            .disabled(session == nil)
+
+            Button("Find…") {
+                guard let session else { return }
+                let localScreens: Set<NavigationStore.Screen> = [
+                    .files, .commits, .hotspots, .branches, .contributors, .releases
+                ]
+                let usesLocalFind = session.inspector.diffRequest != nil
+                    || (!session.search.isSearching
+                        && session.inspector.fileHistoryPath == nil
+                        && localScreens.contains(session.navigation.screen))
+                if usesLocalFind {
+                    session.navigation.focusLocalFindRequest += 1
+                } else {
+                    session.navigation.focusSearchRequest += 1
+                }
+            }
+            .keyboardShortcut("f")
+            .disabled(!(session?.hasRepository ?? false))
+
+            Button("Find in Repository…") {
+                session?.navigation.focusSearchRequest += 1
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(!(session?.hasRepository ?? false))
 
             Button("Clear Search") { session?.search.clear() }
                 .disabled(!(session?.search.isSearching ?? false))
@@ -109,18 +135,26 @@ public struct GitViewCommands: Commands {
 
 /// Without this the process launches as an accessory when run straight from SwiftPM
 /// (`swift run GitView`), leaving the window behind other apps without a menu bar.
+@MainActor
 public final class GitViewAppDelegate: NSObject, NSApplicationDelegate {
+    private var headlessScreenshotSession: WorkspaceSession?
+
     public override init() {
         super.init()
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--screenshot") {
+            headlessScreenshotSession = WorkspaceSession.makeForLaunchArgumentsIfNeeded(preferences: .shared)
+        }
         guard Bundle.main.bundleIdentifier == nil else { return }
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        CommandLine.arguments.contains("--screenshot")
+    }
 }
 
 @MainActor

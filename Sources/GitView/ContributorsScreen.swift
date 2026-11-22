@@ -23,7 +23,8 @@ struct ContributorsScreen: View {
                 }
             }
             HStack {
-                SearchField(text: $query, prompt: "Find a contributor").frame(maxWidth: 300)
+                SearchField(text: $query, prompt: "Find a contributor",
+                            focusTrigger: navigation.focusLocalFindRequest).frame(maxWidth: 300)
                 Spacer()
                 Text("\(people.count) people").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }

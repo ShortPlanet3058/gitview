@@ -72,7 +72,8 @@ struct ReleasesScreen: View {
                         HStack {
                             Text("ALL TAGS").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             Spacer()
-                            SearchField(text: $query, prompt: "Find a tag").frame(width: 220)
+                            SearchField(text: $query, prompt: "Find a tag",
+                                        focusTrigger: navigation.focusLocalFindRequest).frame(width: 220)
                         }
                         .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
                         HairlineDivider()

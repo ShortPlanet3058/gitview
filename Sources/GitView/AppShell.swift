@@ -41,6 +41,11 @@ struct AppShell: View {
             }
         }
         .background(Theme.page)
+        .overlay {
+            if session.navigation.isCommandPalettePresented {
+                CommandPaletteOverlay()
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: session.loadProgress)
         .animation(.easeInOut(duration: 0.25), value: session.outsideChange)
         .animation(.easeInOut(duration: 0.25), value: session.refreshNote)
@@ -465,6 +470,20 @@ struct TopBar: View {
                 Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
             }
             Spacer(minLength: Theme.Space.xs)
+            Button {
+                session.navigation.isCommandPalettePresented.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "command").font(.system(size: 10, weight: .semibold))
+                    Text("K").font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(Theme.inkSoft)
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+            }
+            .buttonStyle(.plain)
+            .help("Open Command Palette (⌘K)")
             if session.analysis != nil { GlobalSearchField() }
             Spacer(minLength: Theme.Space.xs)
             ModeSwitch()
