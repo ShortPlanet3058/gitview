@@ -48,6 +48,14 @@ public struct GitRepository: Sendable {
         return Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    /// Commit hashes reachable from HEAD, newest first, without reading patches.
+    public func revListSHAs() -> [String]? {
+        guard let output = try? GitProcess.capture(arguments: ["rev-list", "HEAD"], in: url) else {
+            return nil
+        }
+        return output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+    }
+
     /// - Parameter since: when set, reads only commits after this one.
     public func loadHistory(since: String? = nil) throws -> [Commit] {
         try loadHistory(range: since.map { "\($0)..HEAD" })

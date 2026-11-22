@@ -516,13 +516,13 @@ case "cache":
         AnalysisCache.clear(root: resolved)
         print("cleared cache for \(resolved.lastPathComponent)")
     } else if let payload = AnalysisCache.load(root: resolved) {
-        let size = (try? Data(contentsOf: AnalysisCache.url(for: resolved)).count) ?? 0
+        let size = AnalysisCache.sizeOnDisk(for: resolved)
         let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd HH:mm"
         print("head       \(payload.headSHA.prefix(12))")
         print("written    \(day.string(from: payload.createdAt))")
         print("commits    \(payload.commits.count.formatted())")
         print("units      \(payload.units.count.formatted()) (\(payload.generatedFiles.count) generated files)")
-        print("on disk    \(size.formatted()) bytes compressed")
+        print("on disk    \(size.formatted()) bytes (SQLite)")
     } else {
         print("no cache for \(resolved.path)")
     }
