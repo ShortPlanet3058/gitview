@@ -182,7 +182,8 @@ enum AnalysisService {
                                           generatedFiles: Set(cached.generatedFiles))
         } else {
             progress(LoadingProgress(stage: "Parsing source files"))
-            report = try await SourceScanner().scan(root: validated) { parsed, total in
+            let trackedPaths = info.inventory.files.map(\.path)
+            report = try await SourceScanner().scan(root: validated, trackedPaths: trackedPaths) { parsed, total in
                 guard total > 0 else { return }
                 progress(LoadingProgress(
                     stage: "Parsing source files",

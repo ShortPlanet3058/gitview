@@ -83,7 +83,7 @@ public enum WorkingStateParser {
 
         // Records are NUL-terminated; a rename record is followed by a second NUL-terminated
         // field holding the original path.
-        var records = porcelain.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+        let records = porcelain.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
         var index = 0
         while index < records.count {
             let record = records[index]

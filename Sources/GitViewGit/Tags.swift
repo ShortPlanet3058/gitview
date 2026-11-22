@@ -46,6 +46,15 @@ public struct FileDelta: Hashable, Sendable, Identifiable {
     }
 }
 
+public struct UnreleasedSummary: Hashable, Sendable {
+    public let latestTag: String
+    public let commitsSinceTag: Int
+    public init(latestTag: String, commitsSinceTag: Int) {
+        self.latestTag = latestTag
+        self.commitsSinceTag = commitsSinceTag
+    }
+}
+
 extension GitRepository {
     /// Tags, newest first.
     ///
@@ -89,9 +98,29 @@ extension GitRepository {
     public func comparableRefs(branches: [BranchInfo], tags: [TagInfo]) -> [String] {
         branches.map { $0.isRemote ? "origin/\($0.name)" : $0.name } + tags.map(\.name)
     }
+
+    /// The nearest reachable tag on HEAD and how many commits sit ahead of it.
+    public func unreleasedSummary() -> UnreleasedSummary? {
+        guard let root = try? validate(),
+              let output = try? GitProcess.capture(
+                  arguments: ["describe", "--tags", "--long", "--match", "*", "HEAD"], in: root)
+        else { return nil }
+        return TagParser.parseDescribeLong(output)
+    }
 }
 
 enum TagParser {
+    static func parseDescribeLong(_ output: String) -> UnreleasedSummary? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let gDash = trimmed.lastIndex(of: "-") else { return nil }
+        let prefix = trimmed[..<gDash]
+        guard let countDash = prefix.lastIndex(of: "-"),
+              let count = Int(prefix[prefix.index(after: countDash)...]) else { return nil }
+        let tag = String(prefix[..<countDash])
+        guard !tag.isEmpty else { return nil }
+        return UnreleasedSummary(latestTag: tag, commitsSinceTag: count)
+    }
+
     static func parse(_ output: String) -> [TagInfo] {
         output.split(separator: "\n").compactMap { line in
             let fields = line.split(separator: "\u{1F}", maxSplits: 6, omittingEmptySubsequences: false)
@@ -100,7 +129,7 @@ enum TagParser {
             let isAnnotated = fields[1] == "tag"
             // An annotated tag's own object id is not the commit; the peeled field is.
             let commit = fields[3].isEmpty ? fields[2] : fields[3]
-            guard let date = ISO8601DateFormatter().date(from: fields[4]) else { return nil }
+            guard let date = ISO8601.parse(fields[4]) else { return nil }
             return TagInfo(name: fields[0], commitSHA: commit, date: date,
                            taggerName: fields[5].isEmpty ? nil : fields[5],
                            subject: fields[6], isAnnotated: isAnnotated)

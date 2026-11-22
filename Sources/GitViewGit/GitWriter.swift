@@ -64,11 +64,12 @@ extension GitRepository {
     }
 
     /// Saves changes aside. Recoverable from the stash list afterwards.
-    public func stashPush(message: String, includeUntracked: Bool) throws {
+    public func stashPush(message: String, includeUntracked: Bool, paths: [String] = []) throws {
         var arguments = ["stash", "push"]
         if includeUntracked { arguments.append("--include-untracked") }
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { arguments += ["-m", trimmed] }
+        if !paths.isEmpty { arguments += ["--"] + paths }
         try write(arguments)
     }
 
@@ -110,17 +111,57 @@ extension GitRepository {
     }
 
     public func pushPlan(limit: Int = 50) throws -> PushPlan? {
+        let root = try validate()
         let state = try workingState()
         guard let branch = state.branch else { return nil }
-        let remote = (try? GitProcess.capture(arguments: ["remote"], in: validate()))?
-            .split(separator: "\n").first.map(String.init) ?? "origin"
-        let range = state.upstream.map { "\($0)..HEAD" } ?? "HEAD"
+
+        let remotesOutput = (try? GitProcess.capture(arguments: ["remote"], in: root)) ?? ""
+        let remotes = remotesOutput.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !remotes.isEmpty else { return nil }
+
+        let remote = Self.resolvePushRemote(branch: branch, upstream: state.upstream,
+                                              remotes: remotes, in: root)
+        let rangeArgs: [String]
+        if let upstream = state.upstream {
+            rangeArgs = ["\(upstream)..HEAD"]
+        } else if Self.hasRemoteTrackingRefs(prefix: "refs/remotes/\(remote)", in: root) {
+            rangeArgs = ["HEAD", "--not", "--remotes=\(remote)"]
+        } else if Self.hasRemoteTrackingRefs(prefix: "refs/remotes", in: root) {
+            rangeArgs = ["HEAD", "--not", "--remotes"]
+        } else {
+            rangeArgs = ["HEAD"]
+        }
+
         let output = (try? GitProcess.capture(
-            arguments: ["log", "--max-count=\(limit)", "--pretty=format:%H%x1f%aN%x1f%aI%x1f%s", range],
-            in: validate())) ?? ""
+            arguments: ["log", "--max-count=\(limit)", "--pretty=format:%H%x1f%aN%x1f%aI%x1f%s"] + rangeArgs,
+            in: root)) ?? ""
         return PushPlan(remote: remote, branch: branch,
                         commits: CodeSearchParser.parseCommitHeaders(output),
                         hasUpstream: state.upstream != nil)
+    }
+
+    private static func resolvePushRemote(branch: String, upstream: String?,
+                                          remotes: [String], in root: URL) -> String {
+        if let upstream, let slash = upstream.firstIndex(of: "/") {
+            let prefix = String(upstream[..<slash])
+            if remotes.contains(prefix) { return prefix }
+        }
+        for key in ["branch.\(branch).pushRemote", "remote.pushDefault", "branch.\(branch).remote"] {
+            if let value = try? GitProcess.capture(arguments: ["config", "--get", key], in: root) {
+                let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if remotes.contains(candidate) { return candidate }
+            }
+        }
+        if remotes.contains("origin") { return "origin" }
+        return remotes[0]
+    }
+
+    private static func hasRemoteTrackingRefs(prefix: String, in root: URL) -> Bool {
+        let output = (try? GitProcess.capture(
+            arguments: ["for-each-ref", "--count=1", prefix], in: root)) ?? ""
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Publishes commits. Never forced: a rejected push means the remote has work this

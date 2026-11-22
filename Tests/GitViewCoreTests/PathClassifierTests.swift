@@ -10,6 +10,17 @@ final class PathClassifierTests: XCTestCase {
             "Sources/App/ThingTest.swift",
             "Sources/App/TestHelpers.swift",
             "Sources/App/NetworkMock.swift",
+            // Python, Go, JS/TS, Java/Kotlin/C#, Ruby, Rust
+            "tests/test_parser.py",
+            "pkg/foo_test.py",
+            "pkg/server_test.go",
+            "src/__tests__/button.ts",
+            "src/button.test.ts",
+            "src/button.spec.tsx",
+            "src/test/java/com/acme/FooTest.java",
+            "src/BarTests.cs",
+            "spec/models/user_spec.rb",
+            "tests/integration.rs",
         ] {
             XCTAssertTrue(PathClassifier.isTest(path: path), path)
         }
@@ -21,6 +32,8 @@ final class PathClassifierTests: XCTestCase {
             "Sources/NIOPosix/SocketChannel.swift",
             "Sources/App/Contest.swift",     // ends in "test" but not "Test"
             "Sources/Latest/Thing.swift",    // directory merely contains "test"
+            "src/attestation.py",
+            "pkg/contest.go",
         ] {
             XCTAssertFalse(PathClassifier.isTest(path: path), path)
         }

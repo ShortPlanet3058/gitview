@@ -92,6 +92,7 @@ public struct RepositoryInfo: Hashable, Sendable {
     public let readmeSummary: String?
     /// `user.name` from git config, used to recognise "your" commits. Empty when unset.
     public let configuredUserNames: Set<String>
+    public let unreleased: UnreleasedSummary?
     public let inventory: FileInventory
 }
 
@@ -112,6 +113,7 @@ extension GitRepository {
             packedBytes: Self.objectStoreBytes(in: root),
             readmeSummary: Self.readmeSummary(in: root),
             configuredUserNames: Self.configuredUserNames(in: root),
+            unreleased: unreleasedSummary(),
             inventory: Self.inventory(in: root)
         )
     }
@@ -135,7 +137,6 @@ extension GitRepository {
                      subject: String, isRemote: Bool }
         var seen = Set<String>()
         var rows: [Row] = []
-        let formatter = ISO8601DateFormatter()
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "\u{1F}", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
             guard fields.count >= 5 else { continue }
@@ -145,7 +146,7 @@ extension GitRepository {
             guard name != "HEAD", !seen.contains(name) else { continue }   // local wins over its remote twin
             seen.insert(name)
             rows.append(Row(name: name, fullName: isRemote ? "origin/\(name)" : name, sha: fields[1],
-                            date: formatter.date(from: fields[2]) ?? .distantPast,
+                            date: ISO8601.parse(fields[2]) ?? .distantPast,
                             author: fields[3], subject: fields[4], isRemote: isRemote))
         }
 
@@ -153,9 +154,10 @@ extension GitRepository {
         // was the slowest part of opening a repository with many branches (4.6s of
         // swift-nio's 5.9s), and each call is an independent process.
         let counts = AheadBehindBox(count: rows.count)
-        let limit = min(rows.count, detailLimit)
+        let snapshot = rows
+        let limit = min(snapshot.count, detailLimit)
         DispatchQueue.concurrentPerform(iterations: limit) { index in
-            let row = rows[index]
+            let row = snapshot[index]
             guard row.name != defaultBranch,
                   let output = try? GitProcess.capture(
                       arguments: ["rev-list", "--left-right", "--count", "\(defaultBranch)...\(row.fullName)"],

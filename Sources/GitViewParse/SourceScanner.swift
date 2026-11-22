@@ -19,10 +19,12 @@ public struct SourceScanner: Sendable {
     }
 
     /// Directories that never contain source worth analysing, and would otherwise
-    /// swamp the results with vendored code.
+    /// swamp the results with vendored or build code when scanning without a tracked list.
     static let skippedDirectories: Set<String> = [
         ".git", ".build", ".swiftpm", "DerivedData", "Pods", "Carthage",
         "node_modules", ".index-build", "checkouts",
+        "venv", ".venv", "env", "target", "vendor", "dist", "build", "out",
+        "zig-cache", "__pycache__", "coverage",
     ]
 
     public init() {}
@@ -48,17 +50,43 @@ public struct SourceScanner: Sendable {
         return files.sorted { $0.path < $1.path }
     }
 
-    /// Parses every Swift file under `root`, returning paths relative to it so they
-    /// line up with the paths git reports.
+    /// Parses every supported source file under `root`, returning paths relative to it so
+    /// they line up with the paths git reports.
+    /// - Parameter trackedPaths: when provided (from `git ls-files`), parses only tracked
+    ///   files rather than walking the filesystem.
     /// - Parameter detectGenerated: read the head of each file to spot generated markers.
-    /// - Parameter onProgress: called as each file's result arrives, with (parsed, total).
-    ///   Called from the collecting task, so it must be cheap and must not assume an actor.
-    public func scan(root: URL, detectGenerated: Bool = true,
+    /// - Parameter onProgress: called throttled as results land, with (parsed, total).
+    public func scan(root: URL, trackedPaths: [String]? = nil, detectGenerated: Bool = true,
                      onProgress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Report {
-        let files = parsableFiles(in: root)
-        onProgress?(0, files.count)
+        let entries: [(url: URL, relative: String, ext: String)]
+        if let trackedPaths {
+            let fileManager = FileManager.default
+            var resolved: [(url: URL, relative: String, ext: String)] = []
+            resolved.reserveCapacity(trackedPaths.count)
+            for path in trackedPaths {
+                let ext = (path as NSString).pathExtension.lowercased()
+                guard LanguageRegistry.shared.language(forExtension: ext) != nil else { continue }
+                let url = root.appendingPathComponent(path)
+                var isDir: ObjCBool = false
+                guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { continue }
+                resolved.append((url, path, ext))
+            }
+            entries = resolved.sorted { $0.relative < $1.relative }
+        } else {
+            let files = parsableFiles(in: root)
+            let rootPath = root.standardizedFileURL.path
+            let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            entries = files.map { file in
+                let relative = file.standardizedFileURL.path.hasPrefix(prefix)
+                    ? String(file.standardizedFileURL.path.dropFirst(prefix.count))
+                    : file.path
+                return (file, relative, file.pathExtension.lowercased())
+            }
+        }
+
+        onProgress?(0, entries.count)
         // Compile each language's grammar and query once, not once per file.
-        let present = Set(files.map { $0.pathExtension.lowercased() })
+        let present = Set(entries.map(\.ext))
         var built: [String: UnitExtractor] = [:]
         for support in LanguageRegistry.shared.languages where !support.extensions.isDisjoint(with: present) {
             for ext in support.extensions where present.contains(ext) {
@@ -66,41 +94,46 @@ public struct SourceScanner: Sendable {
             }
         }
         let extractors = built
-        let rootPath = root.standardizedFileURL.path
-        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        let maxConcurrency = min(max(ProcessInfo.processInfo.activeProcessorCount, 4), 12)
+        let progressStep = max(1, entries.count / 100)
 
         return try await withThrowingTaskGroup(
             of: (units: [CodeUnit], failure: String?, generated: String?).self
         ) { group in
-            for file in files {
+            var next = 0
+            func enqueue() {
+                guard next < entries.count else { return }
+                let entry = entries[next]
+                next += 1
                 group.addTask {
-                    let relative = file.standardizedFileURL.path.hasPrefix(prefix)
-                        ? String(file.standardizedFileURL.path.dropFirst(prefix.count))
-                        : file.path
                     do {
                         // A file that is not valid UTF-8, or that the grammar chokes on,
                         // must not take the whole scan down with it.
-                        guard let extractor = extractors[file.pathExtension.lowercased()] else {
+                        guard let extractor = extractors[entry.ext] else {
                             return ([], nil, nil)
                         }
-                        let source = try String(contentsOf: file, encoding: .utf8)
-                        let units = try extractor.extract(source: source, filePath: relative)
-                        let generated = PathClassifier.isVendored(path: relative)
+                        let source = try String(contentsOf: entry.url, encoding: .utf8)
+                        let units = try extractor.extract(source: source, filePath: entry.relative)
+                        let generated = PathClassifier.isVendored(path: entry.relative)
                             || (detectGenerated && PathClassifier.looksGenerated(header: source))
                             // A file holding a function no human would write by hand.
                             || units.contains { $0.complexity >= PathClassifier.implausibleComplexity }
-                        return (units, nil, generated ? relative : nil)
+                        return (units, nil, generated ? entry.relative : nil)
                     } catch {
-                        return ([], relative, nil)
+                        return ([], entry.relative, nil)
                     }
                 }
             }
+
+            for _ in 0..<min(maxConcurrency, entries.count) { enqueue() }
 
             var report = Report(units: [], filesParsed: 0, filesFailed: [])
             var settled = 0
             for try await result in group {
                 settled += 1
-                onProgress?(settled, files.count)
+                if settled == entries.count || settled % progressStep == 0 {
+                    onProgress?(settled, entries.count)
+                }
                 if let failure = result.failure {
                     report.filesFailed.append(failure)
                 } else {
@@ -108,6 +141,7 @@ public struct SourceScanner: Sendable {
                     report.units.append(contentsOf: result.units)
                     if let generated = result.generated { report.generatedFiles.insert(generated) }
                 }
+                enqueue()
             }
             report.units.sort {
                 $0.filePath == $1.filePath

@@ -29,7 +29,10 @@ struct ReleasesScreen: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                } else if let unreleased = model.unreleasedCount, let latest = analysis.tags.first {
+                } else if let unreleased = model.unreleasedCount,
+                          let latest = analysis.info.unreleased.flatMap({ info in
+                              analysis.tags.first(where: { $0.name == info.latestTag })
+                          }) ?? analysis.tags.first {
                     unreleasedCard(count: unreleased, since: latest)
                 }
 

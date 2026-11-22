@@ -257,4 +257,21 @@ final class SwiftUnitExtractorTests: XCTestCase {
         XCTAssertEqual(try unit(source, named: "beta").lineRange, 4...4)
         XCTAssertEqual(try unit(source, named: "alpha").name, "alpha")
     }
+
+    func testOverloadedMethodsAreDisambiguatedWhileUniqueNamesStayClean() throws {
+        let source = """
+        struct Storage {
+            func _yield(_ element: Int) { }
+            func _yield(contentsOf elements: [Int]) { }
+            func send(_ value: Int) { }
+            func send(_ value: String) { }
+            func unique() { }
+        }
+        """
+        let names = try units(source).filter { $0.kind == .method }.map(\.name)
+        XCTAssertEqual(Set(names).count, 5)
+        XCTAssertTrue(names.contains("Storage._yield(_:)"), "\(names)")
+        XCTAssertTrue(names.contains("Storage._yield(contentsOf:)"), "\(names)")
+        XCTAssertTrue(names.contains("Storage.unique"), "non-overloaded units keep their bare name: \(names)")
+    }
 }

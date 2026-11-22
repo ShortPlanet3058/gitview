@@ -39,10 +39,12 @@ public struct UnitExtractor: Sendable {
         let unitIDs = Set(found.map(\.node.id))
         let analyzer = ComplexityAnalyzer(support: support, unitNodeIDs: unitIDs, text: text)
 
-        return found.compactMap { entry -> CodeUnit? in
-            guard let range = lineRange(of: entry.node) else { return nil }
+        var extracted: [(unit: CodeUnit, node: Node)] = []
+        extracted.reserveCapacity(found.count)
+        for entry in found {
+            guard let range = lineRange(of: entry.node) else { continue }
             let metrics = analyzer.analyze(root: entry.node)
-            return CodeUnit(
+            let unit = CodeUnit(
                 filePath: filePath,
                 name: qualifiedName(of: entry.node, nameNode: entry.nameNode, text: text),
                 kind: kind(of: entry.node, capture: entry.kindCapture),
@@ -51,7 +53,10 @@ public struct UnitExtractor: Sendable {
                 nestingDepth: metrics.nestingDepth,
                 lineCount: range.count,
                 language: support.id)
+            extracted.append((unit, entry.node))
         }
+
+        return Self.disambiguateOverloads(extracted, language: support.id, text: text)
     }
 
     /// Same walk as `extract`, but reporting which node types were counted.
@@ -132,6 +137,12 @@ public struct UnitExtractor: Sendable {
     /// declarators), then the nearest identifier-ish descendant.
     private func declaredName(of node: Node, text: NSString) -> String? {
         if let named = node.child(byFieldName: "name") { return text.substring(with: named.range) }
+        // Rust `impl Trait for Type` carries `type:` (and optional `trait:`), with no `name:` field.
+        if let nodeType = node.nodeType, support.typeDeclarations.contains(nodeType),
+           let typed = node.child(byFieldName: "type") {
+            let target = typed.child(byFieldName: "type") ?? typed
+            return text.substring(with: target.range)
+        }
 
         var declarator = node.child(byFieldName: "declarator")
         var hops = 0
@@ -158,6 +169,120 @@ public struct UnitExtractor: Sendable {
             if let found = nearestIdentifier(in: child, depth: depth + 1, text: text) { return found }
         }
         return nil
+    }
+
+    // MARK: - Overload disambiguation
+
+    private struct OverloadKey: Hashable {
+        let name: String
+        let kind: CodeUnit.Kind
+    }
+
+    /// Appends a compact parameter signature (and line fallback if still identical) only
+    /// when two or more non-type units in the same file share the same qualified name and kind.
+    private static func disambiguateOverloads(
+        _ items: [(unit: CodeUnit, node: Node)],
+        language: String,
+        text: NSString
+    ) -> [CodeUnit] {
+        var result = items.map(\.unit)
+        var groups: [OverloadKey: [Int]] = [:]
+        for (index, item) in items.enumerated() where item.unit.kind != .class {
+            groups[OverloadKey(name: item.unit.name, kind: item.unit.kind), default: []].append(index)
+        }
+
+        for indices in groups.values where indices.count > 1 {
+            var candidateNames: [Int: String] = [:]
+            for idx in indices {
+                let sig = parameterSignature(of: items[idx].node, language: language, text: text, includeTypes: false)
+                candidateNames[idx] = items[idx].unit.name + sig
+            }
+            // If parameter labels alone still collide (e.g. overloaded only by parameter types),
+            // expand to full parameter text before falling back to line numbers.
+            var byName = Dictionary(grouping: indices, by: { candidateNames[$0]! })
+            for colliding in byName.values where colliding.count > 1 {
+                for idx in colliding {
+                    let sig = parameterSignature(of: items[idx].node, language: language, text: text, includeTypes: true)
+                    candidateNames[idx] = items[idx].unit.name + sig
+                }
+            }
+            byName = Dictionary(grouping: indices, by: { candidateNames[$0]! })
+            for colliding in byName.values where colliding.count > 1 {
+                for idx in colliding {
+                    candidateNames[idx] = "\(candidateNames[idx]!)@L\(items[idx].unit.lineRange.lowerBound)"
+                }
+            }
+            for idx in indices {
+                let u = items[idx].unit
+                result[idx] = CodeUnit(
+                    id: u.id,
+                    filePath: u.filePath,
+                    name: candidateNames[idx] ?? u.name,
+                    kind: u.kind,
+                    lineRange: u.lineRange,
+                    complexity: u.complexity,
+                    nestingDepth: u.nestingDepth,
+                    lineCount: u.lineCount,
+                    language: u.language)
+            }
+        }
+        return result
+    }
+
+    private static func parameterSignature(
+        of node: Node,
+        language: String,
+        text: NSString,
+        includeTypes: Bool
+    ) -> String {
+        if language == "swift" && !includeTypes {
+            var labels: [String] = []
+            for i in 0..<node.childCount {
+                guard let child = node.child(at: i), child.nodeType == "parameter" else { continue }
+                let labelNode = child.child(byFieldName: "external_name") ?? child.child(byFieldName: "name")
+                let label = labelNode.map { text.substring(with: $0.range) } ?? "_"
+                labels.append(label + ":")
+            }
+            return "(" + labels.joined() + ")"
+        }
+
+        if language == "swift" && includeTypes {
+            var parts: [String] = []
+            for i in 0..<node.childCount {
+                guard let child = node.child(at: i), child.nodeType == "parameter" else { continue }
+                parts.append(compactWhitespace(text.substring(with: child.range)))
+            }
+            return wrapSignature(parts.joined(separator: ", "))
+        }
+
+        let paramNode = node.child(byFieldName: "parameters")
+            ?? node.child(byFieldName: "declarator")?.child(byFieldName: "parameters")
+            ?? firstChild(of: node, matching: { $0.contains("parameter") })
+        guard let paramNode else { return "()" }
+        var raw = compactWhitespace(text.substring(with: paramNode.range))
+        if raw.hasPrefix("(") && raw.hasSuffix(")") {
+            raw = String(raw.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+        return wrapSignature(raw)
+    }
+
+    private static func firstChild(of node: Node, matching predicate: (String) -> Bool) -> Node? {
+        for i in 0..<node.childCount {
+            if let child = node.child(at: i), let type = child.nodeType, predicate(type) {
+                return child
+            }
+        }
+        return nil
+    }
+
+    private static func compactWhitespace(_ string: String) -> String {
+        string.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static func wrapSignature(_ inner: String) -> String {
+        let trimmed = inner.trimmingCharacters(in: .whitespaces)
+        if trimmed.count <= 38 { return "(\(trimmed))" }
+        return "(\(trimmed.prefix(37))…)"
     }
 }
 

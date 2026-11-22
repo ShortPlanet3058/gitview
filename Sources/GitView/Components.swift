@@ -86,53 +86,7 @@ struct RiskBadge: View {
     }
 }
 
-// MARK: - Stat tile
-
-struct StatTile: View {
-    let value: String
-    let label: String
-    var caption: String? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(Theme.Text.hero).foregroundStyle(Theme.ink)
-            Text(label).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-            if let caption {
-                Text(caption).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 // MARK: - Bars
-
-/// Label left, thin rounded bar, value right. One hue for nominal categories.
-struct BarRow: View {
-    let label: String
-    let detail: String
-    let fraction: Double
-    var tint: Color = Theme.accent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(label).font(Theme.Text.body).foregroundStyle(Theme.ink)
-                    .lineLimit(1).truncationMode(.head)
-                Spacer()
-                Text(detail).font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkSoft)
-            }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.wash)
-                    Capsule().fill(tint)
-                        .frame(width: max(4, geometry.size.width * CGFloat(min(max(fraction, 0), 1))))
-                }
-            }
-            .frame(height: 6)
-        }
-    }
-}
 
 /// Stacked distribution with 2pt surface gaps; each segment is named in a legend row
 /// beneath rather than inside the bar, so nothing is clipped or colour-only.

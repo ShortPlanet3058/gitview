@@ -57,7 +57,7 @@ enum CodeSearchParser {
         output.split(separator: "\n").compactMap { line in
             let fields = line.split(separator: "\u{1F}", maxSplits: 3, omittingEmptySubsequences: false)
                 .map(String.init)
-            guard fields.count == 4, let date = ISO8601DateFormatter().date(from: fields[2]) else { return nil }
+            guard fields.count == 4, let date = ISO8601.parse(fields[2]) else { return nil }
             return Commit(sha: fields[0], author: fields[1], date: date,
                           subject: fields[3], fileChanges: [])
         }

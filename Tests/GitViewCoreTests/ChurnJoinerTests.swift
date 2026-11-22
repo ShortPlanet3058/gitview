@@ -166,6 +166,15 @@ final class ChurnJoinerTests: XCTestCase {
         XCTAssertEqual(index.commitCount(for: method), 1)
     }
 
+    func testPureRenameWithNoHunksStillBridgesOlderHistory() {
+        let unit = makeUnit("f", 1...100, path: "New.swift")
+        let commits = [
+            makeCommit("pureMove", 2, [FileChange(path: "New.swift", oldPath: "Old.swift", hunks: [])]),
+            makeCommit("before", 1, [FileChange(path: "Old.swift", oldPath: nil, hunks: [Hunk(newStart: 5, newLineCount: 1)])]),
+        ]
+        XCTAssertEqual(ChurnJoiner.join(units: [unit], commits: commits).commitCount(for: unit), 1)
+    }
+
     func testEmptyInputs() {
         XCTAssertEqual(ChurnJoiner.join(units: [], commits: []).touchesByUnit.count, 0)
         let unit = makeUnit("f", 1...10)

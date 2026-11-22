@@ -26,6 +26,8 @@ public struct GitLogParser {
     private var hunks: [Hunk] = []
     /// True when the new side is /dev/null, i.e. the file was deleted by this commit.
     private var newSideDeleted = false
+    /// True when git emitted `rename from`/`rename to` headers for this file.
+    private var sawRename = false
 
     /// Lines skipped because they looked like a commit header but did not parse.
     public private(set) var malformedHeaderCount = 0
@@ -33,14 +35,18 @@ public struct GitLogParser {
     public init() {}
 
     public mutating func consume(line: ArraySlice<UInt8>) {
-        if line.hasPrefix(Self.sentinel), let header = Self.parseCommitHeader(line) {
-            flushFile()
-            flushCommit()
-            sha = header.sha
-            author = header.author
-            date = header.date
-            subject = header.subject
-            return
+        if line.hasPrefix(Self.sentinel) {
+            if let header = Self.parseCommitHeader(line) {
+                flushFile()
+                flushCommit()
+                sha = header.sha
+                author = header.author
+                date = header.date
+                subject = header.subject
+                return
+            } else if line.contains(0x1F) {
+                malformedHeaderCount += 1
+            }
         }
 
         // Everything below only makes sense inside a commit.
@@ -59,23 +65,25 @@ public struct GitLogParser {
             if value.elementsEqual("/dev/null".utf8) {
                 newSideDeleted = true
             } else {
-                path = Self.unquote(Self.stripPrefixLetter(value.decoded))
+                path = Self.stripPrefixLetter(Self.unquote(value.decoded))
             }
             return
         }
         if line.hasPrefix("--- ") {
             let value = line.dropFirst(4)
             if !value.elementsEqual("/dev/null".utf8) {
-                oldPath = Self.unquote(Self.stripPrefixLetter(value.decoded))
+                oldPath = Self.stripPrefixLetter(Self.unquote(value.decoded))
             }
             return
         }
         if line.hasPrefix("rename from ") {
             oldPath = Self.unquote(line.dropFirst(12).decoded)
+            sawRename = true
             return
         }
         if line.hasPrefix("rename to ") {
             path = Self.unquote(line.dropFirst(10).decoded)
+            sawRename = true
             return
         }
     }
@@ -94,13 +102,15 @@ public struct GitLogParser {
             oldPath = nil
             hunks = []
             newSideDeleted = false
+            sawRename = false
         }
-        // A file deleted by this commit has no counterpart in the current checkout, so no
-        // units can be attributed to it. Drop it rather than carrying a dead path.
-        guard !newSideDeleted, let path, !hunks.isEmpty else { return }
         // Only report oldPath when it genuinely differs — the `--- a/x` line is present on
         // every diff, rename or not, and a spurious oldPath would look like a rename.
         let rename = (oldPath != nil && oldPath != path) ? oldPath : nil
+        // A file deleted by this commit has no counterpart in the current checkout, so no
+        // units can be attributed to it. Drop it rather than carrying a dead path.
+        // Keep pure 100% renames (no hunks) so rename chains preserve pre-move history.
+        guard !newSideDeleted, let path, (!hunks.isEmpty || (sawRename && rename != nil)) else { return }
         fileChanges.append(FileChange(path: path, oldPath: rename, hunks: hunks))
     }
 
@@ -156,24 +166,48 @@ public struct GitLogParser {
         return s
     }
 
-    /// Git wraps paths containing quotes, backslashes or control characters in double
-    /// quotes with C-style escapes, even with `core.quotePath=false`.
+    /// Git wraps paths containing quotes, backslashes, control characters, or octal escapes
+    /// in double quotes with C-style escapes, even with `core.quotePath=false`.
     static func unquote(_ s: String) -> String {
         guard s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\"") else { return s }
-        var out = ""
-        var iterator = s.dropFirst().dropLast().makeIterator()
-        while let c = iterator.next() {
-            guard c == "\\" else { out.append(c); continue }
-            guard let escaped = iterator.next() else { break }
-            switch escaped {
-            case "n": out.append("\n")
-            case "t": out.append("\t")
-            case "r": out.append("\r")
-            case "\"": out.append("\"")
-            case "\\": out.append("\\")
-            default: out.append(escaped)
+        let bytes = Array(s.utf8.dropFirst().dropLast())
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var i = 0
+        while i < bytes.count {
+            let b = bytes[i]
+            guard b == 0x5C else { // '\'
+                out.append(b)
+                i += 1
+                continue
+            }
+            i += 1
+            guard i < bytes.count else { break }
+            let esc = bytes[i]
+            if esc >= 0x30 && esc <= 0x37, i + 2 < bytes.count,
+               bytes[i + 1] >= 0x30 && bytes[i + 1] <= 0x37,
+               bytes[i + 2] >= 0x30 && bytes[i + 2] <= 0x37 {
+                let value = (Int(esc - 0x30) << 6)
+                    | (Int(bytes[i + 1] - 0x30) << 3)
+                    | Int(bytes[i + 2] - 0x30)
+                out.append(UInt8(value & 0xFF))
+                i += 3
+                continue
+            }
+            i += 1
+            switch esc {
+            case 0x61: out.append(0x07) // \a
+            case 0x62: out.append(0x08) // \b
+            case 0x66: out.append(0x0C) // \f
+            case 0x6E: out.append(0x0A) // \n
+            case 0x72: out.append(0x0D) // \r
+            case 0x74: out.append(0x09) // \t
+            case 0x76: out.append(0x0B) // \v
+            case 0x22: out.append(0x22) // \"
+            case 0x5C: out.append(0x5C) // \\
+            default: out.append(esc)
             }
         }
-        return out
+        return String(decoding: out, as: UTF8.self)
     }
 }

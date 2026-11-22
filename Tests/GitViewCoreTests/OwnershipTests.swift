@@ -130,6 +130,18 @@ final class OwnershipBuilderTests: XCTestCase {
         XCTAssertNil(index.ownership(of: "old/path.swift"), "the old name is not a separate file")
     }
 
+    func testPureRenameWithNoHunksPreservesOwnership() {
+        let commits = [
+            Commit(sha: "mv", author: "Bob", date: now.addingTimeInterval(-86_400), subject: "mv",
+                   fileChanges: [FileChange(path: "new/path.swift", oldPath: "old/path.swift", hunks: [])]),
+            commit("old2", "Ann", daysAgo: 10, files: ["old/path.swift"]),
+            commit("old1", "Ann", daysAgo: 20, files: ["old/path.swift"]),
+        ]
+        let owned = OwnershipBuilder.build(commits: commits).ownership(of: "new/path.swift")
+        XCTAssertEqual(owned?.totalCommits, 3)
+        XCTAssertEqual(owned?.primary?.name, "Ann")
+    }
+
     func testPathsNoLongerPresentAreDropped() {
         let index = OwnershipBuilder.build(commits: history, currentPaths: ["core.swift"])
         XCTAssertNotNil(index.ownership(of: "core.swift"))

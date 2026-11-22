@@ -243,8 +243,6 @@ final class AnalysisModel: ObservableObject {
     /// Prose for the window "recent changes" are counted in: two half-lives, so it tracks
     /// the model. "the last 2 years" at the default 365-day half-life.
     @Published private(set) var recentWindowLabel = "the last 2 years"
-    /// Summed risk per directory (top two path components), highest first.
-    @Published private(set) var directoryRisk: [(directory: String, score: Double, units: Int)] = []
 
     // Coupling
     @Published var couplingScope: CouplingScope = .crossDirectory { didSet { rebuildCoupling() } }
@@ -306,9 +304,6 @@ final class AnalysisModel: ObservableObject {
     /// than asserted — the app target has no tests of its own.
     var pendingThenShow: String?
     var pendingFileHistory: String?
-    /// Rows before the search filter, so the sidebar can report how much is being hidden.
-    @Published private(set) var matchedCount = 0
-    @Published private(set) var totalRanked = 0
 
     enum KindFilter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -645,7 +640,6 @@ final class AnalysisModel: ObservableObject {
         var ranked = model.rank(units: units, churn: index, now: now)
         ranked = ranked.filter { $0.commitCount >= minimumCommits }
 
-        totalRanked = ranked.count
         let levels = RiskLevel.assign(to: ranked)
 
         // Complexity percentile: share of ranked units strictly less complex.
@@ -687,16 +681,6 @@ final class AnalysisModel: ObservableObject {
         }
         levelCounts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
 
-        var byDirectory: [String: (score: Double, units: Int)] = [:]
-        for row in built where row.level != .low {
-            let parts = row.filePath.split(separator: "/")
-            let key = parts.count > 2 ? parts.prefix(2).joined(separator: "/") : row.directory
-            byDirectory[key, default: (0, 0)].score += row.score
-            byDirectory[key, default: (0, 0)].units += 1
-        }
-        directoryRisk = byDirectory.map { ($0.key, $0.value.score, $0.value.units) }
-            .sorted { $0.1 > $1.1 }
-
         // Health: the four repository checks plus GitView's own "complex code under change".
         let ninetyDays = now.addingTimeInterval(-90 * 86_400)
         let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && b.date < ninetyDays }
@@ -723,7 +707,6 @@ final class AnalysisModel: ObservableObject {
                     || $0.filePath.localizedCaseInsensitiveContains(query)
             }
         }
-        matchedCount = built.count
         rows = built
         rowsByID = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
         churn = index
@@ -927,10 +910,11 @@ final class AnalysisModel: ObservableObject {
         var indexBySHA: [String: Int] = [:]
         for (index, commit) in analysis.commits.enumerated() { indexBySHA[commit.sha] = index }
         var result: [String: Int] = [:]
+        // Sort by position in HEAD's commit walk so branch-tagged releases never invert counts.
         let reachable = analysis.tags.compactMap { tag -> (String, Int)? in
             indexBySHA[tag.commitSHA].map { (tag.name, $0) }
         }
-        // Tags are newest first, so the *next* one in the list is the previous release.
+        .sorted { $0.1 < $1.1 }
         for (offset, entry) in reachable.enumerated() {
             let previousIndex = offset + 1 < reachable.count ? reachable[offset + 1].1 : analysis.commits.count
             result[entry.0] = max(previousIndex - entry.1, 0)
@@ -938,10 +922,12 @@ final class AnalysisModel: ObservableObject {
         return result
     }
 
-    /// Commits on HEAD that no tag contains yet.
+    /// Commits on HEAD that no reachable tag contains yet.
     var unreleasedCount: Int? {
-        guard let analysis, let latest = analysis.tags.first else { return nil }
-        guard let index = analysis.commits.firstIndex(where: { $0.sha == latest.commitSHA }) else { return nil }
+        guard let analysis else { return nil }
+        if let unreleased = analysis.info.unreleased { return unreleased.commitsSinceTag }
+        guard let latest = analysis.tags.first,
+              let index = analysis.commits.firstIndex(where: { $0.sha == latest.commitSHA }) else { return nil }
         return index
     }
 
@@ -1058,7 +1044,7 @@ final class AnalysisModel: ObservableObject {
             },
             alternative: { [weak self] in
                 self?.perform("stash") {
-                    try $0.stashPush(message: "Set aside \(file.path)", includeUntracked: false)
+                    try $0.stashPush(message: "Set aside \(file.path)", includeUntracked: false, paths: [file.path])
                 }
             })
     }
@@ -1155,7 +1141,7 @@ final class AnalysisModel: ObservableObject {
     func dismissOutsideChange() { outsideChange = nil }
 
     func refreshWorkingState() {
-        guard case .loaded(var analysis) = state else { return }
+        guard case .loaded(let analysis) = state else { return }
         let root = analysis.root
         Task.detached(priority: .utility) {
             let fresh = (try? GitRepository(url: root).workingState()) ?? .clean
@@ -1165,7 +1151,6 @@ final class AnalysisModel: ObservableObject {
                 self.state = .loaded(current)
             }
         }
-        _ = analysis
     }
 
     /// Starts the per-revision re-parse for a unit, once. Results are cached for the
