@@ -198,12 +198,15 @@ extension GitRepository {
         switch source {
         case .commit(let sha):
             // `--format=` suppresses the commit message, leaving only the patch.
-            arguments = ["show", "--format=", "--no-color", "--find-renames", "--unified=\(context)", sha]
+            arguments = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--find-renames", "--unified=\(context)", sha]
         case .workingTree(let staged):
-            arguments = ["diff", "--no-color", "--find-renames", "--unified=\(context)"]
+            arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--find-renames", "--unified=\(context)"]
             if staged { arguments.append("--cached") }
         case .range(let from, let to):
-            arguments = ["diff", "--no-color", "--find-renames", "--unified=\(context)", "\(from)..\(to)"]
+            arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--find-renames", "--unified=\(context)", "\(from)..\(to)"]
         }
         arguments += ["--", path]
         let output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""

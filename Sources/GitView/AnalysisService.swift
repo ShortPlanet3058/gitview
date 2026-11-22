@@ -151,15 +151,11 @@ enum AnalysisService {
             source = .cached
         } else if let cached, !cached.headSHA.isEmpty, repository.isAncestor(cached.headSHA, of: head) {
             let since = cached.headSHA
-            let newCommits = try await Task.detached(priority: .userInitiated) {
-                try GitRepository(url: validated).loadHistory(since: since)
-            }.value
+            let newCommits = try await repository.loadHistoryAsync(since: since)
             commits = newCommits + cached.commits
             source = .incremental(newCommits: newCommits.count)
         } else {
-            commits = try await Task.detached(priority: .userInitiated) {
-                try GitRepository(url: validated).loadHistory()
-            }.value
+            commits = try await repository.loadHistoryAsync()
         }
         let historyDuration = Date().timeIntervalSince(historyStart)
 

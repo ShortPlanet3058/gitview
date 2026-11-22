@@ -55,12 +55,38 @@ public struct GitRepository: Sendable {
 
     /// - Parameter range: a git revision range such as `v1.0..v2.0`. Nil reads all of HEAD.
     public func loadHistory(range: String?) throws -> [Commit] {
-        let arguments = [
+        let sink = ParserBox()
+        try GitProcess.stream(arguments: historyArguments(range: range), in: url) { chunk in
+            sink.feed(chunk)
+        }
+        return sink.finish()
+    }
+
+    /// Async, cancellable equivalent of `loadHistory(since:)`. Cancelling the calling
+    /// task immediately terminates the underlying `git log` process.
+    public func loadHistoryAsync(since: String? = nil) async throws -> [Commit] {
+        try await loadHistoryAsync(range: since.map { "\($0)..HEAD" })
+    }
+
+    /// Async, cancellable equivalent of `loadHistory(range:)`.
+    public func loadHistoryAsync(range: String?) async throws -> [Commit] {
+        let sink = ParserBox()
+        try await GitProcess.streamAsync(arguments: historyArguments(range: range), in: url) { chunk in
+            sink.feed(chunk)
+        }
+        return sink.finish()
+    }
+
+    private func historyArguments(range: String?) -> [String] {
+        [
             // Stop git from octal-escaping non-ASCII paths, so UTF-8 filenames survive intact.
             "-c", "core.quotePath=false",
             "log",
             "--unified=0",       // every @@ header covers exactly the changed lines
             "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--diff-merges=off",
             "--find-renames",
             // Fields are separated by 0x1F (ASCII unit separator, `%x1f`) rather than `|`:
             // author names and subjects both contain pipes in real histories.
@@ -72,12 +98,6 @@ public struct GitRepository: Sendable {
             "--pretty=format:@@@%H%x1f%aN%x1f%aI%x1f%s",
             "-p",
         ] + (range.map { [$0] } ?? [])
-
-        let sink = ParserBox()
-        try GitProcess.stream(arguments: arguments, in: url) { chunk in
-            sink.feed(chunk)
-        }
-        return sink.finish()
     }
 }
 
