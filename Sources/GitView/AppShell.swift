@@ -324,6 +324,22 @@ struct RepositoryMenu: View {
                 detail: analysis.root.deletingLastPathComponent().path,
                 checked: true) {}
 
+            if analysis.info.worktrees.count > 1 {
+                heading("WORKTREES")
+                let currentPath = analysis.root.standardizedFileURL.path
+                ForEach(analysis.info.worktrees) { worktree in
+                    let url = URL(fileURLWithPath: worktree.path)
+                    let isActive = url.standardizedFileURL.path == currentPath
+                    let branchLabel = worktree.branch ?? "detached (\(String(worktree.headSHA.prefix(7))))"
+                    row(name: url.lastPathComponent,
+                        detail: "\(branchLabel) · \(worktree.path)",
+                        checked: isActive) {
+                        dismiss()
+                        if !isActive { session.open(url: url) }
+                    }
+                }
+            }
+
             if !others.isEmpty {
                 heading("RECENT")
                 // Capped: this is a switcher, not a file browser. Everything ever opened is

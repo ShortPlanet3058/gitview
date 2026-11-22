@@ -386,4 +386,65 @@ final class GitWriterTests: XCTestCase {
         try repository.applyPatch(addOnlyPatch.patch, cached: true, reverse: false, unidiffZero: !addOnlyPatch.hasContext)
         XCTAssertEqual(try run(["show", ":partial.txt"]), "top\ngamma\nkeep\nreplaced\nbottom\n")
     }
+
+    func testConflictVersionsAcceptSideAndAbortMerge() throws {
+        try write("shared.txt", "line1\nbase\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Base shared")
+
+        try repository.createBranch(name: "incoming", checkout: true)
+        try write("shared.txt", "line1\ntheir change\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Incoming edit")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        try write("shared.txt", "line1\nour change\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Main edit")
+
+        // Trigger a real merge conflict.
+        XCTAssertThrowsError(try run(["merge", "incoming"]))
+        let conflictedState = try state()
+        XCTAssertEqual(conflictedState.operation, .merge)
+        XCTAssertEqual(conflictedState.conflicted.map(\.path), ["shared.txt"])
+
+        let versions = try repository.conflictVersions(path: "shared.txt")
+        XCTAssertEqual(versions.base, "line1\nbase\nline3\n")
+        XCTAssertEqual(versions.ours, "line1\nour change\nline3\n")
+        XCTAssertEqual(versions.theirs, "line1\ntheir change\nline3\n")
+        XCTAssertNotNil(versions.firstConflictLine)
+
+        // Resolve accepting theirs, verify index & working copy match, then abort the merge cleanly.
+        try repository.resolveConflictUsingSide(path: "shared.txt", acceptOurs: false)
+        XCTAssertEqual(read("shared.txt"), "line1\ntheir change\nline3\n")
+        XCTAssertTrue(try state().conflicted.isEmpty)
+
+        try repository.abortOperation(.merge)
+        let abortedState = try state()
+        XCTAssertNil(abortedState.operation)
+        XCTAssertEqual(read("shared.txt"), "line1\nour change\nline3\n")
+    }
+
+    func testCreatePushAndDeleteTags() throws {
+        let remote = root.appendingPathComponent("../remote-tags-\(UUID().uuidString).git").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", remote.path], in: root)
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try run(["remote", "add", "origin", remote.path])
+        try repository.push(remote: "origin", branch: "main", setUpstream: true)
+
+        try repository.createTag(name: "v0.1.0")
+        try repository.createTag(name: "v0.2.0", message: "Annotated release")
+        let tags = try repository.tags()
+        XCTAssertTrue(tags.contains(where: { $0.name == "v0.1.0" && !$0.isAnnotated }))
+        XCTAssertTrue(tags.contains(where: { $0.name == "v0.2.0" && $0.isAnnotated && $0.subject == "Annotated release" }))
+
+        try repository.pushTag(remote: "origin", name: "v0.2.0")
+        let remoteTags = try run(["ls-remote", "--tags", "origin"])
+        XCTAssertTrue(remoteTags.contains("refs/tags/v0.2.0"))
+
+        try repository.deleteTag(name: "v0.1.0")
+        let afterDelete = try repository.tags()
+        XCTAssertFalse(afterDelete.contains(where: { $0.name == "v0.1.0" }))
+        XCTAssertTrue(afterDelete.contains(where: { $0.name == "v0.2.0" }))
+    }
 }

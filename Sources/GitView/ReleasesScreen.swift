@@ -8,17 +8,41 @@ import GitViewGit
 struct ReleasesScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(NavigationStore.self) private var navigation
+    @Environment(WorkingCopyStore.self) private var workingCopy
     @State private var query = ""
     @State private var limit = 60
     @State private var copied = false
+    @State private var showingNewTagPopover = false
+    @State private var newTagName = ""
+    @State private var newTagTarget = "HEAD"
+    @State private var newTagMessage = ""
 
     var body: some View {
         if let analysis = session.analysis {
             let distances = session.commitsBetweenTags()
             let tags = analysis.tags.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+            let defaultRemote: String? = analysis.info.remotes.keys.contains("origin")
+                ? "origin"
+                : analysis.info.remotes.keys.sorted().first
             Page {
-                ScreenHeader(title: "Releases",
-                             subtitle: "Tags in this repository, and what changed between any two points.")
+                HStack(alignment: .top) {
+                    ScreenHeader(title: "Releases",
+                                 subtitle: "Tags in this repository, and what changed between any two points.")
+                    Spacer()
+                    Button {
+                        newTagName = ""
+                        newTagTarget = "HEAD"
+                        newTagMessage = ""
+                        showingNewTagPopover = true
+                    } label: {
+                        Label("New Tag…", systemImage: "tag")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(workingCopy.writeInFlight)
+                    .popover(isPresented: $showingNewTagPopover, arrowEdge: .bottom) {
+                        newTagPopover(analysis)
+                    }
+                }
 
                 if analysis.tags.isEmpty {
                     Card {
@@ -53,7 +77,8 @@ struct ReleasesScreen: View {
                         .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
                         HairlineDivider()
                         ForEach(tags.prefix(limit)) { tag in
-                            tagRow(tag, commits: distances[tag.name], allTags: analysis.tags, root: analysis.root)
+                            tagRow(tag, commits: distances[tag.name], allTags: analysis.tags,
+                                   root: analysis.root, defaultRemote: defaultRemote)
                             if tag.id != tags.prefix(limit).last?.id { HairlineDivider() }
                         }
                         if tags.count > limit {
@@ -64,6 +89,42 @@ struct ReleasesScreen: View {
                 }
             }
         }
+    }
+
+    private func newTagPopover(_ analysis: RepositoryAnalysis) -> some View {
+        let trimmedName = newTagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: Theme.Space.m) {
+            Text("Create Tag").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Tag name").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                TextField("v1.0.0", text: $newTagName).textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Target branch, tag, or commit").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                TextField("HEAD", text: $newTagTarget).textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Annotation message (optional)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                TextField("Leave blank for lightweight tag", text: $newTagMessage).textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingNewTagPopover = false }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Create Tag") {
+                    workingCopy.createTag(
+                        name: trimmedName,
+                        target: newTagTarget,
+                        message: newTagMessage
+                    )
+                    showingNewTagPopover = false
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(trimmedName.isEmpty || workingCopy.writeInFlight)
+            }
+        }
+        .padding(Theme.Space.l)
+        .frame(width: 320)
     }
 
     private func unreleasedCard(count: Int, since latest: TagInfo, root: URL) -> some View {
@@ -226,7 +287,8 @@ struct ReleasesScreen: View {
         }
     }
 
-    private func tagRow(_ tag: TagInfo, commits: Int?, allTags: [TagInfo], root: URL) -> some View {
+    private func tagRow(_ tag: TagInfo, commits: Int?, allTags: [TagInfo],
+                        root: URL, defaultRemote: String?) -> some View {
         HStack(spacing: Theme.Space.m) {
             Image(systemName: "tag.fill").font(.system(size: 11)).foregroundStyle(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {
@@ -257,7 +319,35 @@ struct ReleasesScreen: View {
                 if !navigation.compareFrom.isEmpty { navigation.runComparison(in: root) }
             }
             .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+            if let defaultRemote {
+                Button("Push") {
+                    workingCopy.pushTag(name: tag.name, remote: defaultRemote)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .disabled(workingCopy.writeInFlight)
+                .help("Push tag \(tag.name) to \(defaultRemote)")
+            }
+            Button {
+                workingCopy.confirmDeleteTag(tag)
+            } label: {
+                Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Theme.critical)
+            }
+            .buttonStyle(.plain)
+            .disabled(workingCopy.writeInFlight)
+            .help("Delete local tag \(tag.name)")
         }
         .padding(.horizontal, Theme.Space.m).padding(.vertical, 8)
+        .contextMenu {
+            if let defaultRemote {
+                Button("Push Tag to \(defaultRemote)") {
+                    workingCopy.pushTag(name: tag.name, remote: defaultRemote)
+                }
+            }
+            Button("Copy Tag Name") { copyToPasteboard(tag.name) }
+            Divider()
+            Button("Delete Local Tag", role: .destructive) {
+                workingCopy.confirmDeleteTag(tag)
+            }
+        }
     }
 }

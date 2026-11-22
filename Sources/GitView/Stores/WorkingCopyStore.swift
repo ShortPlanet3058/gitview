@@ -250,4 +250,59 @@ public final class WorkingCopyStore {
             },
             alternative: nil)
     }
+
+    public func confirmAbortOperation(_ operation: WorkingState.Operation) {
+        confirmation = DestructiveConfirmation(
+            title: "Abort \(operation.label.lowercased())?",
+            message: "Git will abort the interrupted operation and restore your branch to the state before it started. Uncommitted conflict edits will be discarded.",
+            confirmLabel: "Abort",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("abort operation", reloadHistory: true) {
+                    try $0.abortOperation(operation)
+                }
+            },
+            alternative: nil)
+    }
+
+    public func confirmResolveConflict(path: String, acceptOurs: Bool) {
+        let sideName = acceptOurs ? "ours (current branch)" : "theirs (incoming)"
+        confirmation = DestructiveConfirmation(
+            title: "Accept \(sideName) for \((path as NSString).lastPathComponent)?",
+            message: "This replaces conflict markers in \(path) with the \(sideName) version and stages the resolved file.",
+            confirmLabel: acceptOurs ? "Accept Ours" : "Accept Theirs",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("resolve conflict") {
+                    try $0.resolveConflictUsingSide(path: path, acceptOurs: acceptOurs)
+                }
+            },
+            alternative: nil)
+    }
+
+    public func createTag(name: String, target: String = "HEAD", message: String? = nil) {
+        perform("create tag", reloadHistory: true) {
+            try $0.createTag(name: name, target: target, message: message)
+        }
+    }
+
+    public func pushTag(name: String, remote: String = "origin") {
+        perform("push tag", reloadHistory: true) {
+            try $0.pushTag(remote: remote, name: name)
+        }
+    }
+
+    public func confirmDeleteTag(_ tag: TagInfo) {
+        confirmation = DestructiveConfirmation(
+            title: "Delete tag “\(tag.name)”?",
+            message: "This deletes the local tag ref (git tag -d). Remote copies, if pushed, are left untouched.",
+            confirmLabel: "Delete Tag",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("delete tag", reloadHistory: true) {
+                    try $0.deleteTag(name: tag.name)
+                }
+            },
+            alternative: nil)
+    }
 }

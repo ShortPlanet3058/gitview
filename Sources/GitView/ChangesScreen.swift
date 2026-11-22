@@ -20,6 +20,9 @@ struct ChangesScreen: View {
 
     private var orderedEntries: [SelectableEntry] {
         var entries: [SelectableEntry] = []
+        entries.append(contentsOf: state.conflicted.map {
+            SelectableEntry(id: "conflicted:\($0.path)", file: $0, staged: false, title: "Conflicted file")
+        })
         entries.append(contentsOf: state.staged.map {
             SelectableEntry(id: "staged:\($0.path)", file: $0, staged: true, title: "Staged changes")
         })
@@ -49,6 +52,9 @@ struct ChangesScreen: View {
             if state.isClean && !state.hasUnpushedCommits && state.stashes.isEmpty {
                 cleanCard
             } else {
+                if !state.conflicted.isEmpty {
+                    conflictsSection(state.conflicted)
+                }
                 if !state.staged.isEmpty {
                     fileSection("Staged", state.staged, tint: Theme.good, staged: true, sectionPrefix: "staged")
                 }
@@ -109,16 +115,58 @@ struct ChangesScreen: View {
         }
     }
 
+    private func abortButtonTitle(_ operation: WorkingState.Operation) -> String {
+        switch operation {
+        case .merge: return "Abort Merge"
+        case .rebase: return "Abort Rebase"
+        case .cherryPick: return "Abort Cherry-pick"
+        case .revert: return "Abort Revert"
+        case .bisect: return "Reset Bisect"
+        }
+    }
+
     private func operationCard(_ operation: WorkingState.Operation) -> some View {
         Card {
             HStack(spacing: Theme.Space.s) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(operation.label).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
-                    Text("Finish or abort it in a terminal — GitView does not drive merges or rebases.")
+                    Text("Resolve any conflicts below and stage to continue, or safely abort to restore the pre-operation state.")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
                 }
                 Spacer()
+                Button(abortButtonTitle(operation)) {
+                    workingCopy.confirmAbortOperation(operation)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .disabled(workingCopy.writeInFlight)
+            }
+        }
+    }
+
+    private func conflictsSection(_ files: [WorkingState.FileStatus]) -> some View {
+        Card(padding: Theme.Space.s) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("CONFLICTS").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.critical)
+                    Text("\(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.critical)
+                    Spacer()
+                    Text("Resolve by accepting a side or editing in your editor")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                }
+                .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
+                HairlineDivider()
+                ForEach(files) { file in
+                    let entryID = "conflicted:\(file.path)"
+                    ConflictFileRow(
+                        file: file,
+                        selected: selectedEntryID == entryID,
+                        root: session.analysis?.root,
+                        onSelect: { selectedEntryID = entryID }
+                    )
+                    if file.id != files.last?.id { HairlineDivider() }
+                }
             }
         }
     }
@@ -337,5 +385,126 @@ struct ChangesScreen: View {
                 }
             }
         }
+    }
+}
+
+private struct ConflictFileRow: View {
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(WorkingCopyStore.self) private var workingCopy
+    let file: WorkingState.FileStatus
+    let selected: Bool
+    let root: URL?
+    let onSelect: () -> Void
+
+    @State private var expanded = false
+    @State private var versions: GitRepository.ConflictFileVersions?
+    @State private var loading = false
+
+    private var fileURL: URL? {
+        guard let root else { return nil }
+        let url = root.appendingPathComponent(file.path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            HStack(spacing: Theme.Space.s) {
+                Text("!").font(Theme.Text.mono).foregroundStyle(Theme.critical).frame(width: 16)
+                Button {
+                    onSelect()
+                    session.inspector.showDiff(.workingTree(staged: false), path: file.path, title: "Conflicted file")
+                } label: {
+                    Text(file.path).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button(expanded ? "Hide Sides" : "Inspect Sides") {
+                    expanded.toggle()
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+
+                if let url = fileURL {
+                    Button(versions?.firstConflictLine.map { "Open (L\($0))" } ?? "Open") {
+                        openInEditor(url, line: versions?.firstConflictLine)
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+
+                Button("Accept Ours") {
+                    workingCopy.confirmResolveConflict(path: file.path, acceptOurs: true)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .disabled(workingCopy.writeInFlight)
+
+                Button("Accept Theirs") {
+                    workingCopy.confirmResolveConflict(path: file.path, acceptOurs: false)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .disabled(workingCopy.writeInFlight)
+
+                Button("Mark Resolved") {
+                    workingCopy.stage([file.path])
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .disabled(workingCopy.writeInFlight)
+            }
+
+            if expanded {
+                if loading && versions == nil {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading conflict stages…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    }
+                    .padding(.leading, 24)
+                } else if let versions {
+                    HStack(alignment: .top, spacing: Theme.Space.m) {
+                        conflictSidePreview(title: "Ours (Current Branch)", content: versions.ours, tint: Theme.accent)
+                        conflictSidePreview(title: "Theirs (Incoming Changes)", content: versions.theirs, tint: Theme.tint(.violet))
+                    }
+                    .padding(.leading, 24)
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Space.m).padding(.vertical, 8)
+        .background(selected ? Theme.accentWash : .clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .contextMenu { PathActions(path: file.path) }
+        .task(id: expanded) {
+            guard expanded, versions == nil, let root else { return }
+            loading = true
+            let path = file.path
+            let loaded = await Task.detached(priority: .userInitiated) {
+                try? GitRepository(url: root).conflictVersions(path: path)
+            }.value
+            guard !Task.isCancelled else { return }
+            versions = loaded
+            loading = false
+        }
+    }
+
+    private func conflictSidePreview(title: String, content: String?, tint: Color) -> some View {
+        let previewText: String = {
+            guard let content else { return "(Deleted on this side)" }
+            let lines = content.split(separator: "\n", omittingEmptySubsequences: false).prefix(40)
+            return lines.joined(separator: "\n")
+        }()
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(tint)
+            ScrollView {
+                Text(previewText.isEmpty ? " " : previewText)
+                    .font(Theme.Text.mono)
+                    .foregroundStyle(content == nil ? Theme.inkMuted : Theme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 160)
+            .padding(Theme.Space.s)
+            .background(Theme.page, in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous).strokeBorder(tint.opacity(0.35)))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
