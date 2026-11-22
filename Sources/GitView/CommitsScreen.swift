@@ -79,6 +79,27 @@ struct CommitsScreen: View {
                 }
             }
         }
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.downArrow) {
+            let visibleIDs = Array(commits.prefix(limit)).map(\.sha)
+            session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
+                in: visibleIDs, current: session.navigation.selectedCommitSHA, delta: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            let visibleIDs = Array(commits.prefix(limit)).map(\.sha)
+            session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
+                in: visibleIDs, current: session.navigation.selectedCommitSHA, delta: -1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if session.navigation.selectedCommitSHA == nil, let first = commits.first {
+                session.navigation.selectedCommitSHA = first.sha
+                return .handled
+            }
+            return .ignored
+        }
     }
 
     struct DayGroup { let day: Date; let commits: [Commit] }

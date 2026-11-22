@@ -186,7 +186,7 @@ struct FileInfoCard: View {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Label("Finder", systemImage: "folder") }
                         .buttonStyle(SecondaryButtonStyle())
                     if !node.isDirectory {
-                        Button { NSWorkspace.shared.open(url) } label: { Label("Open", systemImage: "arrow.up.forward.app") }
+                        Button { openInEditor(url) } label: { Label("Open", systemImage: "arrow.up.forward.app") }
                             .buttonStyle(SecondaryButtonStyle())
                     }
                 }

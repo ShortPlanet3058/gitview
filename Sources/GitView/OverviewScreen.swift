@@ -35,6 +35,7 @@ struct OverviewScreen: View {
                 let available = geometry.size.height - Self.headerHeight - gap * 4
                     - Theme.Space.l * 2
                 let layout = Self.rows(in: available)
+                let narrow = geometry.size.width < 820
                 let hero = layout.hero
                 let numbers = layout.numbers
                 let languages = layout.languages
@@ -47,12 +48,12 @@ struct OverviewScreen: View {
                 // the grid gave it; the tile shows less rather than trespassing.
                 VStack(spacing: gap) {
                     header(analysis)
-                    heroRow(analysis, compact: layout.isCompact)
+                    heroRow(analysis, compact: layout.isCompact, narrow: narrow)
                         .frame(height: hero, alignment: .top).clipped()
-                    numbersRow(analysis).frame(height: numbers, alignment: .top).clipped()
+                    numbersRow(analysis, narrow: narrow).frame(height: numbers, alignment: .top).clipped()
                     LanguageStrip(inventory: analysis.info.inventory)
                         .frame(height: languages, alignment: .top).clipped()
-                    bottomRow(analysis, compact: layout.isCompact)
+                    bottomRow(analysis, compact: layout.isCompact, narrow: narrow)
                         .frame(height: bottom, alignment: .top).clipped()
                 }
                 .padding(.horizontal, Theme.Space.xl)
@@ -103,39 +104,40 @@ struct OverviewScreen: View {
 
     // MARK: - Rows
 
-    private func heroRow(_ analysis: RepositoryAnalysis, compact: Bool) -> some View {
-        HStack(spacing: gap) {
+    private func heroRow(_ analysis: RepositoryAnalysis, compact: Bool, narrow: Bool) -> some View {
+        HStack(spacing: narrow ? Theme.Space.s : gap) {
             CatchUpTile(limit: compact ? 2 : 3).frame(maxWidth: .infinity)
-            WorkingCopyTile(state: analysis.workingState, compact: compact).frame(width: 340)
+            WorkingCopyTile(state: analysis.workingState, compact: compact)
+                .frame(width: narrow ? 250 : 340)
         }
     }
 
-    private func numbersRow(_ analysis: RepositoryAnalysis) -> some View {
-        HStack(spacing: gap) {
+    private func numbersRow(_ analysis: RepositoryAnalysis, narrow: Bool) -> some View {
+        HStack(spacing: narrow ? Theme.Space.s : gap) {
             NumberTile(icon: "clock.arrow.circlepath", tint: .blue, destination: .commits,
                        value: session.readiness.hasHistory ? analysis.commits.count.formatted() : "—",
-                       label: "Commits", detail: commitsThisMonth(analysis))
+                       label: "Commits", detail: narrow ? nil : commitsThisMonth(analysis))
             NumberTile(icon: "person.2", tint: .aqua, destination: .contributors,
                        value: session.readiness.hasHistory ? session.contributors.count.formatted() : "—",
                        label: session.contributors.count == 1 ? "Contributor" : "Contributors",
-                       detail: activePeople())
+                       detail: narrow ? nil : activePeople())
             NumberTile(icon: "doc.text.fill", tint: .orange, destination: .files,
                        value: analysis.info.inventory.fileCount.formatted(),
-                       label: "Files", detail: analysis.info.inventory.totalBytes.byteString)
+                       label: "Files", detail: narrow ? nil : analysis.info.inventory.totalBytes.byteString)
             NumberTile(icon: "arrow.triangle.branch", tint: .violet, destination: .branches,
                        value: localBranches(analysis).count.formatted(),
                        label: localBranches(analysis).count == 1 ? "Branch" : "Branches",
-                       detail: analysis.branches.count > localBranches(analysis).count
-                           ? "\(analysis.branches.count - localBranches(analysis).count) on the remote" : nil)
+                       detail: narrow ? nil : (analysis.branches.count > localBranches(analysis).count
+                           ? "\(analysis.branches.count - localBranches(analysis).count) on the remote" : nil))
             NumberTile(icon: "tag", tint: .yellow, destination: .releases,
                        value: analysis.tags.count.formatted(),
                        label: analysis.tags.count == 1 ? "Release" : "Releases",
-                       detail: unreleasedDetail())
+                       detail: narrow ? nil : unreleasedDetail())
         }
     }
 
-    private func bottomRow(_ analysis: RepositoryAnalysis, compact: Bool) -> some View {
-        HStack(spacing: gap) {
+    private func bottomRow(_ analysis: RepositoryAnalysis, compact: Bool, narrow: Bool) -> some View {
+        HStack(spacing: narrow ? Theme.Space.s : gap) {
             HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
             HotspotsTile(limit: compact ? 2 : 4).frame(maxWidth: .infinity)
             ActivityTile().frame(maxWidth: .infinity)

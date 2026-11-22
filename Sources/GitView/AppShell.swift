@@ -6,13 +6,17 @@ import GitViewGit
 struct AppShell: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @AppStorage("gitview.sidebarWidth") private var sidebarWidth: Double = 216
+    @AppStorage("gitview.detailWidth") private var detailWidth: Double = 420
 
     var body: some View {
         @Bindable var workingCopy = workingCopy
+        let clampedSidebar = min(max(sidebarWidth, 180), 320)
+        let clampedDetail = min(max(detailWidth, 340), 620)
         HStack(spacing: 0) {
             SidebarView()
-                .frame(width: 216)
-            Rectangle().fill(Theme.hairline).frame(width: 1)
+                .frame(width: clampedSidebar)
+            VerticalPaneResizer(width: $sidebarWidth, range: 180...320, invertDrag: false)
             VStack(spacing: 0) {
                 TopBar()
                 Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -20,12 +24,12 @@ struct AppShell: View {
                 FreshnessBanner()
                 HStack(spacing: 0) {
                     main
-                        .frame(minWidth: 560, maxWidth: .infinity)
+                        .frame(minWidth: 440, maxWidth: .infinity)
                         .transition(.opacity)
                     if hasDetail {
-                        Rectangle().fill(Theme.hairline).frame(width: 1)
+                        VerticalPaneResizer(width: $detailWidth, range: 340...620, invertDrag: true)
                         detailContent
-                            .frame(width: 420)
+                            .frame(width: clampedDetail)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
@@ -428,6 +432,7 @@ struct TopBar: View {
                         Label("Fetch", systemImage: "arrow.down.circle")
                     }
                     .buttonStyle(SecondaryButtonStyle())
+                    .fixedSize()
                     .disabled(workingCopy.writeInFlight)
                     .help("Fetch all remotes and prune deleted branches")
                     if analysis.workingState.behind > 0 {
@@ -435,6 +440,7 @@ struct TopBar: View {
                             Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
                         }
                         .buttonStyle(PrimaryButtonStyle())
+                        .fixedSize()
                         .disabled(workingCopy.writeInFlight)
                         .help("Fast-forward pull from upstream (git pull --ff-only)")
                     }
@@ -442,9 +448,9 @@ struct TopBar: View {
             } else {
                 Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
             }
-            Spacer()
+            Spacer(minLength: Theme.Space.xs)
             if session.analysis != nil { GlobalSearchField() }
-            Spacer()
+            Spacer(minLength: Theme.Space.xs)
             ModeSwitch()
             if let analysis = session.analysis {
                 Button { session.refresh() } label: {
@@ -461,9 +467,12 @@ struct TopBar: View {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([analysis.root])
                 } label: {
-                    Label("Open in Finder", systemImage: "folder")
+                    Image(systemName: "folder")
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(SecondaryButtonStyle())
+                .help("Open repository in Finder")
+                .accessibilityLabel("Open in Finder")
             }
         }
         .padding(.horizontal, Theme.Space.xl)
@@ -512,6 +521,8 @@ struct BranchPicker: View {
                 .strokeBorder(hovering || showingPopover ? Theme.accent.opacity(0.45) : Theme.hairline))
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: 200)
+        .layoutPriority(-1)
         .onHover { hovering = $0 }
         .help("Switch or create a branch")
         .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
@@ -623,6 +634,7 @@ struct ModeSwitch: View {
         .padding(3)
         .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous).strokeBorder(Theme.hairline))
+        .fixedSize()
         .help("Standard shows the essentials. Advanced adds Statistics and every metric and control.")
     }
 
@@ -710,6 +722,52 @@ struct SidebarView: View {
 }
 
 // MARK: - Screen scaffolding
+
+/// Draggable 1pt vertical hairline divider with a 6pt hit target for resizing workspace panes.
+struct VerticalPaneResizer: View {
+    @Binding var width: Double
+    let range: ClosedRange<Double>
+    let invertDrag: Bool
+
+    @State private var dragStartWidth: Double?
+    @State private var cursorPushed = false
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Theme.hairline).frame(width: 1)
+        }
+        .frame(width: 6)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering && !cursorPushed {
+                NSCursor.resizeLeftRight.push()
+                cursorPushed = true
+            } else if !hovering && cursorPushed {
+                NSCursor.pop()
+                cursorPushed = false
+            }
+        }
+        .onDisappear {
+            if cursorPushed {
+                NSCursor.pop()
+                cursorPushed = false
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    let start = dragStartWidth ?? min(max(width, range.lowerBound), range.upperBound)
+                    if dragStartWidth == nil { dragStartWidth = start }
+                    let delta = invertDrag ? -value.translation.width : value.translation.width
+                    width = min(max(start + delta, range.lowerBound), range.upperBound)
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+    }
+}
 
 struct ScreenHeader: View {
     let title: String

@@ -146,7 +146,7 @@ struct DiffViewer: View {
                     .disabled(workingCopy.writeInFlight)
                 }
                 if let url = fileURL {
-                    Button("Open file") { NSWorkspace.shared.open(url) }
+                    Button("Open file") { openInEditor(url, line: initialEditorLine) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
             }
@@ -242,6 +242,21 @@ struct DiffViewer: View {
         guard let root = session.analysis?.root else { return nil }
         let url = root.appendingPathComponent(request.path)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private var initialEditorLine: Int? {
+        guard let hunk = inspector.loadedDiff?.hunks.first else { return nil }
+        return hunk.lines.first(where: { $0.newNumber != nil })?.newNumber ?? max(1, hunk.newStart)
+    }
+
+    @ViewBuilder
+    private func lineContextMenu(_ line: DiffLine) -> some View {
+        if let url = fileURL, let lineNumber = line.newNumber ?? line.oldNumber {
+            Button("Open in Editor at Line \(lineNumber)") {
+                openInEditor(url, line: lineNumber)
+            }
+        }
+        Button("Copy Line") { copyToPasteboard(line.text) }
     }
 
     // MARK: - Content
@@ -408,6 +423,7 @@ struct DiffViewer: View {
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background(line))
+        .contextMenu { lineContextMenu(line) }
     }
 
     private func sideBySideRow(_ pair: DiffPresentation.SideBySidePair) -> some View {
@@ -444,6 +460,7 @@ struct DiffViewer: View {
             .padding(.vertical, 1)
             .frame(maxHeight: .infinity, alignment: .topLeading)
             .background(background(line))
+            .contextMenu { lineContextMenu(line) }
         } else {
             Text(" ")
                 .padding(.vertical, 1)

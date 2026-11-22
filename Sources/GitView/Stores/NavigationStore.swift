@@ -116,4 +116,13 @@ public final class NavigationStore {
             }
         }
     }
+
+    public static func stepSelection<ID: Equatable>(in ids: [ID], current: ID?, delta: Int) -> ID? {
+        guard !ids.isEmpty else { return nil }
+        guard let current, let index = ids.firstIndex(of: current) else {
+            return delta >= 0 ? ids.first : ids.last
+        }
+        let target = min(max(0, index + delta), ids.count - 1)
+        return ids[target]
+    }
 }

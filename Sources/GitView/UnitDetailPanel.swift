@@ -61,7 +61,7 @@ struct UnitDetailPanel: View {
                     .lineLimit(1).truncationMode(.head).textSelection(.enabled)
                 Spacer()
                 if let fileURL {
-                    Button("Open file") { NSWorkspace.shared.open(fileURL) }
+                    Button("Open file") { openInEditor(fileURL, line: unit.lineRange.lowerBound) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
             }
