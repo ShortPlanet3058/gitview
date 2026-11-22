@@ -18,10 +18,10 @@ public struct GitWriteError: Error, CustomStringConvertible {
 extension GitRepository {
 
     @discardableResult
-    private func write(_ arguments: [String]) throws -> String {
+    private func write(_ arguments: [String], stdin: Data? = nil) throws -> String {
         let root = try validate()
         do {
-            return try GitProcess.capture(arguments: arguments, in: root)
+            return try GitProcess.capture(arguments: arguments, stdin: stdin, in: root)
         } catch let error as GitError {
             if case .failed(let command, _, let stderr) = error {
                 throw GitWriteError(command: command,
@@ -171,5 +171,68 @@ extension GitRepository {
         if setUpstream { arguments.append("--set-upstream") }
         arguments += [remote, branch]
         try write(arguments)
+    }
+
+    // MARK: - Sync & Branches
+
+    /// Fetches all remotes (and prunes deleted remote-tracking refs by default).
+    public func fetch(prune: Bool = true) throws {
+        var arguments = ["fetch", "--all"]
+        if prune { arguments.append("--prune") }
+        try write(arguments)
+    }
+
+    /// Fast-forwards the current branch from its configured upstream. Never auto-merges or rebases.
+    public func pullFastForwardOnly() throws {
+        try write(["pull", "--ff-only"])
+    }
+
+    /// Switches to a local branch, or creates a tracking branch when `isRemote` is true.
+    public func checkoutBranch(_ name: String, isRemote: Bool = false) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "switch", message: "Branch name cannot be empty.")
+        }
+        if isRemote {
+            try write(["switch", "--track", trimmed])
+        } else {
+            try write(["switch", trimmed])
+        }
+    }
+
+    /// Creates a branch, optionally from a start point, and switches to it by default.
+    public func createBranch(name: String, startPoint: String? = nil, checkout: Bool = true) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "switch", message: "Branch name cannot be empty.")
+        }
+        var arguments = checkout ? ["switch", "-c", trimmed] : ["branch", trimmed]
+        if let start = startPoint?.trimmingCharacters(in: .whitespacesAndNewlines), !start.isEmpty {
+            arguments.append(start)
+        }
+        try write(arguments)
+    }
+
+    /// Deletes a merged local branch (`-d`). Unmerged branches are refused by git itself.
+    public func deleteMergedBranch(name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "branch", message: "Branch name cannot be empty.")
+        }
+        try write(["branch", "-d", trimmed])
+    }
+
+    // MARK: - Per-hunk patching
+
+    /// Applies a unified diff patch to the index (`cached: true`) or working tree (`cached: false`).
+    public func applyPatch(_ patch: String, cached: Bool, reverse: Bool = false, unidiffZero: Bool = false) throws {
+        guard !patch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        var arguments = ["apply", "--recount"]
+        if unidiffZero { arguments.append("--unidiff-zero") }
+        if cached { arguments.append("--cached") }
+        if reverse { arguments.append("--reverse") }
+        arguments.append("-")
+        let normalized = patch.hasSuffix("\n") ? patch : patch + "\n"
+        try write(arguments, stdin: Data(normalized.utf8))
     }
 }

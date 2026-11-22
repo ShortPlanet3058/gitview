@@ -11,7 +11,6 @@ struct ChangesScreen: View {
     private var state: WorkingState { session.analysis?.workingState ?? .clean }
 
     var body: some View {
-        @Bindable var workingCopy = workingCopy
         Page {
             HStack(alignment: .top) {
                 ScreenHeader(title: "Changes", subtitle: subtitle)
@@ -42,19 +41,6 @@ struct ChangesScreen: View {
 
             pushCard
             stashCard
-        }
-        .alert(item: $workingCopy.confirmation) { confirmation in
-            // Alert rather than a quiet inline action: these are the operations with no undo.
-            if let alternativeLabel = confirmation.alternativeLabel, let alternative = confirmation.alternative {
-                return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
-                             primaryButton: .default(Text(alternativeLabel), action: alternative),
-                             secondaryButton: .destructive(Text(confirmation.confirmLabel),
-                                                           action: confirmation.perform))
-            }
-            return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
-                         primaryButton: .destructive(Text(confirmation.confirmLabel),
-                                                     action: confirmation.perform),
-                         secondaryButton: .cancel())
         }
     }
 
@@ -139,8 +125,8 @@ struct ChangesScreen: View {
             Text(marker(file, staged: staged))
                 .font(Theme.Text.mono).foregroundStyle(tint).frame(width: 16)
             Button {
-                session.inspector.showDiff(.workingTree(staged: staged), path: file.path,
-                               title: staged ? "Staged changes" : "Uncommitted changes")
+                let title = staged ? "Staged changes" : (file.isUntracked ? "Untracked file" : "Uncommitted changes")
+                session.inspector.showDiff(.workingTree(staged: staged), path: file.path, title: title)
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(file.path).font(Theme.Text.body).foregroundStyle(Theme.ink)
@@ -154,7 +140,6 @@ struct ChangesScreen: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(file.isUntracked)
 
             if staged {
                 Button("Unstage") { workingCopy.unstage([file.path]) }

@@ -92,4 +92,41 @@ final class FileHistoryParserTests: XCTestCase {
         XCTAssertTrue(FileHistoryParser.parse("", fallbackPath: "x").isEmpty)
         XCTAssertTrue(FileHistoryParser.parse("nonsense\n1\t2\tno header first", fallbackPath: "x").isEmpty)
     }
+
+    func testCommitDetailParsesMetadataParentsBodyAndDeltas() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-commit-detail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRoot)
+        try "hello\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "a.txt"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-q", "-m", "Root commit"], in: tempRoot)
+
+        let repo = GitRepository(url: tempRoot)
+        let rootSHA = try repo.headSHA()
+        let rootDetail = try repo.commitDetail(sha: rootSHA)
+        XCTAssertTrue(rootDetail.parents.isEmpty)
+        XCTAssertEqual(rootDetail.authorName, "Alice")
+        XCTAssertEqual(rootDetail.authorEmail, "alice@example.com")
+        XCTAssertEqual(rootDetail.subject, "Root commit")
+        XCTAssertEqual(rootDetail.deltas.first?.path, "a.txt")
+        XCTAssertEqual(rootDetail.deltas.first?.insertions, 1)
+
+        try "hello\nworld\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "a.txt"], in: tempRoot)
+        _ = try GitProcess.capture(
+            arguments: ["commit", "-q", "-m", "Second commit", "-m", "Extended explanation\nover multiple lines."],
+            in: tempRoot
+        )
+        let secondSHA = try repo.headSHA()
+        let secondDetail = try repo.commitDetail(sha: secondSHA)
+        XCTAssertEqual(secondDetail.parents, [rootSHA])
+        XCTAssertEqual(secondDetail.subject, "Second commit")
+        XCTAssertEqual(secondDetail.body, "Extended explanation\nover multiple lines.")
+        XCTAssertEqual(secondDetail.deltas.first?.insertions, 1)
+    }
 }

@@ -46,6 +46,9 @@ public final class InspectorStore {
     public private(set) var histories: [UUID: [UnitComplexityPoint]] = [:]
     public private(set) var loadingHistories: Set<UUID> = []
 
+    public private(set) var commitDetails: [String: CommitDetail] = [:]
+    public private(set) var commitDetailsInFlight: Set<String> = []
+
     @ObservationIgnored private var repositoryRoot: URL?
 
     public init() {}
@@ -64,6 +67,8 @@ public final class InspectorStore {
         blameInFlight = []
         histories = [:]
         loadingHistories = []
+        commitDetails = [:]
+        commitDetailsInFlight = []
     }
 
     public func showFileHistory(_ path: String) {
@@ -77,6 +82,25 @@ public final class InspectorStore {
 
     public func showDiff(_ source: DiffSource, path: String, title: String) {
         diffRequest = DiffRequest(source: source, path: path, title: title)
+    }
+
+    public func reloadDiff() {
+        loadDiff()
+    }
+
+    public func ensureCommitDetail(sha: String) {
+        guard let root = repositoryRoot,
+              commitDetails[sha] == nil,
+              !commitDetailsInFlight.contains(sha) else { return }
+        commitDetailsInFlight.insert(sha)
+        Task.detached(priority: .userInitiated) {
+            let detail = try? GitRepository(url: root).commitDetail(sha: sha)
+            await MainActor.run {
+                guard self.repositoryRoot == root else { return }
+                if let detail { self.commitDetails[sha] = detail }
+                self.commitDetailsInFlight.remove(sha)
+            }
+        }
     }
 
     public func closeDiff() {

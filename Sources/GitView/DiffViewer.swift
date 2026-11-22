@@ -9,7 +9,13 @@ import GitViewGit
 struct DiffViewer: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(InspectorStore.self) private var inspector
+    @Environment(WorkingCopyStore.self) private var workingCopy
     let request: DiffRequest
+
+    private var isUntrackedFile: Bool {
+        guard case .workingTree(staged: false) = request.source else { return false }
+        return session.analysis?.workingState.untracked.contains(where: { $0.path == request.path }) ?? false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +53,14 @@ struct DiffViewer: View {
                 .help("Lines of unchanged context shown around each change")
                 Button("File history") { inspector.showFileHistory(request.path) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                if isUntrackedFile {
+                    Button("Stage file") {
+                        workingCopy.stage([request.path])
+                        inspector.closeDiff()
+                    }
+                    .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+                }
                 if let url = fileURL {
                     Button("Open file") { NSWorkspace.shared.open(url) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
@@ -94,7 +108,7 @@ struct DiffViewer: View {
                 ScrollColumn {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(diff.hunks) { hunk in
-                            hunkHeader(hunk)
+                            hunkHeader(hunk, in: diff)
                             ForEach(hunk.lines) { line in row(line) }
                         }
                         if diff.truncated {
@@ -120,7 +134,7 @@ struct DiffViewer: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func hunkHeader(_ hunk: DiffHunk) -> some View {
+    private func hunkHeader(_ hunk: DiffHunk, in diff: FileDiff) -> some View {
         HStack(spacing: Theme.Space.s) {
             Text("@@ −\(hunk.oldStart) +\(hunk.newStart) @@")
                 .font(Theme.Text.mono).foregroundStyle(Theme.accent)
@@ -129,6 +143,32 @@ struct DiffViewer: View {
                     .lineLimit(1).truncationMode(.tail)
             }
             Spacer()
+            if case .workingTree(let staged) = request.source, !isUntrackedFile {
+                if staged {
+                    Button("Unstage hunk") {
+                        workingCopy.applyHunk(hunk, diff: diff, staged: true, discard: false) {
+                            inspector.reloadDiff()
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+                } else {
+                    Button("Stage hunk") {
+                        workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: false) {
+                            inspector.reloadDiff()
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+                    Button("Discard hunk") {
+                        workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: true) {
+                            inspector.reloadDiff()
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+                }
+            }
         }
         .padding(.horizontal, Theme.Space.xl).padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)

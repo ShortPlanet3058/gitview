@@ -1,11 +1,14 @@
 import SwiftUI
 import GitViewCore
+import GitViewGit
 
 /// Sidebar · top bar + page · optional detail, drawn by hand so the look is the app's own.
 struct AppShell: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(WorkingCopyStore.self) private var workingCopy
 
     var body: some View {
+        @Bindable var workingCopy = workingCopy
         HStack(spacing: 0) {
             SidebarView()
                 .frame(width: 216)
@@ -42,6 +45,18 @@ struct AppShell: View {
         .onExitCommand { session.goBack() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             session.workingCopy.refreshWorkingState()
+        }
+        .alert(item: $workingCopy.confirmation) { confirmation in
+            if let alternativeLabel = confirmation.alternativeLabel, let alternative = confirmation.alternative {
+                return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
+                             primaryButton: .default(Text(alternativeLabel), action: alternative),
+                             secondaryButton: .destructive(Text(confirmation.confirmLabel),
+                                                           action: confirmation.perform))
+            }
+            return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
+                         primaryButton: .destructive(Text(confirmation.confirmLabel),
+                                                     action: confirmation.perform),
+                         secondaryButton: .cancel())
         }
     }
 
@@ -176,9 +191,17 @@ struct LoadingStrip: View {
 /// refresh just brought something in.
 struct FreshnessBanner: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(WorkingCopyStore.self) private var workingCopy
 
     var body: some View {
-        if let error = session.refreshError {
+        if let writeError = workingCopy.writeError,
+           session.navigation.screen != .changes || session.inspector.diffRequest != nil {
+            strip(icon: "exclamationmark.triangle.fill", tint: Theme.critical,
+                  message: "git refused that: \(writeError)") {
+                Button { workingCopy.writeError = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.inkMuted)
+            }
+        } else if let error = session.refreshError {
             strip(icon: "exclamationmark.triangle.fill", tint: Theme.warning,
                   message: "Couldn't refresh: \(error)") {
                 Button("Try Again") { session.refresh() }.buttonStyle(SecondaryButtonStyle())
@@ -390,18 +413,32 @@ struct MenuRow<Content: View>: View {
 
 struct TopBar: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(WorkingCopyStore.self) private var workingCopy
 
     var body: some View {
         HStack(spacing: Theme.Space.m) {
             if let analysis = session.analysis {
                 RepositoryPicker(analysis: analysis)
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
-                    Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
+                BranchPicker(analysis: analysis)
+                let hasRemote = analysis.info.remoteURL != nil
+                    || workingCopy.pushPlan != nil
+                    || analysis.branches.contains(where: \.isRemote)
+                if hasRemote {
+                    Button { workingCopy.fetch() } label: {
+                        Label("Fetch", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(workingCopy.writeInFlight)
+                    .help("Fetch all remotes and prune deleted branches")
+                    if analysis.workingState.behind > 0 {
+                        Button { workingCopy.pull() } label: {
+                            Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(workingCopy.writeInFlight)
+                        .help("Fast-forward pull from upstream (git pull --ff-only)")
+                    }
                 }
-                .foregroundStyle(Theme.inkSoft)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
             } else {
                 Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
             }
@@ -433,6 +470,145 @@ struct TopBar: View {
         .padding(.top, 14)
         .padding(.bottom, 12)
         .frame(height: 64)
+    }
+}
+
+struct BranchPicker: View {
+    @Environment(WorkingCopyStore.self) private var workingCopy
+    let analysis: RepositoryAnalysis
+    @State private var showingPopover = false
+    @State private var hovering = false
+    @State private var filter = ""
+    @State private var newBranchName = ""
+
+    private var state: WorkingState { analysis.workingState }
+
+    var body: some View {
+        Button { showingPopover.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
+                Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
+                    .lineLimit(1).truncationMode(.middle)
+                if state.behind > 0 || state.ahead > 0 {
+                    HStack(spacing: 4) {
+                        if state.behind > 0 {
+                            Text("↓\(state.behind)").foregroundStyle(Theme.warning)
+                        }
+                        if state.ahead > 0 {
+                            Text("↑\(state.ahead)").foregroundStyle(Theme.good)
+                        }
+                    }
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Theme.inkMuted)
+            }
+            .foregroundStyle(Theme.inkSoft)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(hovering || showingPopover ? Theme.raised : Theme.wash,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                .strokeBorder(hovering || showingPopover ? Theme.accent.opacity(0.45) : Theme.hairline))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Switch or create a branch")
+        .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+            popoverContent
+        }
+    }
+
+    private var filteredBranches: [BranchInfo] {
+        let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return analysis.branches }
+        return analysis.branches.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var popoverContent: some View {
+        let localBranches = filteredBranches.filter { !$0.isRemote }
+        let remoteBranches = filteredBranches.filter(\.isRemote)
+
+        return VStack(alignment: .leading, spacing: Theme.Space.s) {
+            HStack(spacing: Theme.Space.xs) {
+                TextField("New branch name…", text: $newBranchName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(createNewBranch)
+                Button("Create", action: createNewBranch)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .controlSize(.small)
+                    .disabled(newBranchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workingCopy.writeInFlight)
+            }
+
+            TextField("Filter branches", text: $filter)
+                .textFieldStyle(.roundedBorder)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !localBranches.isEmpty {
+                        sectionHeader("LOCAL")
+                        ForEach(localBranches) { branch in
+                            branchRow(branch)
+                        }
+                    }
+                    if !remoteBranches.isEmpty {
+                        sectionHeader("REMOTE")
+                        ForEach(remoteBranches) { branch in
+                            branchRow(branch)
+                        }
+                    }
+                    if localBranches.isEmpty && remoteBranches.isEmpty {
+                        Text("No matching branches.")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                            .padding(.vertical, Theme.Space.s)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+        }
+        .padding(Theme.Space.m)
+        .frame(width: 300)
+        .background(Theme.surface)
+    }
+
+    private func createNewBranch() {
+        let name = newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        newBranchName = ""
+        showingPopover = false
+        workingCopy.createBranch(name: name)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Theme.inkMuted)
+            .tracking(0.6)
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.top, Theme.Space.xs)
+            .padding(.bottom, 2)
+    }
+
+    private func branchRow(_ branch: BranchInfo) -> some View {
+        MenuRow {
+            guard !branch.isCurrent else { showingPopover = false; return }
+            showingPopover = false
+            workingCopy.switchBranch(branch.name, isRemote: branch.isRemote)
+        } content: {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: branch.isCurrent ? "checkmark" : "arrow.triangle.branch")
+                    .font(.system(size: 10, weight: branch.isCurrent ? .bold : .regular))
+                    .foregroundStyle(branch.isCurrent ? Theme.accent : Theme.inkMuted)
+                    .frame(width: 12)
+                Text(branch.name)
+                    .font(branch.isCurrent ? Theme.Text.bodyBold : Theme.Text.body)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                if branch.isDefault { Chip(text: "default", tint: Theme.accent) }
+                if branch.isRemote { Chip(text: "remote") }
+            }
+        }
     }
 }
 

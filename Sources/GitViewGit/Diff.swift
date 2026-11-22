@@ -23,6 +23,34 @@ public struct DiffHunk: Hashable, Sendable, Identifiable {
     /// The context git prints after the second `@@`, usually the enclosing function.
     public let section: String
     public let lines: [DiffLine]
+
+    /// Reconstructs a self-contained unified diff patch for this single hunk.
+    public func patch(oldPath: String?, newPath: String,
+                      isNewFile: Bool = false, isDeletedFile: Bool = false) -> String {
+        let oldCount = lines.count(where: { $0.kind != .addition })
+        let newCount = lines.count(where: { $0.kind != .deletion })
+        let fromHeader = isNewFile ? "/dev/null" : "a/\(oldPath ?? newPath)"
+        let toHeader = isDeletedFile ? "/dev/null" : "b/\(newPath)"
+        let oldStartValue = isNewFile ? 0 : oldStart
+        let newStartValue = isDeletedFile ? 0 : newStart
+
+        var output = "--- \(fromHeader)\n"
+        output += "+++ \(toHeader)\n"
+        output += "@@ -\(oldStartValue),\(oldCount) +\(newStartValue),\(newCount) @@\n"
+        for line in lines {
+            let prefix: String
+            switch line.kind {
+            case .context: prefix = " "
+            case .addition: prefix = "+"
+            case .deletion: prefix = "-"
+            }
+            output += "\(prefix)\(line.text)\n"
+            if line.missingTrailingNewline {
+                output += "\\ No newline at end of file\n"
+            }
+        }
+        return output
+    }
 }
 
 public struct FileDiff: Hashable, Sendable {
@@ -210,6 +238,60 @@ extension GitRepository {
         }
         arguments += ["--", path]
         let output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""
+        if output.isEmpty, case .workingTree(staged: false) = source {
+            if let untracked = untrackedDiff(in: root, path: path, maxLines: maxLines) {
+                return untracked
+            }
+        }
         return DiffParser.parse(output, path: path, maxLines: maxLines)
+    }
+
+    private func untrackedDiff(in root: URL, path: String, maxLines: Int) -> FileDiff? {
+        let listed = (try? GitProcess.capture(
+            arguments: ["ls-files", "--others", "--exclude-standard", "--", path],
+            in: root)) ?? ""
+        guard !listed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let fileURL = root.appendingPathComponent(path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
+            return nil
+        }
+
+        if data.prefix(8192).contains(0) {
+            return FileDiff(path: path, oldPath: nil, hunks: [], isBinary: true,
+                            isNew: true, isDeleted: false, truncated: false)
+        }
+
+        let text = String(decoding: data, as: UTF8.self)
+        guard !text.isEmpty else {
+            return FileDiff(path: path, oldPath: nil, hunks: [], isBinary: false,
+                            isNew: true, isDeleted: false, truncated: false)
+        }
+
+        let hasTrailingNewline = text.hasSuffix("\n")
+        var rawLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if hasTrailingNewline, rawLines.last?.isEmpty == true {
+            rawLines.removeLast()
+        }
+
+        let truncated = rawLines.count > maxLines
+        let shown = truncated ? Array(rawLines.prefix(maxLines)) : rawLines
+        let diffLines = shown.enumerated().map { index, lineText in
+            let isLastFileLine = !truncated && index == shown.count - 1
+            return DiffLine(
+                id: index + 1,
+                kind: .addition,
+                oldNumber: nil,
+                newNumber: index + 1,
+                text: lineText,
+                missingTrailingNewline: isLastFileLine && !hasTrailingNewline
+            )
+        }
+        let hunk = DiffHunk(oldStart: 0, newStart: 1, section: "", lines: diffLines)
+        return FileDiff(path: path, oldPath: nil, hunks: [hunk], isBinary: false,
+                        isNew: true, isDeleted: false, truncated: truncated)
     }
 }

@@ -61,6 +61,7 @@ public final class WorkingCopyStore {
     }
 
     private func perform(_ label: String, reloadHistory: Bool = false,
+                         onSuccess: (@MainActor () -> Void)? = nil,
                          _ work: @escaping @Sendable (GitRepository) throws -> Void) {
         guard let root = rootProvider(), !writeInFlight else { return }
         writeInFlight = true
@@ -71,8 +72,14 @@ public final class WorkingCopyStore {
             }.value
             self.writeError = failure
             self.writeInFlight = false
-            if failure == nil, reloadHistory {
-                self.onHistoryMutated()
+            if failure == nil {
+                if reloadHistory {
+                    self.onHistoryMutated()
+                } else {
+                    self.refreshWorkingState()
+                    self.refreshPushPlan()
+                }
+                onSuccess?()
             } else {
                 self.refreshWorkingState()
                 self.refreshPushPlan()
@@ -106,6 +113,66 @@ public final class WorkingCopyStore {
         guard let plan = pushPlan else { return }
         perform("push", reloadHistory: true) {
             try $0.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+        }
+    }
+
+    public func fetch() {
+        perform("fetch", reloadHistory: true) { try $0.fetch() }
+    }
+
+    public func pull() {
+        perform("pull", reloadHistory: true) { try $0.pullFastForwardOnly() }
+    }
+
+    public func switchBranch(_ name: String, isRemote: Bool = false) {
+        perform("switch branch", reloadHistory: true) {
+            try $0.checkoutBranch(name, isRemote: isRemote)
+        }
+    }
+
+    public func createBranch(name: String, startPoint: String? = nil) {
+        perform("create branch", reloadHistory: true) {
+            try $0.createBranch(name: name, startPoint: startPoint, checkout: true)
+        }
+    }
+
+    public func confirmDeleteBranch(_ branch: BranchInfo) {
+        confirmation = DestructiveConfirmation(
+            title: "Delete branch “\(branch.name)”?",
+            message: "Only already-merged local branches are deleted with git branch -d. "
+                   + "Its last commit stays at \(String(branch.sha.prefix(7))).",
+            confirmLabel: "Delete branch",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("delete branch", reloadHistory: true) {
+                    try $0.deleteMergedBranch(name: branch.name)
+                }
+            },
+            alternative: nil)
+    }
+
+    public func applyHunk(_ hunk: DiffHunk, diff: FileDiff, staged: Bool, discard: Bool = false,
+                          onComplete: @escaping @MainActor () -> Void = {}) {
+        let patch = hunk.patch(oldPath: diff.oldPath, newPath: diff.path,
+                               isNewFile: diff.isNew, isDeletedFile: diff.isDeleted)
+        let needsUnidiffZero = !hunk.lines.contains(where: { $0.kind == .context })
+        if discard {
+            confirmation = DestructiveConfirmation(
+                title: "Discard hunk in \((diff.path as NSString).lastPathComponent)?",
+                message: "The edits in hunk @@ −\(hunk.oldStart) +\(hunk.newStart) @@ will be reverted in your working copy. This cannot be undone.",
+                confirmLabel: "Discard Hunk",
+                alternativeLabel: nil,
+                perform: { [weak self] in
+                    self?.perform("discard hunk", onSuccess: onComplete) {
+                        try $0.applyPatch(patch, cached: false, reverse: true, unidiffZero: needsUnidiffZero)
+                    }
+                },
+                alternative: nil)
+        } else {
+            let reverse = staged
+            perform(staged ? "unstage hunk" : "stage hunk", onSuccess: onComplete) {
+                try $0.applyPatch(patch, cached: true, reverse: reverse, unidiffZero: needsUnidiffZero)
+            }
         }
     }
 
