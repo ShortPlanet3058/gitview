@@ -203,6 +203,44 @@ final class GitWriterTests: XCTestCase {
         XCTAssertEqual(plan.commits.map(\.subject), ["Second"])
     }
 
+    func testStashCanTargetSinglePath() throws {
+        try write("tracked.txt", "stashed edit\n")
+        try write("other.txt", "keep this edit\n")
+        try repository.stashPush(message: "single", includeUntracked: false, paths: ["tracked.txt"])
+        XCTAssertEqual(read("tracked.txt"), "original\n")
+        XCTAssertEqual(read("other.txt"), "keep this edit\n", "unrelated edits must stay in working tree")
+    }
+
+    func testPushPlanReturnsNilWithoutRemotes() throws {
+        XCTAssertNil(try repository.pushPlan())
+    }
+
+    func testPushPlanPrefersOriginAndExcludesRemoteCommitsOnNewBranch() throws {
+        let backup = root.appendingPathComponent("../backup-\(UUID().uuidString).git").standardized
+        let origin = root.appendingPathComponent("../origin-\(UUID().uuidString).git").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", backup.path], in: root)
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", origin.path], in: root)
+        defer {
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.removeItem(at: origin)
+        }
+        // Alphabetically "backup" precedes "origin", which previously fooled pushPlan.
+        try run(["remote", "add", "backup", backup.path])
+        try run(["remote", "add", "origin", origin.path])
+        try repository.push(remote: "origin", branch: "main", setUpstream: true)
+
+        try run(["checkout", "-q", "-b", "feature"])
+        try write("tracked.txt", "feature work\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.commit(subject: "Feature commit")
+
+        let plan = try XCTUnwrap(repository.pushPlan())
+        XCTAssertEqual(plan.remote, "origin")
+        XCTAssertEqual(plan.branch, "feature")
+        XCTAssertFalse(plan.hasUpstream)
+        XCTAssertEqual(plan.commits.map(\.subject), ["Feature commit"])
+    }
+
     func testFailuresCarryGitsOwnMessage() throws {
         XCTAssertThrowsError(try repository.stashApply("stash@{99}", removing: false)) { error in
             let text = "\(error)"

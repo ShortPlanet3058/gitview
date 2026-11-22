@@ -910,10 +910,11 @@ final class AnalysisModel: ObservableObject {
         var indexBySHA: [String: Int] = [:]
         for (index, commit) in analysis.commits.enumerated() { indexBySHA[commit.sha] = index }
         var result: [String: Int] = [:]
+        // Sort by position in HEAD's commit walk so branch-tagged releases never invert counts.
         let reachable = analysis.tags.compactMap { tag -> (String, Int)? in
             indexBySHA[tag.commitSHA].map { (tag.name, $0) }
         }
-        // Tags are newest first, so the *next* one in the list is the previous release.
+        .sorted { $0.1 < $1.1 }
         for (offset, entry) in reachable.enumerated() {
             let previousIndex = offset + 1 < reachable.count ? reachable[offset + 1].1 : analysis.commits.count
             result[entry.0] = max(previousIndex - entry.1, 0)
@@ -921,10 +922,12 @@ final class AnalysisModel: ObservableObject {
         return result
     }
 
-    /// Commits on HEAD that no tag contains yet.
+    /// Commits on HEAD that no reachable tag contains yet.
     var unreleasedCount: Int? {
-        guard let analysis, let latest = analysis.tags.first else { return nil }
-        guard let index = analysis.commits.firstIndex(where: { $0.sha == latest.commitSHA }) else { return nil }
+        guard let analysis else { return nil }
+        if let unreleased = analysis.info.unreleased { return unreleased.commitsSinceTag }
+        guard let latest = analysis.tags.first,
+              let index = analysis.commits.firstIndex(where: { $0.sha == latest.commitSHA }) else { return nil }
         return index
     }
 
@@ -1041,7 +1044,7 @@ final class AnalysisModel: ObservableObject {
             },
             alternative: { [weak self] in
                 self?.perform("stash") {
-                    try $0.stashPush(message: "Set aside \(file.path)", includeUntracked: false)
+                    try $0.stashPush(message: "Set aside \(file.path)", includeUntracked: false, paths: [file.path])
                 }
             })
     }
@@ -1138,7 +1141,7 @@ final class AnalysisModel: ObservableObject {
     func dismissOutsideChange() { outsideChange = nil }
 
     func refreshWorkingState() {
-        guard case .loaded(var analysis) = state else { return }
+        guard case .loaded(let analysis) = state else { return }
         let root = analysis.root
         Task.detached(priority: .utility) {
             let fresh = (try? GitRepository(url: root).workingState()) ?? .clean
@@ -1148,7 +1151,6 @@ final class AnalysisModel: ObservableObject {
                 self.state = .loaded(current)
             }
         }
-        _ = analysis
     }
 
     /// Starts the per-revision re-parse for a unit, once. Results are cached for the

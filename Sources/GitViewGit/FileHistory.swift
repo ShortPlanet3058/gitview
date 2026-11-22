@@ -55,7 +55,7 @@ enum FileHistoryParser {
                 flush()
                 let fields = line.split(separator: "\u{1F}", maxSplits: 3, omittingEmptySubsequences: false)
                     .map(String.init)
-                guard fields.count == 4, let date = ISO8601DateFormatter().date(from: fields[2]) else { continue }
+                guard fields.count == 4, let date = ISO8601.parse(fields[2]) else { continue }
                 pending = Commit(sha: fields[0], author: fields[1], date: date,
                                  subject: fields[3], fileChanges: [])
                 continue

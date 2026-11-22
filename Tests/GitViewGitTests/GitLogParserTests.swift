@@ -207,6 +207,49 @@ final class GitLogParserTests: XCTestCase {
     func testQuotedPathIsUnescaped() {
         XCTAssertEqual(GitLogParser.unquote("\"a\\\"b.swift\""), "a\"b.swift")
         XCTAssertEqual(GitLogParser.unquote("plain.swift"), "plain.swift")
+        XCTAssertEqual(GitLogParser.unquote("\"caf\\303\\251.swift\""), "café.swift")
+    }
+
+    func testQuotedDiffPathStripsPrefixAfterUnquoting() {
+        let commits = parse("""
+        @@@7777777777777777777777777777777777777777\u{1F}Dev\u{1F}2024-02-09T12:00:00Z\u{1F}Quoted path
+        diff --git "a/dir/has \\"quote\\".swift" "b/dir/has \\"quote\\".swift"
+        --- "a/dir/has \\"quote\\".swift"
+        +++ "b/dir/has \\"quote\\".swift"
+        @@ -1,1 +1,1 @@
+        -old
+        +new
+
+        """)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits[0].fileChanges.first?.path, "dir/has \"quote\".swift")
+        XCTAssertNil(commits[0].fileChanges.first?.oldPath)
+    }
+
+    func testPureRenameWithoutHunksIsKept() {
+        let commits = parse("""
+        @@@8888888888888888888888888888888888888888\u{1F}Dev\u{1F}2024-02-10T12:00:00Z\u{1F}Move cleanly
+        diff --git a/Old/File.swift b/New/File.swift
+        similarity index 100%
+        rename from Old/File.swift
+        rename to New/File.swift
+
+        """)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits[0].fileChanges.count, 1)
+        XCTAssertEqual(commits[0].fileChanges[0].path, "New/File.swift")
+        XCTAssertEqual(commits[0].fileChanges[0].oldPath, "Old/File.swift")
+        XCTAssertTrue(commits[0].fileChanges[0].hunks.isEmpty)
+    }
+
+    func testMalformedHeaderCountTracksBadCommitLines() {
+        var parser = GitLogParser()
+        var splitter = LineSplitter()
+        let bad = "@@@notasha\u{1F}Dev\u{1F}2024-01-01T00:00:00Z\u{1F}bad\n"
+        splitter.feed(Data(bad.utf8)) { parser.consume(line: $0) }
+        splitter.finish { parser.consume(line: $0) }
+        _ = parser.finish()
+        XCTAssertEqual(parser.malformedHeaderCount, 1)
     }
 }
 

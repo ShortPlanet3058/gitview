@@ -25,14 +25,8 @@ final class RepositoryWatcher {
         self.onChange = onChange
         self.debounce = debounce
 
-        // A worktree or submodule has a `.git` *file* pointing elsewhere; watching the file
-        // would miss everything. Fall back to the repository root in that case, which is
-        // noisier but correct.
-        let dotGit = root.appendingPathComponent(".git")
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory)
-        let watched = (exists && isDirectory.boolValue) ? dotGit : root
-        guard exists || FileManager.default.fileExists(atPath: root.path) else { return nil }
+        let watched = Self.watchedDirectories(for: root)
+        guard !watched.isEmpty else { return nil }
 
         var context = FSEventStreamContext(
             version: 0,
@@ -46,7 +40,7 @@ final class RepositoryWatcher {
 
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault, callback, &context,
-            [watched.path] as CFArray,
+            watched.map(\.path) as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.3,
             UInt32(kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes))
@@ -60,6 +54,39 @@ final class RepositoryWatcher {
             stream = nil
             return nil
         }
+    }
+
+    /// Resolves `.git` directories to watch, handling worktrees and submodules where `.git` is
+    /// a `gitdir:` pointer file rather than a directory.
+    static func watchedDirectories(for root: URL) -> [URL] {
+        let fm = FileManager.default
+        let dotGit = root.appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else {
+            return fm.fileExists(atPath: root.path) ? [root] : []
+        }
+        if isDirectory.boolValue { return [dotGit] }
+
+        if let text = try? String(contentsOf: dotGit, encoding: .utf8),
+           let line = text.split(separator: "\n").first(where: { $0.hasPrefix("gitdir:") }) {
+            let rawPath = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rawPath.isEmpty {
+                let gitDir = URL(fileURLWithPath: rawPath, relativeTo: root).standardizedFileURL
+                var dirs: [URL] = [gitDir]
+                let commonFile = gitDir.appendingPathComponent("commondir")
+                if let commonRaw = try? String(contentsOf: commonFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !commonRaw.isEmpty {
+                    let commonDir = URL(fileURLWithPath: commonRaw, relativeTo: gitDir).standardizedFileURL
+                    if commonDir.path != gitDir.path { dirs.append(commonDir) }
+                }
+                let existing = dirs.filter {
+                    var isDir: ObjCBool = false
+                    return fm.fileExists(atPath: $0.path, isDirectory: &isDir) && isDir.boolValue
+                }
+                if !existing.isEmpty { return existing }
+            }
+        }
+        return [root]
     }
 
     /// Collapses a burst of events into one call.

@@ -43,6 +43,17 @@ final class TagParserTests: XCTestCase {
     }
 
     func testEmptyOutput() { XCTAssertTrue(TagParser.parse("").isEmpty) }
+
+    func testParsesDescribeLongOutput() {
+        let simple = TagParser.parseDescribeLong("v1.0.0-4-g1234abcd\n")
+        XCTAssertEqual(simple, UnreleasedSummary(latestTag: "v1.0.0", commitsSinceTag: 4))
+
+        let hyphenated = TagParser.parseDescribeLong("v2.1.0-rc-1-0-gdeadbeef\n")
+        XCTAssertEqual(hyphenated, UnreleasedSummary(latestTag: "v2.1.0-rc-1", commitsSinceTag: 0))
+
+        XCTAssertNil(TagParser.parseDescribeLong(""))
+        XCTAssertNil(TagParser.parseDescribeLong("fatal: No names found"))
+    }
 }
 
 final class DiffStatParserTests: XCTestCase {
