@@ -176,6 +176,39 @@ public final class WorkingCopyStore {
         }
     }
 
+    public func applySelectedLines(_ lineIDs: Set<Int>, in hunk: DiffHunk, diff: FileDiff,
+                                   staged: Bool, discard: Bool = false,
+                                   onComplete: @escaping @MainActor () -> Void = {}) {
+        guard let built = hunk.partialPatch(
+            selectedLineIDs: lineIDs,
+            reverseSelection: staged || discard,
+            oldPath: diff.oldPath,
+            newPath: diff.path,
+            isNewFile: diff.isNew,
+            isDeletedFile: diff.isDeleted
+        ) else { return }
+        let needsUnidiffZero = !built.hasContext
+        let count = hunk.lines.count(where: { $0.kind != .context && lineIDs.contains($0.id) })
+        let noun = "\(count) line\(count == 1 ? "" : "s")"
+        if discard {
+            confirmation = DestructiveConfirmation(
+                title: "Discard \(noun) in \((diff.path as NSString).lastPathComponent)?",
+                message: "The selected edits in hunk @@ −\(hunk.oldStart) +\(hunk.newStart) @@ will be reverted in your working copy. This cannot be undone.",
+                confirmLabel: "Discard \(noun)",
+                alternativeLabel: nil,
+                perform: { [weak self] in
+                    self?.perform("discard lines", onSuccess: onComplete) {
+                        try $0.applyPatch(built.patch, cached: false, reverse: true, unidiffZero: needsUnidiffZero)
+                    }
+                },
+                alternative: nil)
+        } else {
+            perform(staged ? "unstage lines" : "stage lines", onSuccess: onComplete) {
+                try $0.applyPatch(built.patch, cached: true, reverse: staged, unidiffZero: needsUnidiffZero)
+            }
+        }
+    }
+
     public func confirmDiscard(_ file: WorkingState.FileStatus) {
         confirmation = DestructiveConfirmation(
             title: "Discard changes to \((file.path as NSString).lastPathComponent)?",

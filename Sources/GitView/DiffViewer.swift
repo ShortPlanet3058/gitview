@@ -22,11 +22,32 @@ struct DiffViewer: View {
     @State private var currentMatchIndex = 0
     @State private var spansByLineID: [Int: [HighlightSpan]] = [:]
     @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
+    @State private var selectedLineIDs: Set<Int> = []
     @FocusState private var findFieldFocused: Bool
 
     private var isUntrackedFile: Bool {
         guard case .workingTree(staged: false) = request.source else { return false }
         return session.analysis?.workingState.untracked.contains(where: { $0.path == request.path }) ?? false
+    }
+
+    private var supportsLineSelection: Bool {
+        if case .workingTree = request.source, !isUntrackedFile {
+            return true
+        }
+        return false
+    }
+
+    private func toggleLineSelection(_ line: DiffLine) {
+        guard supportsLineSelection, line.kind != .context else { return }
+        if selectedLineIDs.contains(line.id) {
+            selectedLineIDs.remove(line.id)
+        } else {
+            selectedLineIDs.insert(line.id)
+        }
+    }
+
+    private func isLineSelected(_ line: DiffLine) -> Bool {
+        supportsLineSelection && line.kind != .context && selectedLineIDs.contains(line.id)
     }
 
     private var trimmedQuery: String {
@@ -60,6 +81,7 @@ struct DiffViewer: View {
             content
         }
         .background(Theme.page)
+        .onChange(of: request) { selectedLineIDs.removeAll() }
         .task(id: inspector.loadedDiff) {
             await computeHighlightsAndInlineDiffs()
         }
@@ -251,6 +273,12 @@ struct DiffViewer: View {
 
     @ViewBuilder
     private func lineContextMenu(_ line: DiffLine) -> some View {
+        if supportsLineSelection, line.kind != .context {
+            Button(selectedLineIDs.contains(line.id) ? "Deselect Line" : "Select Line") {
+                toggleLineSelection(line)
+            }
+            Divider()
+        }
         if let url = fileURL, let lineNumber = line.newNumber ?? line.oldNumber {
             Button("Open in Editor at Line \(lineNumber)") {
                 openInEditor(url, line: lineNumber)
@@ -346,7 +374,9 @@ struct DiffViewer: View {
     }
 
     private func hunkHeader(_ hunk: DiffHunk, in diff: FileDiff) -> some View {
-        HStack(spacing: Theme.Space.s) {
+        let selectedInHunk = Set(hunk.lines.filter { $0.kind != .context && selectedLineIDs.contains($0.id) }.map(\.id))
+        let noun = "\(selectedInHunk.count) line\(selectedInHunk.count == 1 ? "" : "s")"
+        return HStack(spacing: Theme.Space.s) {
             Text("@@ −\(hunk.oldStart) +\(hunk.newStart) @@")
                 .font(Theme.Text.mono).foregroundStyle(Theme.accent)
             if !hunk.section.isEmpty {
@@ -355,9 +385,44 @@ struct DiffViewer: View {
             }
             Spacer()
             if case .workingTree(let staged) = request.source, !isUntrackedFile {
+                if !selectedInHunk.isEmpty {
+                    if staged {
+                        Button("Unstage \(noun)") {
+                            workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: true, discard: false) {
+                                selectedLineIDs.subtract(selectedInHunk)
+                                inspector.reloadDiff()
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                    } else {
+                        Button("Stage \(noun)") {
+                            workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: false, discard: false) {
+                                selectedLineIDs.subtract(selectedInHunk)
+                                inspector.reloadDiff()
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                        Button("Discard \(noun)") {
+                            workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: false, discard: true) {
+                                selectedLineIDs.subtract(selectedInHunk)
+                                inspector.reloadDiff()
+                            }
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                    }
+                    Button("Clear") {
+                        selectedLineIDs.subtract(selectedInHunk)
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+
                 if staged {
                     Button("Unstage hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: true, discard: false) {
+                            selectedLineIDs.subtract(selectedInHunk)
                             inspector.reloadDiff()
                         }
                     }
@@ -366,6 +431,7 @@ struct DiffViewer: View {
                 } else {
                     Button("Stage hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: false) {
+                            selectedLineIDs.subtract(selectedInHunk)
                             inspector.reloadDiff()
                         }
                     }
@@ -373,6 +439,7 @@ struct DiffViewer: View {
                     .disabled(workingCopy.writeInFlight)
                     Button("Discard hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: true) {
+                            selectedLineIDs.subtract(selectedInHunk)
                             inspector.reloadDiff()
                         }
                     }
@@ -399,16 +466,48 @@ struct DiffViewer: View {
         )
     }
 
+    @ViewBuilder
+    private func lineSelectionCheckbox(for line: DiffLine) -> some View {
+        if supportsLineSelection {
+            Group {
+                if line.kind != .context {
+                    Image(systemName: isLineSelected(line) ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(isLineSelected(line) ? Theme.accent : Theme.inkMuted.opacity(0.6))
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 16, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private func lineBackground(_ line: DiffLine) -> some View {
+        ZStack(alignment: .leading) {
+            background(line)
+            if isLineSelected(line) {
+                Theme.accent.opacity(0.14)
+                Rectangle().fill(Theme.accent).frame(width: 3)
+            }
+        }
+    }
+
     private func unifiedRow(_ line: DiffLine) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            Text(line.oldNumber.map(String.init) ?? "")
-                .frame(width: 46, alignment: .trailing)
-                .foregroundStyle(Theme.inkMuted)
-            Text(line.newNumber.map(String.init) ?? "")
-                .frame(width: 46, alignment: .trailing)
-                .foregroundStyle(Theme.inkMuted)
-            Text(marker(line)).frame(width: 16, alignment: .center)
-                .foregroundStyle(markerColor(line))
+            HStack(spacing: 0) {
+                lineSelectionCheckbox(for: line)
+                Text(line.oldNumber.map(String.init) ?? "")
+                    .frame(width: 46, alignment: .trailing)
+                    .foregroundStyle(Theme.inkMuted)
+                Text(line.newNumber.map(String.init) ?? "")
+                    .frame(width: 46, alignment: .trailing)
+                    .foregroundStyle(Theme.inkMuted)
+                Text(marker(line)).frame(width: 16, alignment: .center)
+                    .foregroundStyle(markerColor(line))
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggleLineSelection(line) }
             Text(renderedLineText(line))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -422,7 +521,7 @@ struct DiffViewer: View {
         .padding(.horizontal, Theme.Space.l)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(background(line))
+        .background(lineBackground(line))
         .contextMenu { lineContextMenu(line) }
     }
 
@@ -441,12 +540,17 @@ struct DiffViewer: View {
     private func sideBySideCell(line: DiffLine?, sideNumber: Int?) -> some View {
         if let line {
             HStack(alignment: .top, spacing: 0) {
-                Text(sideNumber.map(String.init) ?? "")
-                    .frame(width: 40, alignment: .trailing)
-                    .foregroundStyle(Theme.inkMuted)
-                Text(marker(line))
-                    .frame(width: 14, alignment: .center)
-                    .foregroundStyle(markerColor(line))
+                HStack(spacing: 0) {
+                    lineSelectionCheckbox(for: line)
+                    Text(sideNumber.map(String.init) ?? "")
+                        .frame(width: 40, alignment: .trailing)
+                        .foregroundStyle(Theme.inkMuted)
+                    Text(marker(line))
+                        .frame(width: 14, alignment: .center)
+                        .foregroundStyle(markerColor(line))
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { toggleLineSelection(line) }
                 Text(renderedLineText(line))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -459,7 +563,7 @@ struct DiffViewer: View {
             .padding(.horizontal, Theme.Space.s)
             .padding(.vertical, 1)
             .frame(maxHeight: .infinity, alignment: .topLeading)
-            .background(background(line))
+            .background(lineBackground(line))
             .contextMenu { lineContextMenu(line) }
         } else {
             Text(" ")

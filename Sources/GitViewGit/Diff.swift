@@ -51,6 +51,90 @@ public struct DiffHunk: Hashable, Sendable, Identifiable {
         }
         return output
     }
+
+    /// Builds a self-contained unified diff patch containing only `selectedLineIDs`.
+    /// - Parameter reverseSelection: `false` when forward-applying onto index (`stage`),
+    ///   `true` when reverse-applying from index/working-tree (`unstage` or `discard`).
+    public func partialPatch(selectedLineIDs: Set<Int>, reverseSelection: Bool,
+                             oldPath: String?, newPath: String,
+                             isNewFile: Bool = false, isDeletedFile: Bool = false) -> (patch: String, hasContext: Bool)? {
+        var oldCount = 0
+        var newCount = 0
+        var hasChanges = false
+        var hasContext = false
+        var body = ""
+
+        func appendLine(prefix: String, line: DiffLine) {
+            body += "\(prefix)\(line.text)\n"
+            if line.missingTrailingNewline {
+                body += "\\ No newline at end of file\n"
+            }
+        }
+
+        for line in lines {
+            let isSelected = selectedLineIDs.contains(line.id)
+            switch line.kind {
+            case .context:
+                appendLine(prefix: " ", line: line)
+                oldCount += 1
+                newCount += 1
+                hasContext = true
+            case .deletion:
+                if reverseSelection {
+                    if isSelected {
+                        appendLine(prefix: "-", line: line)
+                        oldCount += 1
+                        hasChanges = true
+                    }
+                } else {
+                    if isSelected {
+                        appendLine(prefix: "-", line: line)
+                        oldCount += 1
+                        hasChanges = true
+                    } else {
+                        appendLine(prefix: " ", line: line)
+                        oldCount += 1
+                        newCount += 1
+                        hasContext = true
+                    }
+                }
+            case .addition:
+                if reverseSelection {
+                    if isSelected {
+                        appendLine(prefix: "+", line: line)
+                        newCount += 1
+                        hasChanges = true
+                    } else {
+                        appendLine(prefix: " ", line: line)
+                        oldCount += 1
+                        newCount += 1
+                        hasContext = true
+                    }
+                } else {
+                    if isSelected {
+                        appendLine(prefix: "+", line: line)
+                        newCount += 1
+                        hasChanges = true
+                    }
+                }
+            }
+        }
+
+        guard hasChanges else { return nil }
+
+        let effectiveNew = isNewFile && oldCount == 0
+        let effectiveDeleted = isDeletedFile && newCount == 0
+        let fromHeader = effectiveNew ? "/dev/null" : "a/\(oldPath ?? newPath)"
+        let toHeader = effectiveDeleted ? "/dev/null" : "b/\(newPath)"
+        let oldStartValue = effectiveNew ? 0 : max(1, oldStart)
+        let newStartValue = effectiveDeleted ? 0 : max(1, newStart)
+
+        var output = "--- \(fromHeader)\n"
+        output += "+++ \(toHeader)\n"
+        output += "@@ -\(oldStartValue),\(oldCount) +\(newStartValue),\(newCount) @@\n"
+        output += body
+        return (output, hasContext)
+    }
 }
 
 public struct FileDiff: Hashable, Sendable {

@@ -327,4 +327,63 @@ final class GitWriterTests: XCTestCase {
         XCTAssertTrue(contents.contains("line 2\n"))
         XCTAssertTrue(contents.contains("line 28 EDITED\n"))
     }
+
+    func testPartialLineStageUnstageAndDiscard() throws {
+        let original = "top\nkeep\nbottom\n"
+        try write("partial.txt", original)
+        try repository.stage(paths: ["partial.txt"])
+        _ = try repository.commit(subject: "Base partial file")
+
+        try write("partial.txt", "top\nalpha\nbeta\ngamma\nkeep\nbottom\n")
+        let unstagedDiff = try repository.diff(.workingTree(staged: false), path: "partial.txt", context: 3)
+        let hunk = try XCTUnwrap(unstagedDiff.hunks.first)
+        let addedAlpha = try XCTUnwrap(hunk.lines.first { $0.kind == .addition && $0.text == "alpha" })
+
+        // Stage only "alpha" (1 of 3 added lines).
+        let stagePatch = try XCTUnwrap(hunk.partialPatch(
+            selectedLineIDs: [addedAlpha.id], reverseSelection: false,
+            oldPath: unstagedDiff.oldPath, newPath: unstagedDiff.path))
+        try repository.applyPatch(stagePatch.patch, cached: true, reverse: false, unidiffZero: !stagePatch.hasContext)
+        XCTAssertEqual(try run(["show", ":partial.txt"]), "top\nalpha\nkeep\nbottom\n")
+
+        // Stage "gamma" too, then unstage only "alpha" from the index.
+        let remainingDiff = try repository.diff(.workingTree(staged: false), path: "partial.txt", context: 3)
+        let remainingHunk = try XCTUnwrap(remainingDiff.hunks.first)
+        let remainingGamma = try XCTUnwrap(remainingHunk.lines.first { $0.kind == .addition && $0.text == "gamma" })
+        let stageGamma = try XCTUnwrap(remainingHunk.partialPatch(
+            selectedLineIDs: [remainingGamma.id], reverseSelection: false,
+            oldPath: remainingDiff.oldPath, newPath: remainingDiff.path))
+        try repository.applyPatch(stageGamma.patch, cached: true, reverse: false, unidiffZero: !stageGamma.hasContext)
+        XCTAssertEqual(try run(["show", ":partial.txt"]), "top\nalpha\ngamma\nkeep\nbottom\n")
+
+        let stagedDiff = try repository.diff(.workingTree(staged: true), path: "partial.txt", context: 3)
+        let stagedHunk = try XCTUnwrap(stagedDiff.hunks.first)
+        let stagedAlpha = try XCTUnwrap(stagedHunk.lines.first { $0.kind == .addition && $0.text == "alpha" })
+        let unstageAlpha = try XCTUnwrap(stagedHunk.partialPatch(
+            selectedLineIDs: [stagedAlpha.id], reverseSelection: true,
+            oldPath: stagedDiff.oldPath, newPath: stagedDiff.path))
+        try repository.applyPatch(unstageAlpha.patch, cached: true, reverse: true, unidiffZero: !unstageAlpha.hasContext)
+        XCTAssertEqual(try run(["show", ":partial.txt"]), "top\ngamma\nkeep\nbottom\n")
+
+        // Discard only "alpha" from the working tree; leave "beta" untouched.
+        let workDiff = try repository.diff(.workingTree(staged: false), path: "partial.txt", context: 3)
+        let workHunk = try XCTUnwrap(workDiff.hunks.first)
+        let workAlpha = try XCTUnwrap(workHunk.lines.first { $0.kind == .addition && $0.text == "alpha" })
+        let discardAlpha = try XCTUnwrap(workHunk.partialPatch(
+            selectedLineIDs: [workAlpha.id], reverseSelection: true,
+            oldPath: workDiff.oldPath, newPath: workDiff.path))
+        try repository.applyPatch(discardAlpha.patch, cached: false, reverse: true, unidiffZero: !discardAlpha.hasContext)
+        XCTAssertEqual(read("partial.txt"), "top\nbeta\ngamma\nkeep\nbottom\n")
+
+        // Stage only the addition of a replacement (leaving the deleted line staged as context until deleted too).
+        try write("partial.txt", "top\nbeta\ngamma\nreplaced\nbottom\n")
+        let replaceDiff = try repository.diff(.workingTree(staged: false), path: "partial.txt", context: 3)
+        let replaceHunk = try XCTUnwrap(replaceDiff.hunks.first)
+        let replacedAdd = try XCTUnwrap(replaceHunk.lines.first { $0.kind == .addition && $0.text == "replaced" })
+        let addOnlyPatch = try XCTUnwrap(replaceHunk.partialPatch(
+            selectedLineIDs: [replacedAdd.id], reverseSelection: false,
+            oldPath: replaceDiff.oldPath, newPath: replaceDiff.path))
+        try repository.applyPatch(addOnlyPatch.patch, cached: true, reverse: false, unidiffZero: !addOnlyPatch.hasContext)
+        XCTAssertEqual(try run(["show", ":partial.txt"]), "top\ngamma\nkeep\nreplaced\nbottom\n")
+    }
 }
