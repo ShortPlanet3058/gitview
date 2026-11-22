@@ -99,8 +99,11 @@ struct ReleasesScreen: View {
 
     private func compareCard(_ analysis: RepositoryAnalysis) -> some View {
         @Bindable var navigation = navigation
-        let refs = ["HEAD"] + analysis.branches.prefix(30).map { $0.isRemote ? "origin/\($0.name)" : $0.name }
+        var refs = ["HEAD"] + analysis.branches.prefix(30).map { $0.isRemote ? $0.checkoutTarget : $0.name }
                             + analysis.tags.prefix(100).map(\.name)
+        for extra in [navigation.compareFrom, navigation.compareTo] where !extra.isEmpty && !refs.contains(extra) {
+            refs.insert(extra, at: min(1, refs.count))
+        }
         return Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Compare",
