@@ -18,7 +18,8 @@ struct BranchesScreen: View {
             Page {
                 ScreenHeader(title: "Branches", subtitle: "Branches in this repository, newest activity first.")
                 HStack(spacing: Theme.Space.m) {
-                    SearchField(text: $query, prompt: "Filter branches").frame(maxWidth: 280)
+                    SearchField(text: $query, prompt: "Filter branches",
+                                focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 280)
                     Spacer()
                     TextField("New branch name…", text: $newBranchName)
                         .textFieldStyle(.roundedBorder)

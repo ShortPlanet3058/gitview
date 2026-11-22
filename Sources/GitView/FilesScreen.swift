@@ -39,7 +39,9 @@ struct FilesScreen: View {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     ScreenHeader(title: "Files", subtitle: "Explore the repository structure, syntax-highlighted code, and line blame.")
                     HStack {
-                        SearchField(text: $query, prompt: "Filter files").frame(maxWidth: 300)
+                        SearchField(text: $query, prompt: "Filter files",
+                                    focusTrigger: isViewingFile ? 0 : session.navigation.focusLocalFindRequest)
+                            .frame(maxWidth: 300)
                         Spacer()
                         Text("\(analysis.info.inventory.fileCount.formatted()) files · \(analysis.info.inventory.totalBytes.byteString)")
                             .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -219,7 +221,8 @@ private struct FileContentWorkspace: View {
             return activeBlame?.lines.count(where: { $0.text.localizedCaseInsensitiveContains(query) }) ?? 0
         }()
         return HStack(spacing: Theme.Space.s) {
-            SearchField(text: $codeSearchQuery, prompt: "Find in file…")
+            SearchField(text: $codeSearchQuery, prompt: "Find in file…",
+                        focusTrigger: session.navigation.focusLocalFindRequest)
                 .frame(maxWidth: 260)
             if !query.isEmpty {
                 Text("\(matchesCount) line\(matchesCount == 1 ? "" : "s")")

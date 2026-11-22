@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 
 /// `GitView --repo <path> [--screen <name>] [--mode standard|advanced] [--view list|graph]
 /// [--select <unit>] [--select-pair <name>] --screenshot out.png [--screenshot-delay 10] [--quit]`
@@ -19,9 +20,20 @@ enum DebugScreenshot {
         }
         let quit = arguments.contains("--quit")
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let deadline = Date().addingTimeInterval(max(delay, 0.5))
+            while Date() < deadline {
+                let isFailed: Bool = {
+                    if case .failed = session.state { return true }
+                    return false
+                }()
+                if isFailed || (session.readiness == .complete && session.hasRepository && !session.risk.graphLayoutInProgress) {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
             render(session: session, to: path)
-            if quit { NSApplication.shared.terminate(nil) }
+            if quit { Darwin.exit(0) }
         }
     }
 

@@ -82,6 +82,11 @@ struct DiffViewer: View {
         }
         .background(Theme.page)
         .onChange(of: request) { selectedLineIDs.removeAll() }
+        .onChange(of: session.navigation.focusLocalFindRequest) { _, newValue in
+            guard newValue > 0 else { return }
+            showingFindBar = true
+            findFieldFocused = true
+        }
         .task(id: inspector.loadedDiff) {
             await computeHighlightsAndInlineDiffs()
         }

@@ -29,7 +29,7 @@ struct GlobalSearchField: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                Text("⌘F").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.inkMuted)
+                Text("⌘⇧F").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.inkMuted)
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)

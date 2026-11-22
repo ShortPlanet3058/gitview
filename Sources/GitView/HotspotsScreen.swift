@@ -73,7 +73,8 @@ struct HotspotsScreen: View {
         @Bindable var preferences = preferences
         return VStack(alignment: .leading, spacing: Theme.Space.m) {
             HStack(spacing: Theme.Space.m) {
-                SearchField(text: $risk.searchText, prompt: "Find a function or file")
+                SearchField(text: $risk.searchText, prompt: "Find a function or file",
+                            focusTrigger: navigation.focusLocalFindRequest)
                     .frame(maxWidth: 320)
                 SegmentPicker(options: RiskStore.KindFilter.allCases.map { ($0, $0.rawValue) },
                               selection: $risk.kindFilter)
@@ -131,10 +132,16 @@ struct LevelChip: View {
 struct SearchField: View {
     @Binding var text: String
     let prompt: String
+    var focusTrigger: Int = 0
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
-            TextField(prompt, text: $text).textFieldStyle(.plain).font(Theme.Text.body)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .font(Theme.Text.body)
+                .focused($isFocused)
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
@@ -143,7 +150,11 @@ struct SearchField: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            .strokeBorder(isFocused ? Theme.accent.opacity(0.6) : Theme.hairline))
+        .onChange(of: focusTrigger) { _, newValue in
+            if newValue > 0 { isFocused = true }
+        }
     }
 }
 

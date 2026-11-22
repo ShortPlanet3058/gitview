@@ -69,6 +69,11 @@ public final class WorkspaceSession {
         }
     }
 
+    public static func makeForLaunchArgumentsIfNeeded(preferences: AppPreferences = .shared) -> WorkspaceSession? {
+        guard !LaunchController.consumedLaunchArguments else { return nil }
+        return WorkspaceSession(preferences: preferences, consumeLaunchArgumentsIfAvailable: true)
+    }
+
     private func wireCallbacks() {
         workingCopy.rootProvider = { [weak self] in
             self?.analysis?.root
@@ -170,13 +175,15 @@ public final class WorkspaceSession {
     }
 
     var canGoBack: Bool {
-        inspector.diffRequest != nil
+        navigation.isCommandPalettePresented
+            || inspector.diffRequest != nil
             || inspector.fileHistoryPath != nil
             || search.isSearching
             || navigation.hasDetailSelection
     }
 
     func show(_ screen: NavigationStore.Screen) {
+        navigation.isCommandPalettePresented = false
         inspector.diffRequest = nil
         inspector.fileHistoryPath = nil
         if search.isSearching { search.clear() }
@@ -186,6 +193,7 @@ public final class WorkspaceSession {
 
     @discardableResult
     func goBack() -> Bool {
+        if navigation.isCommandPalettePresented { navigation.isCommandPalettePresented = false; return true }
         if inspector.diffRequest != nil { inspector.diffRequest = nil; return true }
         if inspector.fileHistoryPath != nil { inspector.fileHistoryPath = nil; return true }
         if search.isSearching { search.clear(); return true }

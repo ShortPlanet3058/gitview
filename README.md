@@ -67,17 +67,17 @@ a few minutes.
 | | |
 |---|---|
 | **Overview** | The whole repository on one screen. Every tile opens the tab behind it. |
-| **Changes** | Your working copy: preview untracked files, stage/unstage/discard by file or hunk, commit, stash, push. |
-| **Commits** | The history, grouped by day, filterable by author and message, with full commit body, parents, and per-file stats. |
-| **Branches** | Switch, track remote branches, create new branches, delete merged branches, and inspect ahead/behind/stale counts. |
-| **Releases** | Tags, what is unreleased, and a syntax-highlighted diff between any two points. |
+| **Changes** | Your working copy: inspect and resolve merge conflicts, safely abort interrupted operations, stage/unstage/discard by file, hunk, or individual diff line, commit, stash, push. |
+| **Commits** | Swimlane branch topology, inline branch/tag badges, filterable history, commit-to-commit compare, full commit body, and parents. |
+| **Branches** | Switch, track remote branches across remotes, create new branches, delete merged branches, and switch linked worktrees. |
+| **Releases** | Create, push, and delete tags, track unreleased commits, and compare any two refs or commits with inline word diffs. |
 | **Contributors** | Who works here, on what, and when they were last seen. |
-| **Files** | The tree with size, language breakdown, per-file history, blame, and direct editor line jumping. |
+| **Files** | The tree with size, language breakdown, syntax-highlighted code viewer, interactive historical line blame gutter, and direct editor line jumping. |
 | **Activity** | Commits over time, and the files that change most. |
 | **Hotspots** | Functions ranked by risk, with syntax-highlighted source excerpts and reasoning shown. |
-| **Change together** | Functions that keep being edited in the same commits. |
+| **Change together** | Interactive coupling graph with directory cluster hulls, draggable/pinnable nodes, and shared-commit edge inspection. |
 
-Everything has two levels: **Standard** explains itself in plain language, **Advanced**
+Use **Command Palette (`⌘K`)** to jump across screens, files, branches, commits, hotspots, or repository actions; press **`⌘F`** for contextual local find inside the active screen or diff and **`⌘⇧F`** for repository-wide search. Everything has two levels: **Standard** explains itself in plain language, **Advanced**
 (⌘⇧D) adds every metric, the model parameters and a Statistics tab showing exactly how the
 analysis was produced — including where it is imprecise. Open Settings (`⌘,`) to configure
 your preferred external editor (VS Code, Cursor, Zed, Sublime Text, Xcode), terminal app,
