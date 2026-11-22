@@ -63,8 +63,13 @@ public enum SyntaxHighlighter {
         var lineSpans = Array(repeating: [HighlightSpan](), count: lineBounds.count)
         let nsSource = source as NSString
 
+        let coveredIntervals = collectQuerySpans(
+            root: root, tree: tree, support: support, registry: registry,
+            lineBounds: lineBounds, into: &lineSpans)
+
         collectSpans(root: root, support: support, source: nsSource,
-                     lineBounds: lineBounds, into: &lineSpans)
+                     lineBounds: lineBounds, coveredIntervals: coveredIntervals,
+                     into: &lineSpans)
 
         for index in lineSpans.indices where lineSpans[index].count > 1 {
             lineSpans[index].sort { $0.range.lowerBound < $1.range.lowerBound }
@@ -133,28 +138,101 @@ public enum SyntaxHighlighter {
         "property_identifier", "field_identifier", "property_name",
     ]
 
+    private static func collectQuerySpans(
+        root: Node, tree: MutableTree, support: LanguageSupport, registry: LanguageRegistry,
+        lineBounds: [(start: Int, end: Int)], into lineSpans: inout [[HighlightSpan]]
+    ) -> [(start: Int, end: Int)] {
+        guard let query = try? registry.compiledHighlightQuery(support) else { return [] }
+        var capturedNodeIDs: Set<UInt> = []
+        var rawIntervals: [(start: Int, end: Int)] = []
+
+        let cursor = query.execute(node: root, in: tree)
+        while let match = cursor.next() {
+            for capture in match.captures {
+                guard let rootCapture = capture.nameComponents.first,
+                      let kind = tokenKind(forCaptureRoot: rootCapture) else { continue }
+                let node = capture.node
+                guard capturedNodeIDs.insert(node.id).inserted else { continue }
+                let range = node.range
+                guard range.location != NSNotFound, range.length > 0 else { continue }
+                emitSpan(range: range, kind: kind, lineBounds: lineBounds, into: &lineSpans)
+                rawIntervals.append((range.location, range.location + range.length))
+            }
+        }
+
+        guard !rawIntervals.isEmpty else { return [] }
+        rawIntervals.sort { lhs, rhs in
+            lhs.start == rhs.start ? lhs.end < rhs.end : lhs.start < rhs.start
+        }
+        var merged: [(start: Int, end: Int)] = []
+        merged.reserveCapacity(rawIntervals.count)
+        for interval in rawIntervals {
+            if let last = merged.last, interval.start <= last.end {
+                if interval.end > last.end {
+                    merged[merged.count - 1].end = interval.end
+                }
+            } else {
+                merged.append(interval)
+            }
+        }
+        return merged
+    }
+
+    private static func tokenKind(forCaptureRoot root: String) -> SyntaxTokenKind? {
+        switch root {
+        case "keyword": .keyword
+        case "type": .type
+        case "function": .function
+        case "string": .string
+        case "comment": .comment
+        case "number": .number
+        case "property": .property
+        default: nil
+        }
+    }
+
+    private static func isRangeCovered(_ range: NSRange,
+                                       in intervals: [(start: Int, end: Int)],
+                                       cursor: inout Int) -> Bool {
+        guard range.location != NSNotFound, range.length > 0, !intervals.isEmpty else { return false }
+        let start = range.location
+        let end = start + range.length
+        while cursor < intervals.count && intervals[cursor].end <= start {
+            cursor += 1
+        }
+        return cursor < intervals.count && intervals[cursor].start < end
+    }
+
     private static func collectSpans(root: Node, support: LanguageSupport, source: NSString,
-                                     lineBounds: [(start: Int, end: Int)], into lineSpans: inout [[HighlightSpan]]) {
+                                     lineBounds: [(start: Int, end: Int)],
+                                     coveredIntervals: [(start: Int, end: Int)],
+                                     into lineSpans: inout [[HighlightSpan]]) {
         var stack: [WalkFrame] = [WalkFrame(node: root, parentType: "", inheritedKind: nil, overrideKind: nil)]
         stack.reserveCapacity(128)
+        var queryCursor = 0
 
         while let frame = stack.popLast() {
             let node = frame.node
             let type = node.nodeType ?? ""
 
             if isCommentNode(type) {
-                emitSpan(range: node.range, kind: .comment, lineBounds: lineBounds, into: &lineSpans)
+                if !isRangeCovered(node.range, in: coveredIntervals, cursor: &queryCursor) {
+                    emitSpan(range: node.range, kind: .comment, lineBounds: lineBounds, into: &lineSpans)
+                }
                 continue
             }
 
             if isPureRegexOrStringLeaf(type, node: node) {
-                emitSpan(range: node.range, kind: .string, lineBounds: lineBounds, into: &lineSpans)
+                if !isRangeCovered(node.range, in: coveredIntervals, cursor: &queryCursor) {
+                    emitSpan(range: node.range, kind: .string, lineBounds: lineBounds, into: &lineSpans)
+                }
                 continue
             }
 
             let count = node.childCount
             if count == 0 {
-                if let kind = classifyLeaf(node: node, type: type, parentType: frame.parentType,
+                if !isRangeCovered(node.range, in: coveredIntervals, cursor: &queryCursor),
+                   let kind = classifyLeaf(node: node, type: type, parentType: frame.parentType,
                                            inheritedKind: frame.inheritedKind, overrideKind: frame.overrideKind,
                                            support: support, source: source) {
                     emitSpan(range: node.range, kind: kind, lineBounds: lineBounds, into: &lineSpans)

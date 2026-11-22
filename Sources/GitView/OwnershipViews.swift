@@ -71,7 +71,7 @@ struct OwnershipSection: View {
     @ViewBuilder
     private func blameSection(_ path: String) -> some View {
         HairlineDivider()
-        if let blame = inspector.blame[path] {
+        if let blame = inspector.blame(for: path) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Who wrote the \(blame.totalLines.formatted()) lines that are there now")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -88,7 +88,7 @@ struct OwnershipSection: View {
                     }
                 }
             }
-        } else if inspector.blameInFlight.contains(path) {
+        } else if inspector.isBlameInFlight(for: path) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("Reading blame…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)

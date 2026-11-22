@@ -138,4 +138,64 @@ final class SyntaxHighlighterTests: XCTestCase {
         XCTAssertTrue(map[2]?.contains(where: { $0.kind == .number }) ?? false)
         XCTAssertTrue(map[3]?.contains(where: { $0.kind == .comment }) ?? false)
     }
+
+    func testQueryHighlightingAcrossCStyleCSSPythonAndRust() {
+        // C: #include and function_declarator
+        let cSource = """
+        #include <stdio.h>
+        static int add_values(int a, int b) {
+            return a + b;
+        }
+        """
+        let cLines = cSource.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let cSpans = SyntaxHighlighter.highlightLines(source: cSource, filePath: "math.c")
+        XCTAssertTrue(cSpans[0].contains { $0.kind == .keyword && slice(cLines[0], range: $0.range) == "#include" }, "\(cSpans[0])")
+        XCTAssertTrue(cSpans[1].contains { $0.kind == .function && slice(cLines[1], range: $0.range) == "add_values" }, "\(cSpans[1])")
+
+        // CSS: .btn class selector, color property, 14px numeric value
+        let cssSource = """
+        .btn {
+            color: red;
+            font-size: 14px;
+        }
+        """
+        let cssLines = cssSource.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let cssSpans = SyntaxHighlighter.highlightLines(source: cssSource, filePath: "styles.css")
+        XCTAssertTrue(cssSpans[0].contains {
+            let token = slice(cssLines[0], range: $0.range)
+            return $0.kind == .type && (token == ".btn" || token == "btn")
+        }, "\(cssSpans[0])")
+        XCTAssertTrue(cssSpans[1].contains { $0.kind == .property && slice(cssLines[1], range: $0.range) == "color" }, "\(cssSpans[1])")
+        XCTAssertTrue(cssSpans[2].contains {
+            let token = slice(cssLines[2], range: $0.range)
+            return $0.kind == .number && (token == "14px" || token == "14")
+        }, "\(cssSpans[2])")
+
+        // Python: @decorator
+        let pySource = """
+        @staticmethod
+        def build():
+            return 1
+        """
+        let pyLines = pySource.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let pySpans = SyntaxHighlighter.highlightLines(source: pySource, filePath: "builder.py")
+        XCTAssertTrue(pySpans[0].contains {
+            let token = slice(pyLines[0], range: $0.range)
+            return token?.contains("staticmethod") == true
+        }, "\(pySpans[0])")
+
+        // Rust: macro_invocation!
+        let rsSource = """
+        fn main() {
+            println!("hello");
+        }
+        """
+        let rsLines = rsSource.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let rsSpans = SyntaxHighlighter.highlightLines(source: rsSource, filePath: "main.rs")
+        XCTAssertTrue(rsSpans[1].contains {
+            let token = slice(rsLines[1], range: $0.range)
+            return $0.kind == .function && (token == "println" || token == "println!")
+        }, "\(rsSpans[1])")
+        XCTAssertTrue(rsSpans[1].contains { $0.kind == .string }, "\(rsSpans[1])")
+    }
 }

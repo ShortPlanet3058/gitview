@@ -116,7 +116,7 @@ enum Theme {
             spans: [HighlightSpan],
             baseForeground: Color,
             foregroundOpacity: Double = 1.0,
-            emphasisUTF16Range: Range<Int>? = nil,
+            emphasisUTF16Ranges: [Range<Int>] = [],
             emphasisBackground: Color? = nil,
             searchQuery: String = ""
         ) -> AttributedString {
@@ -135,9 +135,12 @@ enum Theme {
                 }
             }
 
-            if let emphasisUTF16Range, let emphasisBackground,
-               let attrRange = attributedRange(forUTF16: emphasisUTF16Range, in: text, attributed: attributed) {
-                attributed[attrRange].backgroundColor = emphasisBackground
+            if let emphasisBackground {
+                for emphasisUTF16Range in emphasisUTF16Ranges {
+                    if let attrRange = attributedRange(forUTF16: emphasisUTF16Range, in: text, attributed: attributed) {
+                        attributed[attrRange].backgroundColor = emphasisBackground
+                    }
+                }
             }
 
             let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespaces)

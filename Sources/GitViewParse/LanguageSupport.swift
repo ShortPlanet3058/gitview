@@ -20,6 +20,8 @@ public struct LanguageSupport: Sendable {
 
     /// Query capturing `@unit.function`, `@unit.method`, `@unit.type` and optional `@name`.
     public let unitQuery: String
+    /// Optional query capturing `@keyword`, `@type`, `@function`, `@string`, `@comment`, `@number`, `@property`.
+    public let highlightQuery: String
 
     /// Nodes that are unconditionally a decision point.
     public let branching: Set<String>
@@ -49,6 +51,7 @@ public struct LanguageSupport: Sendable {
         id: String, displayName: String, extensions: Set<String>,
         makeLanguage: @escaping @Sendable () -> Language,
         unitQuery: String,
+        highlightQuery: String = "",
         branching: Set<String> = [],
         logicalNodes: Set<String> = [],
         logicalOperators: Set<String> = ["&&", "||", "??"],
@@ -63,6 +66,7 @@ public struct LanguageSupport: Sendable {
     ) {
         self.id = id; self.displayName = displayName; self.extensions = extensions
         self.makeLanguage = makeLanguage; self.unitQuery = unitQuery
+        self.highlightQuery = highlightQuery
         self.branching = branching; self.logicalNodes = logicalNodes
         self.logicalOperators = logicalOperators
         self.caseNodes = caseNodes; self.defaultCaseMarkers = defaultCaseMarkers
@@ -80,6 +84,7 @@ public final class LanguageRegistry: @unchecked Sendable {
     private let byExtension: [String: LanguageSupport]
     public let languages: [LanguageSupport]
     private var queries: [String: Query] = [:]
+    private var highlightQueries: [String: Query] = [:]
     private var tsLanguages: [String: Language] = [:]
     private let lock = NSLock()
 
@@ -122,5 +127,19 @@ public final class LanguageRegistry: @unchecked Sendable {
         tsLanguages[support.id] = language
         queries[support.id] = query
         return (language, query)
+    }
+
+    /// Compiles and caches the syntax-highlighting query for `support`, or returns `nil` if unset.
+    public func compiledHighlightQuery(_ support: LanguageSupport) throws -> Query? {
+        guard !support.highlightQuery.isEmpty else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        if let existing = highlightQueries[support.id] {
+            return existing
+        }
+        let language = tsLanguages[support.id] ?? support.makeLanguage()
+        tsLanguages[support.id] = language
+        let query = try Query(language: language, data: Data(support.highlightQuery.utf8))
+        highlightQueries[support.id] = query
+        return query
     }
 }

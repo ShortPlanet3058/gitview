@@ -107,17 +107,30 @@ public final class InspectorStore {
         diffRequest = nil
     }
 
-    public func loadBlame(for path: String) {
+    public static func blameKey(path: String, revision: String? = nil) -> String {
+        "\(revision ?? "WORKTREE"):\(path)"
+    }
+
+    public func blame(for path: String, revision: String? = nil) -> BlameOwnership? {
+        blame[Self.blameKey(path: path, revision: revision)]
+    }
+
+    public func isBlameInFlight(for path: String, revision: String? = nil) -> Bool {
+        blameInFlight.contains(Self.blameKey(path: path, revision: revision))
+    }
+
+    public func loadBlame(for path: String, revision: String? = nil) {
+        let key = Self.blameKey(path: path, revision: revision)
         guard let root = repositoryRoot,
-              blame[path] == nil,
-              !blameInFlight.contains(path) else { return }
-        blameInFlight.insert(path)
+              blame[key] == nil,
+              !blameInFlight.contains(key) else { return }
+        blameInFlight.insert(key)
         Task.detached(priority: .userInitiated) {
-            let result = try? GitRepository(url: root).blame(path: path)
+            let result = try? GitRepository(url: root).blame(path: path, revision: revision)
             await MainActor.run {
                 guard self.repositoryRoot == root else { return }
-                if let result { self.blame[path] = result }
-                self.blameInFlight.remove(path)
+                if let result { self.blame[key] = result }
+                self.blameInFlight.remove(key)
             }
         }
     }
