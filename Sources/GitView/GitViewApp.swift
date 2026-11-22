@@ -2,90 +2,129 @@ import SwiftUI
 import AppKit
 import GitViewCore
 
-@main
-struct GitViewApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = AnalysisModel()
+private struct FocusedWorkspaceSessionKey: FocusedValueKey {
+    typealias Value = WorkspaceSession
+}
 
-    var body: some Scene {
-        WindowGroup("GitView") {
-            AppShell()
-                .environmentObject(model)
-                .frame(minWidth: 1100, minHeight: 640)
-                .preferredColorScheme(nil)
+public extension FocusedValues {
+    var workspaceSession: WorkspaceSession? {
+        get { self[FocusedWorkspaceSessionKey.self] }
+        set { self[FocusedWorkspaceSessionKey.self] = newValue }
+    }
+}
+
+public extension View {
+    func withWorkspaceEnvironment(_ session: WorkspaceSession) -> some View {
+        self
+            .environment(session)
+            .environment(session.preferences)
+            .environment(session.navigation)
+            .environment(session.risk)
+            .environment(session.workingCopy)
+            .environment(session.search)
+            .environment(session.inspector)
+    }
+}
+
+public struct WorkspaceWindowView: View {
+    @State private var session: WorkspaceSession
+
+    public init(preferences: AppPreferences) {
+        _session = State(initialValue: WorkspaceSession(
+            preferences: preferences,
+            consumeLaunchArgumentsIfAvailable: true
+        ))
+    }
+
+    public var body: some View {
+        AppShell()
+            .withWorkspaceEnvironment(session)
+            .focusedSceneValue(\.workspaceSession, session)
+    }
+}
+
+public struct GitViewCommands: Commands {
+    private let session: WorkspaceSession?
+    @Bindable private var preferences: AppPreferences
+
+    public init(session: WorkspaceSession?, preferences: AppPreferences) {
+        self.session = session
+        self.preferences = preferences
+    }
+
+    public var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("Open Repository…") {
+                if let session { chooseRepository(into: session) }
+            }
+            .keyboardShortcut("o")
+            .disabled(session == nil)
+
+            Menu("Open Recent") {
+                ForEach(RecentRepositories.all(), id: \.path) { url in
+                    Button(url.lastPathComponent) { session?.open(url: url) }
+                }
+                if !RecentRepositories.all().isEmpty {
+                    Divider()
+                    Button("Clear Menu") { RecentRepositories.clear() }
+                }
+            }
+            .disabled(session == nil || RecentRepositories.all().isEmpty)
         }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1380, height: 820)
-        .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("Open Repository…") { chooseRepository(into: model) }
-                    .keyboardShortcut("o")
-                // Built fresh each time the menu opens, so a repository deleted since
-                // launch is not offered.
-                Menu("Open Recent") {
-                    ForEach(RecentRepositories.all(), id: \.path) { url in
-                        Button(url.lastPathComponent) { model.open(url: url) }
-                    }
-                    if !RecentRepositories.all().isEmpty {
-                        Divider()
-                        Button("Clear Menu") { RecentRepositories.clear() }
-                    }
-                }
-                .disabled(RecentRepositories.all().isEmpty)
+
+        CommandGroup(after: .toolbar) {
+            Button("Refresh") { session?.refresh() }
+                .keyboardShortcut("r")
+                .disabled(!(session?.hasRepository ?? false) || (session?.isRefreshing ?? false))
+
+            Button("Back") { session?.goBack() }
+                .keyboardShortcut("[")
+                .disabled(!(session?.canGoBack ?? false))
+
+            Divider()
+
+            let screens = session?.visibleScreens ?? NavigationStore.repositoryScreens
+            ForEach(Array(screens.prefix(9).enumerated()), id: \.element) { index, screen in
+                Button(screen.title) { session?.show(screen) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                    .disabled(!(session?.hasRepository ?? false))
             }
-            CommandGroup(after: .toolbar) {
-                Button("Refresh") { model.refresh() }
-                    .keyboardShortcut("r")
-                    .disabled(!model.hasRepository || model.isRefreshing)
-                // Escape does this too, from the view itself, so it is not listed twice.
-                Button("Back") { model.goBack() }
-                    .keyboardShortcut("[")
-                    .disabled(!model.canGoBack)
-                Divider()
-                // Numbered from what the sidebar shows, so ⌘4 is always the fourth item
-                // on screen. Past nine there is no obvious key, and the sidebar is right
-                // there, so the rest go unshortcut rather than onto arbitrary keys.
-                ForEach(Array(model.visibleScreens.prefix(9).enumerated()), id: \.element) { index, screen in
-                    Button(screen.title) { model.show(screen) }
-                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
-                        .disabled(!model.hasRepository)
-                }
-                Divider()
-                Toggle("Advanced Mode", isOn: $model.advanced)
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
-                Button("Settings…") { model.showSettings = true }
-                    .keyboardShortcut(",")
-                    .disabled(!model.hasRepository)
-            }
-            CommandGroup(after: .textEditing) {
-                Button("Find…") { model.focusSearchRequest += 1 }
-                    .keyboardShortcut("f")
-                    .disabled(!model.hasRepository)
-                Button("Clear Search") { model.clearSearch() }
-                    .disabled(!model.isSearching)
-            }
+
+            Divider()
+
+            Toggle("Advanced Mode", isOn: $preferences.advanced)
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+        }
+
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { session?.navigation.focusSearchRequest += 1 }
+                .keyboardShortcut("f")
+                .disabled(!(session?.hasRepository ?? false))
+
+            Button("Clear Search") { session?.search.clear() }
+                .disabled(!(session?.search.isSearching ?? false))
         }
     }
 }
 
 /// Without this the process launches as an accessory when run straight from SwiftPM
-/// (`swift run GitView`), which leaves the window behind other apps and with no menu bar.
-/// A packaged .app gets this from its Info.plist instead, but the source of truth should
-/// not depend on how the binary was launched.
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Only the bare SwiftPM binary needs this; a bundle is already a regular app, and
-        // forcing activation there would yank focus from whatever the user is doing.
+/// (`swift run GitView`), leaving the window behind other apps without a menu bar.
+public final class GitViewAppDelegate: NSObject, NSApplicationDelegate {
+    public override init() {
+        super.init()
+    }
+
+    public func applicationDidFinishLaunching(_ notification: Notification) {
         guard Bundle.main.bundleIdentifier == nil else { return }
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
 @MainActor
-func chooseRepository(into model: AnalysisModel) {
+public func chooseRepository(into session: WorkspaceSession) {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
@@ -93,6 +132,6 @@ func chooseRepository(into model: AnalysisModel) {
     panel.prompt = "Analyse"
     panel.message = "Choose a git repository to analyse"
     if panel.runModal() == .OK, let url = panel.url {
-        model.open(url: url)
+        session.open(url: url)
     }
 }

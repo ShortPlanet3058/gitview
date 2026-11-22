@@ -6,14 +6,15 @@ import GitViewGit
 /// Releases and comparison, together — "what is in this version" and "what changed between
 /// these two points" are the same question asked with different refs.
 struct ReleasesScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(NavigationStore.self) private var navigation
     @State private var query = ""
     @State private var limit = 60
     @State private var copied = false
 
     var body: some View {
-        if let analysis = model.analysis {
-            let distances = model.commitsBetweenTags()
+        if let analysis = session.analysis {
+            let distances = session.commitsBetweenTags()
             let tags = analysis.tags.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
             Page {
                 ScreenHeader(title: "Releases",
@@ -29,16 +30,16 @@ struct ReleasesScreen: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                } else if let unreleased = model.unreleasedCount,
+                } else if let unreleased = session.unreleasedCount,
                           let latest = analysis.info.unreleased.flatMap({ info in
                               analysis.tags.first(where: { $0.name == info.latestTag })
                           }) ?? analysis.tags.first {
-                    unreleasedCard(count: unreleased, since: latest)
+                    unreleasedCard(count: unreleased, since: latest, root: analysis.root)
                 }
 
                 compareCard(analysis)
 
-                if let comparison = model.comparison {
+                if let comparison = navigation.comparison {
                     comparisonResult(comparison)
                 }
 
@@ -52,7 +53,7 @@ struct ReleasesScreen: View {
                         .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
                         HairlineDivider()
                         ForEach(tags.prefix(limit)) { tag in
-                            tagRow(tag, commits: distances[tag.name], allTags: analysis.tags)
+                            tagRow(tag, commits: distances[tag.name], allTags: analysis.tags, root: analysis.root)
                             if tag.id != tags.prefix(limit).last?.id { HairlineDivider() }
                         }
                         if tags.count > limit {
@@ -65,7 +66,7 @@ struct ReleasesScreen: View {
         }
     }
 
-    private func unreleasedCard(count: Int, since latest: TagInfo) -> some View {
+    private func unreleasedCard(count: Int, since latest: TagInfo, root: URL) -> some View {
         Card {
             HStack(spacing: Theme.Space.m) {
                 Image(systemName: count == 0 ? "checkmark.circle.fill" : "shippingbox.fill")
@@ -86,9 +87,9 @@ struct ReleasesScreen: View {
                 Spacer()
                 if count > 0 {
                     Button("What's unreleased") {
-                        model.compareFrom = latest.name
-                        model.compareTo = "HEAD"
-                        model.runComparison()
+                        navigation.compareFrom = latest.name
+                        navigation.compareTo = "HEAD"
+                        navigation.runComparison(in: root)
                     }
                     .buttonStyle(PrimaryButtonStyle())
                 }
@@ -97,6 +98,7 @@ struct ReleasesScreen: View {
     }
 
     private func compareCard(_ analysis: RepositoryAnalysis) -> some View {
+        @Bindable var navigation = navigation
         let refs = ["HEAD"] + analysis.branches.prefix(30).map { $0.isRemote ? "origin/\($0.name)" : $0.name }
                             + analysis.tags.prefix(100).map(\.name)
         return Card {
@@ -105,21 +107,21 @@ struct ReleasesScreen: View {
                            info: "Shows what is in the second reference but not the first — the same thing "
                                + "`git log from..to` lists. Works with any mixture of tags, branches and HEAD.")
                 HStack(spacing: Theme.Space.s) {
-                    Picker("", selection: $model.compareFrom) {
+                    Picker("", selection: $navigation.compareFrom) {
                         Text("Choose…").tag("")
                         ForEach(refs, id: \.self) { Text($0).tag($0) }
                     }
                     .labelsHidden().frame(maxWidth: .infinity)
                     Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
-                    Picker("", selection: $model.compareTo) {
+                    Picker("", selection: $navigation.compareTo) {
                         ForEach(refs, id: \.self) { Text($0).tag($0) }
                     }
                     .labelsHidden().frame(maxWidth: .infinity)
-                    Button("Compare") { model.runComparison() }
+                    Button("Compare") { navigation.runComparison(in: analysis.root) }
                         .buttonStyle(PrimaryButtonStyle())
-                        .disabled(model.compareFrom.isEmpty || model.comparisonInFlight)
+                        .disabled(navigation.compareFrom.isEmpty || navigation.comparisonInFlight)
                 }
-                if model.comparisonInFlight {
+                if navigation.comparisonInFlight {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Reading the range…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -169,7 +171,7 @@ struct ReleasesScreen: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(section.title).font(Theme.Text.bodyBold).foregroundStyle(Theme.accent)
                                     ForEach(section.entries.prefix(5)) { entry in
-                                        Button { model.selectedCommitSHA = entry.sha } label: {
+                                        Button { navigation.selectedCommitSHA = entry.sha } label: {
                                             Text("• \(entry.subject)")
                                                 .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
                                                 .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
@@ -190,7 +192,7 @@ struct ReleasesScreen: View {
                             Text("Most changed files").font(Theme.Text.heading).foregroundStyle(Theme.ink)
                             ForEach(comparison.deltas.prefix(8)) { delta in
                                 Button {
-                                    model.showDiff(.range(from: comparison.from, to: comparison.to),
+                                    session.inspector.showDiff(.range(from: comparison.from, to: comparison.to),
                                                    path: delta.path,
                                                    title: "\(comparison.from) → \(comparison.to)")
                                 } label: {
@@ -221,7 +223,7 @@ struct ReleasesScreen: View {
         }
     }
 
-    private func tagRow(_ tag: TagInfo, commits: Int?, allTags: [TagInfo]) -> some View {
+    private func tagRow(_ tag: TagInfo, commits: Int?, allTags: [TagInfo], root: URL) -> some View {
         HStack(spacing: Theme.Space.m) {
             Image(systemName: "tag.fill").font(.system(size: 11)).foregroundStyle(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {
@@ -244,12 +246,12 @@ struct ReleasesScreen: View {
             Button("What's in it") {
                 // The previous release is the next tag in a newest-first list.
                 if let index = allTags.firstIndex(where: { $0.name == tag.name }), index + 1 < allTags.count {
-                    model.compareFrom = allTags[index + 1].name
+                    navigation.compareFrom = allTags[index + 1].name
                 } else {
-                    model.compareFrom = ""
+                    navigation.compareFrom = ""
                 }
-                model.compareTo = tag.name
-                if !model.compareFrom.isEmpty { model.runComparison() }
+                navigation.compareTo = tag.name
+                if !navigation.compareFrom.isEmpty { navigation.runComparison(in: root) }
             }
             .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
         }

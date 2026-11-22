@@ -5,22 +5,24 @@ import GitViewGit
 /// The staging area: what has changed, what is ready to commit, and the few operations
 /// that change the repository.
 struct ChangesScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(WorkingCopyStore.self) private var workingCopy
 
-    private var state: WorkingState { model.analysis?.workingState ?? .clean }
+    private var state: WorkingState { session.analysis?.workingState ?? .clean }
 
     var body: some View {
+        @Bindable var workingCopy = workingCopy
         Page {
             HStack(alignment: .top) {
                 ScreenHeader(title: "Changes", subtitle: subtitle)
                 Spacer()
-                Button { model.refreshWorkingState(); model.refreshPushPlan() } label: {
+                Button { workingCopy.refreshWorkingState(); workingCopy.refreshPushPlan() } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
 
-            if let error = model.writeError { errorCard(error) }
+            if let error = workingCopy.writeError { errorCard(error) }
             if let operation = state.operation { operationCard(operation) }
 
             if state.isClean && !state.hasUnpushedCommits && state.stashes.isEmpty {
@@ -29,7 +31,7 @@ struct ChangesScreen: View {
                 if !state.staged.isEmpty {
                     fileSection("Staged", state.staged, tint: Theme.good, staged: true)
                 }
-                if !state.staged.isEmpty || !model.commitSubject.isEmpty { commitCard }
+                if !state.staged.isEmpty || !workingCopy.commitSubject.isEmpty { commitCard }
                 if !state.unstaged.isEmpty {
                     fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false)
                 }
@@ -41,7 +43,7 @@ struct ChangesScreen: View {
             pushCard
             stashCard
         }
-        .alert(item: $model.confirmation) { confirmation in
+        .alert(item: $workingCopy.confirmation) { confirmation in
             // Alert rather than a quiet inline action: these are the operations with no undo.
             if let alternativeLabel = confirmation.alternativeLabel, let alternative = confirmation.alternative {
                 return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
@@ -74,7 +76,7 @@ struct ChangesScreen: View {
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }
                 Spacer()
-                Button("Dismiss") { model.writeError = nil }.buttonStyle(SecondaryButtonStyle())
+                Button("Dismiss") { workingCopy.writeError = nil }.buttonStyle(SecondaryButtonStyle())
             }
         }
     }
@@ -117,7 +119,7 @@ struct ChangesScreen: View {
                     Text("\(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                     Spacer()
                     Button(staged ? "Unstage all" : "Stage all") {
-                        staged ? model.unstage(files.map(\.path)) : model.stage(files.map(\.path))
+                        staged ? workingCopy.unstage(files.map(\.path)) : workingCopy.stage(files.map(\.path))
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
@@ -137,7 +139,7 @@ struct ChangesScreen: View {
             Text(marker(file, staged: staged))
                 .font(Theme.Text.mono).foregroundStyle(tint).frame(width: 16)
             Button {
-                model.showDiff(.workingTree(staged: staged), path: file.path,
+                session.inspector.showDiff(.workingTree(staged: staged), path: file.path,
                                title: staged ? "Staged changes" : "Uncommitted changes")
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
@@ -155,13 +157,13 @@ struct ChangesScreen: View {
             .disabled(file.isUntracked)
 
             if staged {
-                Button("Unstage") { model.unstage([file.path]) }
+                Button("Unstage") { workingCopy.unstage([file.path]) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
             } else {
-                Button("Stage") { model.stage([file.path]) }
+                Button("Stage") { workingCopy.stage([file.path]) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 Button {
-                    file.isUntracked ? model.confirmDelete(file) : model.confirmDiscard(file)
+                    file.isUntracked ? workingCopy.confirmDelete(file) : workingCopy.confirmDiscard(file)
                 } label: {
                     Image(systemName: file.isUntracked ? "trash" : "arrow.uturn.backward")
                         .font(.system(size: 11)).foregroundStyle(Theme.critical)
@@ -171,7 +173,7 @@ struct ChangesScreen: View {
             }
         }
         .padding(.horizontal, Theme.Space.m).padding(.vertical, 7)
-        .opacity(model.writeInFlight ? 0.5 : 1)
+        .opacity(workingCopy.writeInFlight ? 0.5 : 1)
     }
 
     private func marker(_ file: WorkingState.FileStatus, staged: Bool) -> String {
@@ -187,33 +189,34 @@ struct ChangesScreen: View {
     }
 
     private var commitCard: some View {
-        Card {
+        @Bindable var workingCopy = workingCopy
+        return Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Commit", subtitle: "\(state.staged.count) staged")
-                TextField("Summary", text: $model.commitSubject).textFieldStyle(.roundedBorder)
-                TextEditor(text: $model.commitBody)
+                TextField("Summary", text: $workingCopy.commitSubject).textFieldStyle(.roundedBorder)
+                TextEditor(text: $workingCopy.commitBody)
                     .font(Theme.Text.body).frame(height: 70).scrollContentBackground(.hidden)
                     .padding(6)
                     .background(Theme.page, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                         .strokeBorder(Theme.hairline))
                     .overlay(alignment: .topLeading) {
-                        if model.commitBody.isEmpty {
+                        if workingCopy.commitBody.isEmpty {
                             Text("Description (optional)").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
                                 .padding(.horizontal, 10).padding(.vertical, 12).allowsHitTesting(false)
                         }
                     }
                 HStack {
-                    Text("Commits as \(model.analysis?.info.configuredUserNames.first ?? "your git identity")")
+                    Text("Commits as \(session.analysis?.info.configuredUserNames.first ?? "your git identity")")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                     Spacer()
                     Button("Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
-                        model.commitStaged()
+                        workingCopy.commitStaged()
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(state.staged.isEmpty
-                              || model.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
-                              || model.writeInFlight)
+                              || workingCopy.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
+                              || workingCopy.writeInFlight)
                 }
             }
         }
@@ -226,7 +229,7 @@ struct ChangesScreen: View {
                            info: "Sends your commits to the remote, where other people will see them. "
                                + "GitView never force-pushes: if the remote has work you have not got, "
                                + "the answer is to pull, not to overwrite it.")
-                if let plan = model.pushPlan, !plan.isEmpty {
+                if let plan = workingCopy.pushPlan, !plan.isEmpty {
                     Text("\(plan.commits.count) commit\(plan.commits.count == 1 ? "" : "s") "
                          + "to \(plan.remote)/\(plan.branch)"
                          + (plan.hasUpstream ? "" : " — this will set the upstream"))
@@ -248,12 +251,12 @@ struct ChangesScreen: View {
                                 .font(Theme.Text.caption).foregroundStyle(Theme.warning)
                         }
                         Spacer()
-                        Button("Push to \(plan.remote)/\(plan.branch)") { model.push() }
+                        Button("Push to \(plan.remote)/\(plan.branch)") { workingCopy.push() }
                             .buttonStyle(PrimaryButtonStyle())
-                            .disabled(model.writeInFlight)
+                            .disabled(workingCopy.writeInFlight)
                     }
                 } else {
-                    Text(model.pushPlan == nil ? "No remote configured for this branch."
+                    Text(workingCopy.pushPlan == nil ? "No remote configured for this branch."
                                                : "Everything is pushed.")
                         .font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
                 }
@@ -262,18 +265,19 @@ struct ChangesScreen: View {
     }
 
     private var stashCard: some View {
-        Card {
+        @Bindable var workingCopy = workingCopy
+        return Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Stashes", subtitle: state.stashes.isEmpty ? nil : "\(state.stashes.count)",
                            info: "A stash sets changes aside without committing them, and is the safe "
                                + "alternative to discarding work you are not sure about.")
                 if !state.isClean {
                     HStack(spacing: Theme.Space.s) {
-                        TextField("What is this work?", text: $model.stashMessage)
+                        TextField("What is this work?", text: $workingCopy.stashMessage)
                             .textFieldStyle(.roundedBorder)
-                        Button("Stash all") { model.stashEverything(includeUntracked: true) }
+                        Button("Stash all") { workingCopy.stashEverything(includeUntracked: true) }
                             .buttonStyle(SecondaryButtonStyle())
-                            .disabled(model.writeInFlight)
+                            .disabled(workingCopy.writeInFlight)
                     }
                 }
                 ForEach(state.stashes) { stash in
@@ -285,11 +289,11 @@ struct ChangesScreen: View {
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         }
                         Spacer()
-                        Button("Apply") { model.applyStash(stash.ref, removing: false) }
+                        Button("Apply") { workingCopy.applyStash(stash.ref, removing: false) }
                             .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
-                        Button("Pop") { model.applyStash(stash.ref, removing: true) }
+                        Button("Pop") { workingCopy.applyStash(stash.ref, removing: true) }
                             .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
-                        Button { model.confirmDropStash(stash) } label: {
+                        Button { workingCopy.confirmDropStash(stash) } label: {
                             Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Theme.critical)
                         }
                         .buttonStyle(.plain).help("Drop this stash")

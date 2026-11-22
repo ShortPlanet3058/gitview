@@ -3,12 +3,13 @@ import GitViewCore
 import GitViewGit
 
 struct BranchesScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @State private var showMerged = false
     @State private var query = ""
 
     var body: some View {
-        if let analysis = model.analysis {
+        if let analysis = session.analysis {
             let all = analysis.branches
             let merged = all.filter { $0.isMerged }
             let shown = all.filter { (showMerged || !$0.isMerged) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
@@ -43,7 +44,7 @@ struct BranchesScreen: View {
                         }
                     }
                 }
-                if model.advanced {
+                if preferences.advanced {
                     Text("Behind / ahead are counted against the default branch (\(analysis.info.defaultBranch)). "
                          + "Remote-tracking branches without a local copy are marked “remote”.")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)

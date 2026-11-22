@@ -4,7 +4,7 @@ import GitViewGit
 
 /// "Who do I ask about this?" for a file or a folder.
 struct OwnershipSection: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(InspectorStore.self) private var inspector
     /// Nil for a directory, which has no line-level blame.
     let filePath: String?
     let ownership: FileOwnership?
@@ -71,7 +71,7 @@ struct OwnershipSection: View {
     @ViewBuilder
     private func blameSection(_ path: String) -> some View {
         HairlineDivider()
-        if let blame = model.blame[path] {
+        if let blame = inspector.blame[path] {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Who wrote the \(blame.totalLines.formatted()) lines that are there now")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -88,13 +88,13 @@ struct OwnershipSection: View {
                     }
                 }
             }
-        } else if model.blameInFlight.contains(path) {
+        } else if inspector.blameInFlight.contains(path) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("Reading blame…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
         } else {
-            Button("Who wrote the current lines?") { model.loadBlame(for: path) }
+            Button("Who wrote the current lines?") { inspector.loadBlame(for: path) }
                 .buttonStyle(SecondaryButtonStyle())
         }
     }
@@ -102,7 +102,6 @@ struct OwnershipSection: View {
 
 /// Files only one person has ever touched, where that person has gone quiet.
 struct KnowledgeRiskCard: View {
-    @EnvironmentObject private var model: AnalysisModel
     let index: OwnershipIndex
 
     var body: some View {
@@ -156,13 +155,14 @@ struct KnowledgeRiskCard: View {
 
 /// What one person knows and has been doing.
 struct AuthorDetailPanel: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(NavigationStore.self) private var navigation
     let author: String
 
-    private var contributor: Contributor? { model.contributors.first { $0.name == author } }
-    private var owned: [FileOwnership] { model.ownership?.filesOwned(by: author) ?? [] }
+    private var contributor: Contributor? { session.contributors.first { $0.name == author } }
+    private var owned: [FileOwnership] { session.ownership?.filesOwned(by: author) ?? [] }
     private var recent: [Commit] {
-        (model.analysis?.commits ?? []).filter { $0.author == author }.prefix(12).map { $0 }
+        (session.analysis?.commits ?? []).filter { $0.author == author }.prefix(12).map { $0 }
     }
 
     var body: some View {
@@ -184,7 +184,7 @@ struct AuthorDetailPanel: View {
             HStack {
                 Avatar(name: author, size: 40)
                 Spacer()
-                Button { model.selectedAuthor = nil } label: {
+                Button { navigation.selectedAuthor = nil } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Theme.inkMuted).padding(6).background(Theme.wash, in: Circle())
                 }
@@ -243,7 +243,7 @@ struct AuthorDetailPanel: View {
                 CardHeader(title: "Recent work")
                 VStack(spacing: 0) {
                     ForEach(recent, id: \.sha) { commit in
-                        Button { model.selectedAuthor = nil; model.selectedCommitSHA = commit.sha } label: {
+                        Button { navigation.selectedAuthor = nil; navigation.selectedCommitSHA = commit.sha } label: {
                             HStack(spacing: Theme.Space.s) {
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(commit.subject.isEmpty ? "(no message)" : commit.subject)

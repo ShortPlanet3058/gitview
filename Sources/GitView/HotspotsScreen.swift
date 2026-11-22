@@ -2,26 +2,29 @@ import SwiftUI
 import GitViewCore
 
 struct HotspotsScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(RiskStore.self) private var risk
+    @Environment(NavigationStore.self) private var navigation
     @State private var levelFilter: RiskLevel? = nil
 
     private var shown: [RiskRow] {
-        guard let levelFilter else { return model.rows }
-        return model.rows.filter { $0.level == levelFilter }
+        guard let levelFilter else { return risk.rows }
+        return risk.rows.filter { $0.level == levelFilter }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 ScreenHeader(title: "Hotspots",
-                             subtitle: "Functions ranked by how complex they are and how much they've changed in \(model.recentWindowLabel).")
+                             subtitle: "Functions ranked by how complex they are and how much they've changed in \(risk.recentWindowLabel).")
                 controls
             }
             .padding(.horizontal, Theme.Space.xl)
             .padding(.top, Theme.Space.xl)
             .padding(.bottom, Theme.Space.l)
 
-            if model.advanced {
+            if preferences.advanced {
                 RiskTableView(rows: shown)
                     .padding(.horizontal, Theme.Space.xl)
                     .padding(.bottom, Theme.Space.xl)
@@ -29,12 +32,12 @@ struct HotspotsScreen: View {
                 ScrollColumn {
                     LazyVStack(spacing: Theme.Space.s) {
                         ForEach(shown) { row in
-                            HotspotCard(row: row, compact: false, selected: model.selectedUnitID == row.id) {
-                                model.selectedUnitID = row.id
+                            HotspotCard(row: row, compact: false, selected: navigation.selectedUnitID == row.id) {
+                                navigation.selectedUnitID = row.id
                             }
                         }
                         if shown.isEmpty {
-                            Text(model.searchText.isEmpty ? "Nothing matches these filters." : "Nothing matches “\(model.searchText)”.")
+                            Text(risk.searchText.isEmpty ? "Nothing matches these filters." : "Nothing matches “\(risk.searchText)”.")
                                 .font(Theme.Text.body).foregroundStyle(Theme.inkMuted).padding(.top, Theme.Space.xl)
                         }
                     }
@@ -47,29 +50,31 @@ struct HotspotsScreen: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.m) {
+        @Bindable var risk = risk
+        @Bindable var preferences = preferences
+        return VStack(alignment: .leading, spacing: Theme.Space.m) {
             HStack(spacing: Theme.Space.m) {
-                SearchField(text: $model.searchText, prompt: "Find a function or file")
+                SearchField(text: $risk.searchText, prompt: "Find a function or file")
                     .frame(maxWidth: 320)
-                SegmentPicker(options: AnalysisModel.KindFilter.allCases.map { ($0, $0.rawValue) },
-                              selection: $model.kindFilter)
+                SegmentPicker(options: RiskStore.KindFilter.allCases.map { ($0, $0.rawValue) },
+                              selection: $risk.kindFilter)
                 Spacer()
                 Text("\(shown.count.formatted()) shown").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             HStack(spacing: Theme.Space.s) {
-                LevelChip(level: nil, count: model.rows.count, selected: levelFilter == nil) { levelFilter = nil }
+                LevelChip(level: nil, count: risk.rows.count, selected: levelFilter == nil) { levelFilter = nil }
                 ForEach(RiskLevel.allCases.reversed(), id: \.self) { level in
-                    if let count = model.levelCounts[level], count > 0 {
+                    if let count = risk.levelCounts[level], count > 0 {
                         LevelChip(level: level, count: count, selected: levelFilter == level) {
                             levelFilter = levelFilter == level ? nil : level
                         }
                     }
                 }
-                if model.advanced {
+                if preferences.advanced {
                     Spacer()
-                    Toggle("Include tests", isOn: Binding(get: { !model.excludeTests }, set: { model.excludeTests = !$0 }))
+                    Toggle("Include tests", isOn: Binding(get: { !preferences.excludeTests }, set: { preferences.excludeTests = !$0 }))
                         .toggleStyle(.checkbox).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
-                    Stepper("Min commits: \(model.minimumCommits)", value: $model.minimumCommits, in: 1...25)
+                    Stepper("Min commits: \(preferences.minimumCommits)", value: $preferences.minimumCommits, in: 1...25)
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
                 }
             }

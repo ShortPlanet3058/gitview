@@ -3,11 +3,11 @@ import Charts
 import GitViewCore
 
 struct ActivityScreen: View {
-    @EnvironmentObject private var model: AnalysisModel
+    @Environment(WorkspaceSession.self) private var session
     @State private var range: ActivityRange = .twoYears
 
     var body: some View {
-        if let analysis = model.analysis {
+        if let analysis = session.analysis {
             let now = Date()
             let (from, granularity): (Date, ActivitySeries.Granularity) = {
                 switch range {
