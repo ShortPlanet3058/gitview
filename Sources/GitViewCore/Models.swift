@@ -67,28 +67,36 @@ public struct FileChange: Hashable, Sendable, Codable {
     /// Populated only when git detected a rename (`--find-renames`).
     public let oldPath: String?
     public let hunks: [Hunk]
+    /// True when the file was created in this commit (`--- /dev/null`).
+    public let isNewFile: Bool
 
-    public init(path: String, oldPath: String?, hunks: [Hunk]) {
+    public init(path: String, oldPath: String? = nil, hunks: [Hunk], isNewFile: Bool = false) {
         self.path = path
         self.oldPath = oldPath
         self.hunks = hunks
+        self.isNewFile = isNewFile
     }
 }
 
-/// One `@@` hunk header, new-side only.
+/// One `@@` hunk header, carrying both old-side and new-side coordinates.
 ///
 /// With `--unified=0` there is no context, so `newStart ..< newStart + newLineCount`
-/// is exactly the set of lines this commit added or modified.
+/// is exactly the set of lines this commit added or modified, and `oldLineCount - newLineCount`
+/// gives the exact reverse line shift for walking backwards in history.
 ///
 /// `newLineCount == 0` is a **pure deletion**: the commit removed lines and added
 /// nothing. Git reports `+start,0` where `start` is the line *before* which the
 /// removal happened. Such a hunk covers no new lines at all, so callers that need
 /// a non-empty range must decide how to represent it — see `touchedLineRange`.
 public struct Hunk: Hashable, Sendable, Codable {
+    public let oldStart: Int
+    public let oldLineCount: Int
     public let newStart: Int
     public let newLineCount: Int
 
-    public init(newStart: Int, newLineCount: Int) {
+    public init(oldStart: Int? = nil, oldLineCount: Int? = nil, newStart: Int, newLineCount: Int) {
+        self.oldStart = oldStart ?? newStart
+        self.oldLineCount = oldLineCount ?? newLineCount
         self.newStart = newStart
         self.newLineCount = newLineCount
     }

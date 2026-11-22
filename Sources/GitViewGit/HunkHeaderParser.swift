@@ -25,19 +25,34 @@ public enum HunkHeaderParser {
         }
         guard let end = rangesEnd else { return nil }
 
+        // Scan forward for the '-' that opens the old-side range.
+        while i < end, line[i] != 0x2D { i = line.index(after: i) }
+        guard i < end else { return nil }
+        i = line.index(after: i)
+
+        guard let (oldStart, afterOldStart) = readInt(line, from: i, upTo: end) else { return nil }
+        var oldCount = 1
+        var cursor = afterOldStart
+        if cursor < end, line[cursor] == 0x2C { // ','
+            guard let (c, afterOldCount) = readInt(line, from: line.index(after: cursor), upTo: end) else { return nil }
+            oldCount = c
+            cursor = afterOldCount
+        }
+
         // Scan forward for the '+' that opens the new-side range.
+        i = cursor
         while i < end, line[i] != 0x2B { i = line.index(after: i) }
         guard i < end else { return nil }
         i = line.index(after: i)
 
-        guard let (start, afterStart) = readInt(line, from: i, upTo: end) else { return nil }
+        guard let (newStart, afterNewStart) = readInt(line, from: i, upTo: end) else { return nil }
 
-        var count = 1
-        if afterStart < end, line[afterStart] == 0x2C { // ','
-            guard let (c, _) = readInt(line, from: line.index(after: afterStart), upTo: end) else { return nil }
-            count = c
+        var newCount = 1
+        if afterNewStart < end, line[afterNewStart] == 0x2C { // ','
+            guard let (c, _) = readInt(line, from: line.index(after: afterNewStart), upTo: end) else { return nil }
+            newCount = c
         }
-        return Hunk(newStart: start, newLineCount: count)
+        return Hunk(oldStart: oldStart, oldLineCount: oldCount, newStart: newStart, newLineCount: newCount)
     }
 
     /// Convenience overload; the byte version is the one used on the hot path.

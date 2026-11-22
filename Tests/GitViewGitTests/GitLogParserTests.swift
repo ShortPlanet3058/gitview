@@ -40,9 +40,9 @@ final class GitLogParserTests: XCTestCase {
         XCTAssertEqual(commit.author, "Ada Lovelace")
         XCTAssertEqual(commit.fileChanges.count, 2)
         XCTAssertEqual(commit.fileChanges[0].path, "Sources/A.swift")
-        XCTAssertEqual(commit.fileChanges[0].hunks, [Hunk(newStart: 11, newLineCount: 3)])
+        XCTAssertEqual(commit.fileChanges[0].hunks, [Hunk(oldStart: 10, oldLineCount: 0, newStart: 11, newLineCount: 3)])
         XCTAssertEqual(commit.fileChanges[1].path, "Sources/B.swift")
-        XCTAssertEqual(commit.fileChanges[1].hunks, [Hunk(newStart: 5, newLineCount: 0)])
+        XCTAssertEqual(commit.fileChanges[1].hunks, [Hunk(oldStart: 5, oldLineCount: 2, newStart: 5, newLineCount: 0)])
         XCTAssertNil(commit.fileChanges[0].oldPath)
     }
 
@@ -68,8 +68,8 @@ final class GitLogParserTests: XCTestCase {
         """)
 
         XCTAssertEqual(commits.count, 2)
-        XCTAssertEqual(commits[0].fileChanges[0].hunks, [Hunk(newStart: 2, newLineCount: 2)])
-        XCTAssertEqual(commits[1].fileChanges[0].hunks, [Hunk(newStart: 9, newLineCount: 1)])
+        XCTAssertEqual(commits[0].fileChanges[0].hunks, [Hunk(oldStart: 1, oldLineCount: 0, newStart: 2, newLineCount: 2)])
+        XCTAssertEqual(commits[1].fileChanges[0].hunks, [Hunk(oldStart: 9, oldLineCount: 1, newStart: 9, newLineCount: 1)])
     }
 
     func testRenamePopulatesOldPath() {
@@ -192,7 +192,7 @@ final class GitLogParserTests: XCTestCase {
             let commits = parser.finish()
             XCTAssertEqual(commits.count, 1, "split at \(split)")
             XCTAssertEqual(commits.first?.fileChanges.first?.hunks,
-                           [Hunk(newStart: 12, newLineCount: 4)], "split at \(split)")
+                           [Hunk(oldStart: 10, oldLineCount: 2, newStart: 12, newLineCount: 4)], "split at \(split)")
         }
     }
 
@@ -250,6 +250,27 @@ final class GitLogParserTests: XCTestCase {
         splitter.finish { parser.consume(line: $0) }
         _ = parser.finish()
         XCTAssertEqual(parser.malformedHeaderCount, 1)
+    }
+
+    func testNewFileFlagDistinguishesCreationFromEdit() {
+        let commits = parse("""
+        @@@9999999999999999999999999999999999999999\u{1F}Dev\u{1F}2024-02-11T12:00:00Z\u{1F}Create and edit
+        diff --git a/New.swift b/New.swift
+        new file mode 100644
+        --- /dev/null
+        +++ b/New.swift
+        @@ -0,0 +1,10 @@
+        +func hello() {}
+        diff --git a/Existing.swift b/Existing.swift
+        --- a/Existing.swift
+        +++ b/Existing.swift
+        @@ -4,1 +4,2 @@
+        +line
+        """)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits[0].fileChanges.count, 2)
+        XCTAssertTrue(commits[0].fileChanges[0].isNewFile)
+        XCTAssertFalse(commits[0].fileChanges[1].isNewFile)
     }
 }
 

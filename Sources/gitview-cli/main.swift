@@ -344,8 +344,16 @@ case "history":
     }
     let churn = ChurnJoiner.join(units: units, commits: commits)
 
+    let reader = try? GitBatchReader(directory: root)
+    defer { reader?.close() }
     let service = UnitHistoryService { sha, filePath in
-        try GitProcess.capture(arguments: ["show", "\(sha):\(filePath)"], in: root)
+        if let reader {
+            if let source = try reader.blob(sha: sha, path: filePath) {
+                return source
+            }
+            throw GitError.failed(command: "cat-file --batch \(sha):\(filePath)", code: 1, stderr: "missing")
+        }
+        return try GitProcess.capture(arguments: ["show", "\(sha):\(filePath)"], in: root)
     }
     let started = DispatchTime.now()
     let points = await service.complexityHistory(for: unit, churn: churn)
@@ -508,13 +516,13 @@ case "cache":
         AnalysisCache.clear(root: resolved)
         print("cleared cache for \(resolved.lastPathComponent)")
     } else if let payload = AnalysisCache.load(root: resolved) {
-        let size = (try? Data(contentsOf: AnalysisCache.url(for: resolved)).count) ?? 0
+        let size = AnalysisCache.sizeOnDisk(for: resolved)
         let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd HH:mm"
         print("head       \(payload.headSHA.prefix(12))")
         print("written    \(day.string(from: payload.createdAt))")
         print("commits    \(payload.commits.count.formatted())")
         print("units      \(payload.units.count.formatted()) (\(payload.generatedFiles.count) generated files)")
-        print("on disk    \(size.formatted()) bytes compressed")
+        print("on disk    \(size.formatted()) bytes (SQLite)")
     } else {
         print("no cache for \(resolved.path)")
     }

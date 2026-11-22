@@ -26,6 +26,8 @@ public struct GitLogParser {
     private var hunks: [Hunk] = []
     /// True when the new side is /dev/null, i.e. the file was deleted by this commit.
     private var newSideDeleted = false
+    /// True when the old side is /dev/null or `new file mode` was seen.
+    private var oldSideNewFile = false
     /// True when git emitted `rename from`/`rename to` headers for this file.
     private var sawRename = false
 
@@ -69,9 +71,15 @@ public struct GitLogParser {
             }
             return
         }
+        if line.hasPrefix("new file mode ") {
+            oldSideNewFile = true
+            return
+        }
         if line.hasPrefix("--- ") {
             let value = line.dropFirst(4)
-            if !value.elementsEqual("/dev/null".utf8) {
+            if value.elementsEqual("/dev/null".utf8) {
+                oldSideNewFile = true
+            } else {
                 oldPath = Self.stripPrefixLetter(Self.unquote(value.decoded))
             }
             return
@@ -97,11 +105,13 @@ public struct GitLogParser {
     // MARK: - Flushing
 
     private mutating func flushFile() {
+        let isNew = oldSideNewFile
         defer {
             path = nil
             oldPath = nil
             hunks = []
             newSideDeleted = false
+            oldSideNewFile = false
             sawRename = false
         }
         // Only report oldPath when it genuinely differs — the `--- a/x` line is present on
@@ -111,7 +121,7 @@ public struct GitLogParser {
         // units can be attributed to it. Drop it rather than carrying a dead path.
         // Keep pure 100% renames (no hunks) so rename chains preserve pre-move history.
         guard !newSideDeleted, let path, (!hunks.isEmpty || (sawRename && rename != nil)) else { return }
-        fileChanges.append(FileChange(path: path, oldPath: rename, hunks: hunks))
+        fileChanges.append(FileChange(path: path, oldPath: rename, hunks: hunks, isNewFile: isNew))
     }
 
     private mutating func flushCommit() {

@@ -113,7 +113,9 @@ enum AnalysisService {
         }.value
         let repository = GitRepository(url: validated)
         let head = (try? repository.headSHA()) ?? ""
-        let cached = useCache ? AnalysisCache.load(root: validated) : nil
+        let cached = useCache ? AnalysisCache.load(root: validated, matchingHead: head.isEmpty ? nil : head)
+            ?? AnalysisCache.load(root: validated) : nil
+        let cachedFileUnits = useCache ? AnalysisCache.loadFileUnits(root: validated) : [:]
 
         // Facts are cheap and always current; they also tell us when the working tree last
         // changed, which decides whether cached units are still valid.
@@ -149,17 +151,18 @@ enum AnalysisService {
         if let cached, cached.headSHA == head {
             commits = cached.commits
             source = .cached
+        } else if useCache, !head.isEmpty,
+                  let headSHAs = repository.revListSHAs(),
+                  let poolCommits = AnalysisCache.loadCommits(orderedSHAs: headSHAs, root: validated) {
+            commits = poolCommits
+            source = .cached
         } else if let cached, !cached.headSHA.isEmpty, repository.isAncestor(cached.headSHA, of: head) {
             let since = cached.headSHA
-            let newCommits = try await Task.detached(priority: .userInitiated) {
-                try GitRepository(url: validated).loadHistory(since: since)
-            }.value
+            let newCommits = try await repository.loadHistoryAsync(since: since)
             commits = newCommits + cached.commits
             source = .incremental(newCommits: newCommits.count)
         } else {
-            commits = try await Task.detached(priority: .userInitiated) {
-                try GitRepository(url: validated).loadHistory()
-            }.value
+            commits = try await repository.loadHistoryAsync()
         }
         let historyDuration = Date().timeIntervalSince(historyStart)
 
@@ -170,34 +173,81 @@ enum AnalysisService {
             attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
             source: source, workingState: workingState), .withHistory)
 
-        // Units come from the working tree, so they are only reusable if nothing has been
-        // edited since the cache was written.
+        // Reuse cached per-file units wherever byte size and modification timestamp still match;
+        // scan only dirty or newly added files, dropping deleted files from the result.
         let parseStart = Date()
+        let parsableTracked = info.inventory.files.filter { file in
+            let ext = (file.path as NSString).pathExtension.lowercased()
+            return LanguageRegistry.shared.language(forExtension: ext) != nil
+        }
+
+        var reusedUnits: [CodeUnit] = []
+        var reusedGenerated: Set<String> = []
+        var reusedFilesCount = 0
+        var dirtyPaths: [String] = []
+        dirtyPaths.reserveCapacity(parsableTracked.count)
+
+        for file in parsableTracked {
+            if useCache,
+               let entry = cachedFileUnits[file.path],
+               let modDate = file.modified,
+               entry.bytes == file.bytes,
+               abs(entry.modified - modDate.timeIntervalSince1970) < 0.001 {
+                reusedUnits.append(contentsOf: entry.units)
+                if entry.isGenerated { reusedGenerated.insert(file.path) }
+                reusedFilesCount += 1
+            } else {
+                dirtyPaths.append(file.path)
+            }
+        }
+
         let report: SourceScanner.Report
-        if let cached, let modified = info.inventory.lastModified, modified <= cached.createdAt,
-           !cached.units.isEmpty {
-            report = SourceScanner.Report(units: cached.units,
-                                          filesParsed: Set(cached.units.map(\.filePath)).count,
-                                          filesFailed: [],
-                                          generatedFiles: Set(cached.generatedFiles))
+        if dirtyPaths.isEmpty {
+            report = SourceScanner.Report(
+                units: reusedUnits,
+                filesParsed: reusedFilesCount,
+                filesFailed: [],
+                generatedFiles: reusedGenerated
+            )
         } else {
             progress(LoadingProgress(stage: "Parsing source files"))
-            let trackedPaths = info.inventory.files.map(\.path)
-            report = try await SourceScanner().scan(root: validated, trackedPaths: trackedPaths) { parsed, total in
+            let scanned = try await SourceScanner().scan(root: validated, trackedPaths: dirtyPaths) { parsed, total in
                 guard total > 0 else { return }
                 progress(LoadingProgress(
                     stage: "Parsing source files",
                     detail: "\(parsed.formatted()) of \(total.formatted()) files",
                     fraction: Double(parsed) / Double(total)))
             }
-            if case .cached = source { source = .fresh }
+            report = SourceScanner.Report(
+                units: reusedUnits + scanned.units,
+                filesParsed: reusedFilesCount + scanned.filesParsed,
+                filesFailed: scanned.filesFailed,
+                generatedFiles: reusedGenerated.union(scanned.generatedFiles)
+            )
+            if reusedFilesCount == 0, case .cached = source { source = .fresh }
         }
         let parseDuration = Date().timeIntervalSince(parseStart)
 
         progress(LoadingProgress(stage: "Working out what it all means",
                                  detail: "\(commits.count.formatted()) commits, \(report.units.count.formatted()) functions"))
-        AnalysisCache.save(.init(headSHA: head, commits: commits, units: report.units,
-                                 generatedFiles: Array(report.generatedFiles)), root: validated)
+        let unitsByPath = Dictionary(grouping: report.units, by: \.filePath)
+        let failedSet = Set(report.filesFailed)
+        let fileEntries = parsableTracked.compactMap { file -> AnalysisCache.CachedFileUnits? in
+            guard !failedSet.contains(file.path), let modified = file.modified else { return nil }
+            return AnalysisCache.CachedFileUnits(
+                path: file.path,
+                bytes: file.bytes,
+                modified: modified.timeIntervalSince1970,
+                isGenerated: report.generatedFiles.contains(file.path),
+                units: unitsByPath[file.path] ?? []
+            )
+        }
+        AnalysisCache.save(
+            headSHA: head,
+            commits: commits,
+            fileEntries: fileEntries,
+            root: validated
+        )
 
         // Join once over the unfiltered unit set purely for the diagnostic.
         let fullJoin = ChurnJoiner.join(units: report.units, commits: commits)

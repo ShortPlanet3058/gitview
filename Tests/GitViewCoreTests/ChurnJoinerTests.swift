@@ -175,6 +175,57 @@ final class ChurnJoinerTests: XCTestCase {
         XCTAssertEqual(ChurnJoiner.join(units: [unit], commits: commits).commitCount(for: unit), 1)
     }
 
+    func testTopInsertionShiftsUnitRangeBackwardAcrossOlderCommits() {
+        // Head state: f spans 50...60. Commit 2 inserted 40 lines near the top (lines 5...44);
+        // commit 1 edited old lines 12...14 (which became HEAD lines 52...54).
+        let unit = makeUnit("f", 50...60)
+        let commits = [
+            makeCommit("insertTop", 2, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 4, oldLineCount: 0, newStart: 5, newLineCount: 40)])
+            ]),
+            makeCommit("editOld", 1, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 12, oldLineCount: 2, newStart: 12, newLineCount: 3)])
+            ]),
+        ]
+        let index = ChurnJoiner.join(units: [unit], commits: commits)
+        XCTAssertEqual(index.commitCount(for: unit), 1)
+        XCTAssertEqual(index.commits(for: unit).map(\.sha), ["editOld"])
+    }
+
+    func testPureDeletionShiftsUnitRangeBackwardAcrossOlderCommits() {
+        // Commit 2 deleted 10 lines before the unit (old lines 5...14, @@ -5,10 +4,0 @@).
+        // So HEAD unit 10...20 lived at old lines 20...30 when commit 1 edited line 25.
+        let unit = makeUnit("f", 10...20)
+        let commits = [
+            makeCommit("deleteAbove", 2, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 5, oldLineCount: 10, newStart: 4, newLineCount: 0)])
+            ]),
+            makeCommit("editOld", 1, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 25, oldLineCount: 1, newStart: 25, newLineCount: 1)])
+            ]),
+        ]
+        let index = ChurnJoiner.join(units: [unit], commits: commits)
+        XCTAssertEqual(index.commits(for: unit).map(\.sha), ["editOld"])
+    }
+
+    func testUnitBornInPureInsertionOrNewFileRetiresBeforeOlderCommits() {
+        let bornInHunk = makeUnit("bornInHunk", 20...30, path: "A.swift")
+        let bornInNewFile = makeUnit("bornInNewFile", 1...15, path: "B.swift")
+        let commits = [
+            makeCommit("createBoth", 2, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 10, oldLineCount: 0, newStart: 15, newLineCount: 20)]),
+                FileChange(path: "B.swift", hunks: [Hunk(oldStart: 0, oldLineCount: 0, newStart: 1, newLineCount: 20)], isNewFile: true),
+            ]),
+            makeCommit("unrelatedOld", 1, [
+                FileChange(path: "A.swift", hunks: [Hunk(oldStart: 22, oldLineCount: 1, newStart: 22, newLineCount: 1)]),
+                FileChange(path: "B.swift", hunks: [Hunk(oldStart: 5, oldLineCount: 1, newStart: 5, newLineCount: 1)]),
+            ]),
+        ]
+        let index = ChurnJoiner.join(units: [bornInHunk, bornInNewFile], commits: commits)
+        XCTAssertEqual(index.commits(for: bornInHunk).map(\.sha), ["createBoth"])
+        XCTAssertEqual(index.commits(for: bornInNewFile).map(\.sha), ["createBoth"])
+    }
+
     func testEmptyInputs() {
         XCTAssertEqual(ChurnJoiner.join(units: [], commits: []).touchesByUnit.count, 0)
         let unit = makeUnit("f", 1...10)
