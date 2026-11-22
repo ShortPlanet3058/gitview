@@ -21,7 +21,7 @@ struct DiffViewer: View {
     @State private var filterMatchesOnly = false
     @State private var currentMatchIndex = 0
     @State private var spansByLineID: [Int: [HighlightSpan]] = [:]
-    @State private var inlineRangesByLineID: [Int: Range<Int>] = [:]
+    @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
     @FocusState private var findFieldFocused: Bool
 
     private var isUntrackedFile: Bool {
@@ -393,7 +393,7 @@ struct DiffViewer: View {
             line.text,
             spans: spansByLineID[line.id] ?? [],
             baseForeground: line.kind == .context ? Theme.inkSoft : Theme.ink,
-            emphasisUTF16Range: inlineRangesByLineID[line.id],
+            emphasisUTF16Ranges: inlineRangesByLineID[line.id] ?? [],
             emphasisBackground: emphasisBackground(for: line.kind),
             searchQuery: trimmedQuery
         )
@@ -547,8 +547,8 @@ enum DiffPresentation {
         return pairs
     }
 
-    static func computeInlineDiffRanges(in hunks: [DiffHunk]) -> [Int: Range<Int>] {
-        var result: [Int: Range<Int>] = [:]
+    static func computeInlineDiffRanges(in hunks: [DiffHunk]) -> [Int: [Range<Int>]] {
+        var result: [Int: [Range<Int>]] = [:]
         for hunk in hunks {
             let lines = hunk.lines
             var i = 0
@@ -569,47 +569,15 @@ enum DiffPresentation {
                 for k in 0..<pairCount {
                     let oldLine = lines[delStart + k]
                     let newLine = lines[addStart + k]
-                    let (oldRange, newRange) = diffUTF16Spans(oldLine.text, newLine.text)
-                    if let oldRange { result[oldLine.id] = oldRange }
-                    if let newRange { result[newLine.id] = newRange }
+                    let (oldRanges, newRanges) = InlineWordDiff.changedUTF16Ranges(
+                        old: oldLine.text,
+                        new: newLine.text
+                    )
+                    if !oldRanges.isEmpty { result[oldLine.id] = oldRanges }
+                    if !newRanges.isEmpty { result[newLine.id] = newRanges }
                 }
             }
         }
         return result
-    }
-
-    static func diffUTF16Spans(_ oldText: String, _ newText: String) -> (Range<Int>?, Range<Int>?) {
-        let a = Array(oldText.utf16)
-        let b = Array(newText.utf16)
-        guard !a.isEmpty, !b.isEmpty, a.count <= 2000, b.count <= 2000 else { return (nil, nil) }
-
-        var prefix = 0
-        while prefix < a.count, prefix < b.count, a[prefix] == b[prefix] {
-            prefix += 1
-        }
-        if prefix > 0,
-           (prefix < a.count && UTF16.isTrailSurrogate(a[prefix]))
-            || (prefix < b.count && UTF16.isTrailSurrogate(b[prefix])) {
-            prefix -= 1
-        }
-
-        var suffix = 0
-        while suffix < (a.count - prefix), suffix < (b.count - prefix),
-              a[a.count - 1 - suffix] == b[b.count - 1 - suffix] {
-            suffix += 1
-        }
-        if suffix > 0,
-           UTF16.isTrailSurrogate(a[a.count - suffix]) || UTF16.isTrailSurrogate(b[b.count - suffix]) {
-            suffix -= 1
-        }
-
-        // Only highlight inline spans when the lines share real structure rather than being unrelated rewrites.
-        guard prefix + suffix >= 2 else { return (nil, nil) }
-
-        let oldEnd = a.count - suffix
-        let newEnd = b.count - suffix
-        let oldRange: Range<Int>? = prefix < oldEnd ? (prefix..<oldEnd) : nil
-        let newRange: Range<Int>? = prefix < newEnd ? (prefix..<newEnd) : nil
-        return (oldRange, newRange)
     }
 }

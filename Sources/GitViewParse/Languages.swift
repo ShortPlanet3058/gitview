@@ -40,6 +40,18 @@ extension LanguageSupport {
         (protocol_declaration) @unit.type
         (property_declaration computed_value: (computed_property)) @unit.method
         """,
+        highlightQuery: """
+        (function_declaration (simple_identifier) @function)
+        (protocol_function_declaration name: (simple_identifier) @function)
+        (call_expression (simple_identifier) @function)
+        (call_expression (navigation_expression (navigation_suffix (simple_identifier) @function)))
+        (call_expression (prefix_expression (simple_identifier) @function))
+        (navigation_expression (navigation_suffix (simple_identifier) @property))
+        (attribute (user_type (type_identifier) @keyword))
+        (type_identifier) @type
+        [(comment) (multiline_comment)] @comment
+        [(line_str_text) (multi_line_str_text) (raw_str_part) (raw_str_end_part) (str_escaped_char)] @string
+        """,
         branching: ["if_statement", "guard_statement", "for_statement", "while_statement",
                     "repeat_while_statement", "catch_block", "ternary_expression",
                     "conjunction_expression", "disjunction_expression", "nil_coalescing_expression"],
@@ -61,6 +73,20 @@ extension LanguageSupport {
         (struct_specifier name: (type_identifier) @name) @unit.type
         (enum_specifier name: (type_identifier) @name) @unit.type
         """,
+        highlightQuery: """
+        (function_declarator declarator: (identifier) @function)
+        (call_expression function: (identifier) @function)
+        (call_expression function: (field_expression field: (field_identifier) @function))
+        (preproc_function_def name: (identifier) @function)
+        (preproc_directive) @keyword
+        (type_identifier) @type
+        (primitive_type) @type
+        (sized_type_specifier) @type
+        (field_identifier) @property
+        [(string_literal) (system_lib_string)] @string
+        [(number_literal) (char_literal) (null)] @number
+        (comment) @comment
+        """,
         branching: ["if_statement", "for_statement", "while_statement", "do_statement",
                     "conditional_expression"],
         logicalNodes: ["binary_expression"], logicalOperators: cLikeLogical,
@@ -75,6 +101,25 @@ extension LanguageSupport {
         (function_definition) @unit.function
         (class_specifier name: (type_identifier) @name) @unit.type
         (struct_specifier name: (type_identifier) @name) @unit.type
+        """,
+        highlightQuery: """
+        (function_declarator declarator: (identifier) @function)
+        (function_declarator declarator: (qualified_identifier name: (identifier) @function))
+        (function_declarator declarator: (field_identifier) @function)
+        (call_expression function: (identifier) @function)
+        (call_expression function: (qualified_identifier name: (identifier) @function))
+        (call_expression function: (field_expression field: (field_identifier) @function))
+        (template_function name: (identifier) @function)
+        (template_method name: (field_identifier) @function)
+        (preproc_directive) @keyword
+        (type_identifier) @type
+        (primitive_type) @type
+        (sized_type_specifier) @type
+        (auto) @type
+        (field_identifier) @property
+        [(string_literal) (system_lib_string) (raw_string_literal)] @string
+        [(number_literal) (char_literal) (null)] @number
+        (comment) @comment
         """,
         branching: ["if_statement", "for_statement", "for_range_loop", "while_statement",
                     "do_statement", "catch_clause", "conditional_expression"],
@@ -97,6 +142,24 @@ extension LanguageSupport {
         (struct_declaration name: (identifier) @name) @unit.type
         (record_declaration name: (identifier) @name) @unit.type
         """,
+        highlightQuery: """
+        (method_declaration name: (identifier) @function)
+        (local_function_statement name: (identifier) @function)
+        (constructor_declaration name: (identifier) @type)
+        (interface_declaration name: (identifier) @type)
+        (class_declaration name: (identifier) @type)
+        (enum_declaration name: (identifier) @type)
+        (struct_declaration (identifier) @type)
+        (record_declaration (identifier) @type)
+        (generic_name (identifier) @type)
+        (parameter type: (identifier) @type)
+        (type_argument_list (identifier) @type)
+        (predefined_type) @type
+        (enum_member_declaration (identifier) @property)
+        [(real_literal) (integer_literal) (boolean_literal) (null_literal)] @number
+        [(character_literal) (string_literal) (raw_string_literal) (verbatim_string_literal)] @string
+        (comment) @comment
+        """,
         branching: ["if_statement", "for_statement", "foreach_statement", "while_statement",
                     "do_statement", "catch_clause", "conditional_expression",
                     "conditional_access_expression", "switch_expression_arm"],
@@ -115,6 +178,17 @@ extension LanguageSupport {
         unitQuery: """
         (function_definition name: (identifier) @name) @unit.function
         (class_definition name: (identifier) @name) @unit.type
+        """,
+        highlightQuery: """
+        (decorator) @function
+        (function_definition name: (identifier) @function)
+        (call function: (identifier) @function)
+        (call function: (attribute attribute: (identifier) @function))
+        (attribute attribute: (identifier) @property)
+        (class_definition name: (identifier) @type)
+        (type (identifier) @type)
+        [(none) (true) (false) (integer) (float)] @number
+        (comment) @comment
         """,
         branching: ["if_statement", "elif_clause", "for_statement", "while_statement",
                     "except_clause", "conditional_expression", "assert_statement", "if_clause"],
@@ -148,6 +222,20 @@ extension LanguageSupport {
         id: "javascript", displayName: "JavaScript", extensions: ["js", "jsx", "mjs", "cjs"],
         makeLanguage: { Language(language: tree_sitter_javascript()) },
         unitQuery: jsQuery,
+        highlightQuery: """
+        (function_declaration name: (identifier) @function)
+        (generator_function_declaration name: (identifier) @function)
+        (function_expression name: (identifier) @function)
+        (method_definition name: (property_identifier) @function)
+        (variable_declarator name: (identifier) @function value: [(function_expression) (arrow_function)])
+        (call_expression function: (identifier) @function)
+        (call_expression function: (member_expression property: (property_identifier) @function))
+        (class_declaration name: (identifier) @type)
+        (property_identifier) @property
+        [(true) (false) (null) (undefined) (number)] @number
+        (regex) @string
+        (comment) @comment
+        """,
         branching: jsBranching,
         logicalNodes: ["binary_expression"], logicalOperators: cLikeLogical,
         caseNodes: ["switch_case"],
@@ -169,10 +257,27 @@ extension LanguageSupport {
     (variable_declarator name: (identifier) @name value: (function_expression)) @unit.function
     """
 
+    private static let tsHighlightQuery = """
+    (function_declaration name: (identifier) @function)
+    (generator_function_declaration name: (identifier) @function)
+    (method_definition name: (property_identifier) @function)
+    (variable_declarator name: (identifier) @function value: [(function_expression) (arrow_function)])
+    (call_expression function: (identifier) @function)
+    (call_expression function: (member_expression property: (property_identifier) @function))
+    (class_declaration name: (type_identifier) @type)
+    (type_identifier) @type
+    (predefined_type) @type
+    (property_identifier) @property
+    [(true) (false) (null) (undefined) (number)] @number
+    (regex) @string
+    (comment) @comment
+    """
+
     public static let typescript = LanguageSupport(
         id: "typescript", displayName: "TypeScript", extensions: ["ts", "mts", "cts"],
         makeLanguage: { Language(language: tree_sitter_typescript()) },
         unitQuery: tsQuery,
+        highlightQuery: tsHighlightQuery,
         branching: jsBranching,
         logicalNodes: ["binary_expression"], logicalOperators: cLikeLogical,
         caseNodes: ["switch_case"],
@@ -184,6 +289,7 @@ extension LanguageSupport {
         id: "tsx", displayName: "TSX", extensions: ["tsx"],
         makeLanguage: { Language(language: tree_sitter_tsx()) },
         unitQuery: tsQuery,
+        highlightQuery: tsHighlightQuery,
         branching: jsBranching,
         logicalNodes: ["binary_expression"], logicalOperators: cLikeLogical,
         caseNodes: ["switch_case"],
@@ -204,6 +310,21 @@ extension LanguageSupport {
         (enum_declaration name: (identifier) @name) @unit.type
         (record_declaration name: (identifier) @name) @unit.type
         """,
+        highlightQuery: """
+        (method_declaration name: (identifier) @function)
+        (method_invocation name: (identifier) @function)
+        (annotation name: (identifier) @keyword)
+        (marker_annotation name: (identifier) @keyword)
+        (type_identifier) @type
+        (interface_declaration name: (identifier) @type)
+        (class_declaration name: (identifier) @type)
+        (enum_declaration name: (identifier) @type)
+        (constructor_declaration name: (identifier) @type)
+        [(boolean_type) (integral_type) (floating_point_type) (void_type)] @type
+        [(hex_integer_literal) (decimal_integer_literal) (octal_integer_literal) (decimal_floating_point_literal) (hex_floating_point_literal) (true) (false) (null_literal)] @number
+        [(character_literal) (string_literal)] @string
+        [(line_comment) (block_comment)] @comment
+        """,
         branching: ["if_statement", "for_statement", "enhanced_for_statement", "while_statement",
                     "do_statement", "catch_clause", "ternary_expression"],
         logicalNodes: ["binary_expression"], logicalOperators: cLikeLogical,
@@ -220,6 +341,14 @@ extension LanguageSupport {
         (function_declaration) @unit.function
         (class_declaration) @unit.type
         (object_declaration) @unit.type
+        """,
+        highlightQuery: """
+        (function_declaration (simple_identifier) @function)
+        (call_expression (simple_identifier) @function)
+        (call_expression (navigation_expression (navigation_suffix (simple_identifier) @function)))
+        (navigation_suffix (simple_identifier) @property)
+        (type_identifier) @type
+        [(line_comment) (multiline_comment)] @comment
         """,
         branching: ["if_expression", "for_statement", "while_statement", "do_while_statement",
                     "catch_block", "conjunction_expression", "disjunction_expression",
@@ -242,6 +371,21 @@ extension LanguageSupport {
         (trait_item name: (type_identifier) @name) @unit.type
         (impl_item) @unit.type
         """,
+        highlightQuery: """
+        (function_item name: (identifier) @function)
+        (function_signature_item name: (identifier) @function)
+        (call_expression function: (identifier) @function)
+        (call_expression function: (field_expression field: (field_identifier) @function))
+        (call_expression function: (scoped_identifier name: (identifier) @function))
+        (generic_function function: (identifier) @function)
+        (macro_invocation macro: (identifier) @function)
+        (type_identifier) @type
+        (primitive_type) @type
+        (field_identifier) @property
+        [(string_literal) (raw_string_literal) (char_literal)] @string
+        [(integer_literal) (float_literal) (boolean_literal)] @number
+        [(line_comment) (block_comment)] @comment
+        """,
         branching: ["if_expression", "while_expression", "loop_expression", "for_expression"],
         logicalNodes: ["binary_expression"], logicalOperators: ["&&", "||"],
         // Every arm counts, including the `_` catch-all: Rust matches must be exhaustive,
@@ -260,6 +404,17 @@ extension LanguageSupport {
         (method_declaration name: (field_identifier) @name) @unit.method
         (type_declaration (type_spec name: (type_identifier) @name)) @unit.type
         """,
+        highlightQuery: """
+        (function_declaration name: (identifier) @function)
+        (method_declaration name: (field_identifier) @function)
+        (call_expression function: (identifier) @function)
+        (call_expression function: (selector_expression field: (field_identifier) @function))
+        (type_identifier) @type
+        (field_identifier) @property
+        [(interpreted_string_literal) (raw_string_literal) (rune_literal)] @string
+        [(int_literal) (float_literal) (imaginary_literal) (true) (false) (nil) (iota)] @number
+        (comment) @comment
+        """,
         branching: ["if_statement", "for_statement"],
         logicalNodes: ["binary_expression"], logicalOperators: ["&&", "||"],
         caseNodes: ["expression_case", "type_case", "communication_case"],
@@ -275,6 +430,16 @@ extension LanguageSupport {
         (singleton_method name: (identifier) @name) @unit.method
         (class name: (constant) @name) @unit.type
         (module name: (constant) @name) @unit.type
+        """,
+        highlightQuery: """
+        (method name: [(identifier) (constant)] @function)
+        (singleton_method name: [(identifier) (constant)] @function)
+        (call method: [(identifier) (constant)] @function)
+        (constant) @type
+        [(class_variable) (instance_variable)] @property
+        [(integer) (float) (nil) (true) (false)] @number
+        (regex) @string
+        (comment) @comment
         """,
         branching: ["if", "elsif", "unless", "while", "until", "for", "rescue", "conditional",
                     "if_modifier", "unless_modifier", "while_modifier", "until_modifier",
@@ -294,6 +459,20 @@ extension LanguageSupport {
         (class_declaration name: (name) @name) @unit.type
         (interface_declaration name: (name) @name) @unit.type
         (trait_declaration name: (name) @name) @unit.type
+        """,
+        highlightQuery: """
+        (function_definition name: (name) @function)
+        (method_declaration name: (name) @function)
+        (function_call_expression function: [(qualified_name (name)) (relative_name (name)) (name)] @function)
+        (scoped_call_expression name: (name) @function)
+        (member_call_expression name: (name) @function)
+        (primitive_type) @type
+        (cast_type) @type
+        (named_type (name) @type)
+        (member_access_expression name: (name) @property)
+        (property_element (variable_name) @property)
+        [(integer) (float) (boolean) (null)] @number
+        (comment) @comment
         """,
         branching: ["if_statement", "else_if_clause", "for_statement", "foreach_statement",
                     "while_statement", "do_statement", "catch_clause", "conditional_expression",
@@ -317,6 +496,19 @@ extension LanguageSupport {
         unitQuery: """
         (rule_set (selectors) @name) @unit.function
         (keyframe_block_list) @unit.type
+        """,
+        highlightQuery: """
+        (comment) @comment
+        (function_name) @function
+        (property_name) @property
+        (attribute_name) @property
+        (class_name) @type
+        (id_name) @type
+        (tag_name) @type
+        (unit) @type
+        [(at_keyword) (to) (from) (important)] @keyword
+        [(string_value) (color_value) (plain_value)] @string
+        [(integer_value) (float_value)] @number
         """,
         nesting: ["media_statement", "supports_statement", "keyframe_block_list"],
         identifierTypes: ["selectors", "class_selector", "id_selector", "tag_name"],

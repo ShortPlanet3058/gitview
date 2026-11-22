@@ -162,4 +162,12 @@ final class LanguageSupportTests: XCTestCase {
         XCTAssertTrue(units.contains { $0.name == "Widget.fmt" }, "\(units.map(\.name))")
         XCTAssertFalse(units.contains { $0.name == "Display.fmt" }, "\(units.map(\.name))")
     }
+
+    func testEveryLanguageHighlightQueryCompiles() throws {
+        XCTAssertEqual(LanguageRegistry.shared.languages.count, 15)
+        for support in LanguageRegistry.shared.languages {
+            let query = try LanguageRegistry.shared.compiledHighlightQuery(support)
+            XCTAssertNotNil(query, "Expected highlightQuery to compile and be non-nil for \(support.id)")
+        }
+    }
 }
