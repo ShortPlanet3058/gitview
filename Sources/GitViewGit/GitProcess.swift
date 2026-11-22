@@ -56,6 +56,15 @@ public enum GitProcess {
         return "/usr/bin/git"
     }
 
+    /// Builds a configured `Process` for `git` without starting it.
+    public static func makeProcess(arguments: [String], in directory: URL) throws -> Process {
+        let executable = gitPath
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            throw GitError.gitNotExecutable(executable)
+        }
+        return configuredProcess(executable: executable, arguments: arguments, directory: directory)
+    }
+
     private static func configuredProcess(
         executable: String,
         arguments: [String],

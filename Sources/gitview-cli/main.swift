@@ -344,8 +344,16 @@ case "history":
     }
     let churn = ChurnJoiner.join(units: units, commits: commits)
 
+    let reader = try? GitBatchReader(directory: root)
+    defer { reader?.close() }
     let service = UnitHistoryService { sha, filePath in
-        try GitProcess.capture(arguments: ["show", "\(sha):\(filePath)"], in: root)
+        if let reader {
+            if let source = try reader.blob(sha: sha, path: filePath) {
+                return source
+            }
+            throw GitError.failed(command: "cat-file --batch \(sha):\(filePath)", code: 1, stderr: "missing")
+        }
+        return try GitProcess.capture(arguments: ["show", "\(sha):\(filePath)"], in: root)
     }
     let started = DispatchTime.now()
     let points = await service.complexityHistory(for: unit, churn: churn)

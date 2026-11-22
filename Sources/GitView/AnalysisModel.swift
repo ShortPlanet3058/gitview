@@ -1161,8 +1161,16 @@ final class AnalysisModel: ObservableObject {
         loadingHistories.insert(unit.id)
         let root = analysis.root
         Task {
+            let reader = try? GitBatchReader(directory: root)
+            defer { reader?.close() }
             let service = UnitHistoryService { sha, path in
-                try GitProcess.capture(arguments: ["show", "\(sha):\(path)"], in: root)
+                if let reader {
+                    if let source = try reader.blob(sha: sha, path: path) {
+                        return source
+                    }
+                    throw GitError.failed(command: "cat-file --batch \(sha):\(path)", code: 1, stderr: "missing")
+                }
+                return try GitProcess.capture(arguments: ["show", "\(sha):\(path)"], in: root)
             }
             let points = await service.complexityHistory(for: unit, churn: churn)
             self.histories[unit.id] = points
