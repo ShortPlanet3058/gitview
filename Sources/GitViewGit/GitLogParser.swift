@@ -15,6 +15,7 @@ public struct GitLogParser {
 
     // Current commit
     private var sha: String?
+    private var parents: [String] = []
     private var author: String = ""
     private var email: String = ""
     private var date: Date = .distantPast
@@ -43,6 +44,7 @@ public struct GitLogParser {
                 flushFile()
                 flushCommit()
                 sha = header.sha
+                parents = header.parents
                 author = header.author
                 email = header.email
                 date = header.date
@@ -129,6 +131,7 @@ public struct GitLogParser {
     private mutating func flushCommit() {
         defer {
             sha = nil
+            parents = []
             author = ""
             email = ""
             date = .distantPast
@@ -136,37 +139,57 @@ public struct GitLogParser {
             fileChanges = []
         }
         guard let sha else { return }
-        commits.append(Commit(sha: sha, author: author, email: email, date: date,
-                              subject: subject, fileChanges: fileChanges))
+        commits.append(Commit(sha: sha, parents: parents, author: author, email: email,
+                              date: date, subject: subject, fileChanges: fileChanges))
     }
 
     // MARK: - Header parsing
 
-    struct Header { let sha: String; let author: String; let email: String; let date: Date; let subject: String }
+    struct Header {
+        let sha: String
+        let parents: [String]
+        let author: String
+        let email: String
+        let date: Date
+        let subject: String
+    }
 
     /// Field separator in the commit header: ASCII unit separator, emitted by `%x1f`.
     static let fieldSeparator: Character = "\u{1F}"
 
-    /// Parses `@@@<sha> US <author> US <email> US <iso8601 date> [US <subject>]`, while
-    /// still accepting the 4-field header format (`sha | author | date | subject`) so legacy
-    /// test fixtures continue to parse.
+    /// Parses 6-field (`sha | parents | author | email | iso8601 date | subject`),
+    /// 5-field (`sha | author | email | iso8601 date | subject`), or legacy 4-field headers.
     static func parseCommitHeader(_ line: ArraySlice<UInt8>) -> Header? {
         let body = line.dropFirst(3).decoded
-        let fields = body.split(separator: fieldSeparator, maxSplits: 4, omittingEmptySubsequences: false)
+        let fields = body.split(separator: fieldSeparator, maxSplits: 5, omittingEmptySubsequences: false)
         guard fields.count >= 3 else { return nil }
 
         let sha = String(fields[0])
         guard sha.count == 40 || sha.count == 64,
               sha.allSatisfy({ $0.isHexDigit }) else { return nil }
 
-        if let legacyDate = ISO8601.parse(String(fields[2])) {
-            let subject = fields.dropFirst(3).map(String.init).joined(separator: String(fieldSeparator))
-            return Header(sha: sha, author: String(fields[1]), email: "", date: legacyDate, subject: subject)
+        if fields.count >= 5, let parentAwareDate = ISO8601.parse(String(fields[4])) {
+            let parents = fields[1]
+                .split(separator: " ", omittingEmptySubsequences: true)
+                .map(String.init)
+            let subject = fields.count > 5 ? String(fields[5]) : ""
+            return Header(sha: sha, parents: parents, author: String(fields[2]),
+                          email: String(fields[3]), date: parentAwareDate, subject: subject)
         }
 
-        guard fields.count >= 4, let date = ISO8601.parse(String(fields[3])) else { return nil }
-        let subject = fields.count > 4 ? String(fields[4]) : ""
-        return Header(sha: sha, author: String(fields[1]), email: String(fields[2]), date: date, subject: subject)
+        if fields.count >= 4, let emailDate = ISO8601.parse(String(fields[3])) {
+            let subject = fields.dropFirst(4).map(String.init).joined(separator: String(fieldSeparator))
+            return Header(sha: sha, parents: [], author: String(fields[1]),
+                          email: String(fields[2]), date: emailDate, subject: subject)
+        }
+
+        if let legacyDate = ISO8601.parse(String(fields[2])) {
+            let subject = fields.dropFirst(3).map(String.init).joined(separator: String(fieldSeparator))
+            return Header(sha: sha, parents: [], author: String(fields[1]),
+                          email: "", date: legacyDate, subject: subject)
+        }
+
+        return nil
     }
 
     // MARK: - Path handling

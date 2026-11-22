@@ -195,4 +195,29 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(reloaded.preferredEditor, .cursor)
         XCTAssertEqual(reloaded.preferredTerminal, .ghostty)
     }
+
+    @MainActor
+    func testRiskStoreReusesPrecomputedChurnAndBackgroundRebuild() async throws {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        let store = RiskStore(preferences: prefs)
+        let unit = CodeUnit(filePath: "Sources/Engine.swift", name: "run()", kind: .function,
+                            lineRange: 1...25, complexity: 8, nestingDepth: 2, lineCount: 25, language: "swift")
+        let files = [FileInventory.TrackedFile(path: "Sources/Engine.swift", bytes: 500, modified: nil)]
+        var analysis = makeAnalysis(units: [unit], files: files)
+        let precomputed = ChurnJoiner.join(units: [unit], commits: analysis.commits)
+        analysis.fullChurn = precomputed
+
+        store.update(analysis: analysis, unitsByID: [unit.id: unit], isComplete: true)
+        XCTAssertEqual(store.rows.count, 1)
+        XCTAssertEqual(store.churn?.commitCount(for: unit), 1)
+
+        prefs.halfLifeDays = 90
+        store.rebuildInBackground()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(store.rows.count, 1)
+        XCTAssertGreaterThanOrEqual(store.fullRebuildCount, 2)
+    }
 }

@@ -20,7 +20,8 @@ final class AnalysisCacheTests: XCTestCase {
         AnalysisCache.Payload(
             headSHA: head,
             commits: (0..<commits).map { index in
-                Commit(sha: "sha\(index)", author: "Ann", email: "ann@example.com",
+                Commit(sha: "sha\(index)", parents: index > 0 ? ["sha\(index - 1)"] : [],
+                       author: "Ann", email: "ann@example.com",
                        date: Date(timeIntervalSince1970: TimeInterval(index)),
                        subject: "commit \(index)",
                        fileChanges: [FileChange(path: "A.swift", oldPath: nil,
@@ -49,6 +50,27 @@ final class AnalysisCacheTests: XCTestCase {
         XCTAssertEqual(loaded.units.first?.language, "swift")
         XCTAssertEqual(loaded.commits.first?.subject, "commit 0")
         XCTAssertEqual(loaded.commits.first?.email, "ann@example.com")
+        XCTAssertEqual(loaded.commits.first?.parents, [])
+        XCTAssertEqual(loaded.commits.last?.parents, ["sha\(original.commits.count - 2)"])
+    }
+
+    func testBranchDivergenceRoundTrip() throws {
+        let pair1 = AnalysisCache.DivergencePair(baseSHA: "base1", tipSHA: "tip1")
+        let pair2 = AnalysisCache.DivergencePair(baseSHA: "base1", tipSHA: "tip2")
+        XCTAssertTrue(AnalysisCache.saveBranchDivergence([pair1: (behind: 2, ahead: 5), pair2: (behind: 0, ahead: 1)], root: root))
+        // Standalone divergence write must not synthesize a valid cached payload.
+        XCTAssertNil(AnalysisCache.load(root: root))
+
+        let loaded = AnalysisCache.loadBranchDivergence(root: root)
+        XCTAssertEqual(loaded[pair1]?.behind, 2)
+        XCTAssertEqual(loaded[pair1]?.ahead, 5)
+        XCTAssertEqual(loaded[pair2]?.behind, 0)
+        XCTAssertEqual(loaded[pair2]?.ahead, 1)
+
+        // Saving a full payload on the same schema version retains branch_divergence entries.
+        XCTAssertTrue(AnalysisCache.save(payload(), root: root))
+        let retained = AnalysisCache.loadBranchDivergence(root: root)
+        XCTAssertEqual(retained[pair1]?.ahead, 5)
     }
 
     func testMissingCacheIsNotAnError() {

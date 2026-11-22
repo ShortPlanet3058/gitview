@@ -100,7 +100,7 @@ public struct GitRepository: Sendable {
             // author names and subjects both contain pipes in real histories.
             //
             // `%aN` / `%aE`: capital forms resolve through .mailmap so contributor aliases unify.
-            "--pretty=format:@@@%H%x1f%aN%x1f%aE%x1f%aI%x1f%s",
+            "--pretty=format:@@@%H%x1f%P%x1f%aN%x1f%aE%x1f%aI%x1f%s",
             "-p",
         ] + (range.map { [$0] } ?? [])
     }
