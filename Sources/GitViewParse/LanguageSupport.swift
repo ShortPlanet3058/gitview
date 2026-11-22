@@ -96,6 +96,18 @@ public final class LanguageRegistry: @unchecked Sendable {
         byExtension[ext.lowercased()]
     }
 
+    public func treeSitterLanguage(forPath path: String) -> (LanguageSupport, Language)? {
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty, let support = byExtension[ext] else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        if let language = tsLanguages[support.id] {
+            return (support, language)
+        }
+        let language = support.makeLanguage()
+        tsLanguages[support.id] = language
+        return (support, language)
+    }
+
     public var supportedExtensions: Set<String> { Set(byExtension.keys) }
 
     /// Compiles a language's grammar and query once and reuses them; `Query` and `Language`
@@ -105,7 +117,7 @@ public final class LanguageRegistry: @unchecked Sendable {
         if let language = tsLanguages[support.id], let query = queries[support.id] {
             return (language, query)
         }
-        let language = support.makeLanguage()
+        let language = tsLanguages[support.id] ?? support.makeLanguage()
         let query = try Query(language: language, data: Data(support.unitQuery.utf8))
         tsLanguages[support.id] = language
         queries[support.id] = query

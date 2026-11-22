@@ -193,4 +193,47 @@ final class DiffParserTests: XCTestCase {
         XCTAssertTrue(diff.isEmpty)
         XCTAssertEqual(diff.additions, 0)
     }
+
+    func testHunkPatchPreservesNoNewlineMarkerAndCounts() {
+        let output = """
+        --- a/nonewline.txt
+        +++ b/nonewline.txt
+        @@ -1,2 +1,2 @@
+         first
+        -old
+        \\ No newline at end of file
+        +new
+        \\ No newline at end of file
+        """
+        let diff = DiffParser.parse(output, path: "nonewline.txt")
+        let patch = diff.hunks[0].patch(oldPath: diff.oldPath, newPath: diff.path)
+        XCTAssertTrue(patch.contains("--- a/nonewline.txt"))
+        XCTAssertTrue(patch.contains("+++ b/nonewline.txt"))
+        XCTAssertTrue(patch.contains("@@ -1,2 +1,2 @@"))
+        XCTAssertTrue(patch.contains("\\ No newline at end of file"))
+    }
+
+    func testUntrackedFileDiffPreviewAndBinaryDetection() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-diff-untracked-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q"], in: tempRoot)
+        try "alpha\nbeta".write(to: tempRoot.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]).write(to: tempRoot.appendingPathComponent("blob.bin"))
+
+        let repo = GitRepository(url: tempRoot)
+        let textDiff = try repo.diff(.workingTree(staged: false), path: "notes.txt")
+        XCTAssertTrue(textDiff.isNew)
+        XCTAssertFalse(textDiff.isBinary)
+        XCTAssertEqual(textDiff.hunks.count, 1)
+        XCTAssertEqual(textDiff.hunks[0].lines.map(\.text), ["alpha", "beta"])
+        XCTAssertEqual(textDiff.hunks[0].lines.last?.missingTrailingNewline, true)
+
+        let binaryDiff = try repo.diff(.workingTree(staged: false), path: "blob.bin")
+        XCTAssertTrue(binaryDiff.isNew)
+        XCTAssertTrue(binaryDiff.isBinary)
+        XCTAssertTrue(binaryDiff.hunks.isEmpty)
+    }
 }

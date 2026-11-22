@@ -61,7 +61,7 @@ struct UnitDetailPanel: View {
                     .lineLimit(1).truncationMode(.head).textSelection(.enabled)
                 Spacer()
                 if let fileURL {
-                    Button("Open file") { NSWorkspace.shared.open(fileURL) }
+                    Button("Open file") { openInEditor(fileURL, line: unit.lineRange.lowerBound) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
             }
@@ -251,6 +251,7 @@ struct SourceExcerpt {
         var id: Int { number }
         let number: Int
         let text: String
+        let spans: [HighlightSpan]
     }
     let lines: [Line]
 
@@ -258,12 +259,38 @@ struct SourceExcerpt {
         let source = try String(contentsOf: url, encoding: .utf8)
         let all = source.split(separator: "\n", omittingEmptySubsequences: false)
         guard !all.isEmpty else { return SourceExcerpt(lines: []) }
+        let highlighted = SyntaxHighlighter.highlightLines(source: source, filePath: url.path)
         let lower = max(1, range.lowerBound - context)
         let upper = min(all.count, range.upperBound + context)
         guard lower <= upper else { return SourceExcerpt(lines: []) }
-        return SourceExcerpt(lines: (lower...upper).map {
-            Line(number: $0, text: all[$0 - 1].replacingOccurrences(of: "\t", with: "    "))
+        return SourceExcerpt(lines: (lower...upper).map { number in
+            let raw = String(all[number - 1])
+            let spans = (number - 1) < highlighted.count ? highlighted[number - 1] : []
+            let (expanded, adjustedSpans) = expandTabsPreservingSpans(raw, spans: spans)
+            return Line(number: number, text: expanded, spans: adjustedSpans)
         })
+    }
+
+    private static func expandTabsPreservingSpans(_ raw: String, spans: [HighlightSpan]) -> (String, [HighlightSpan]) {
+        guard raw.contains("\t") else { return (raw, spans) }
+        var map: [Int] = []
+        map.reserveCapacity(raw.utf16.count + 1)
+        var outOffset = 0
+        for unit in raw.utf16 {
+            map.append(outOffset)
+            outOffset += (unit == 0x0009) ? 4 : 1
+        }
+        map.append(outOffset)
+        let expanded = raw.replacingOccurrences(of: "\t", with: "    ")
+        let adjusted = spans.compactMap { span -> HighlightSpan? in
+            let lo = min(max(0, span.range.lowerBound), map.count - 1)
+            let hi = min(max(lo, span.range.upperBound), map.count - 1)
+            let newLo = map[lo]
+            let newHi = map[hi]
+            guard newLo < newHi else { return nil }
+            return HighlightSpan(range: newLo..<newHi, kind: span.kind)
+        }
+        return (expanded, adjusted)
     }
 }
 
@@ -275,16 +302,22 @@ struct SourceExcerptView: View {
         ScrollView([.vertical, .horizontal]) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(excerpt.lines) { line in
+                    let inUnit = highlight.contains(line.number)
                     HStack(alignment: .top, spacing: 10) {
                         Text("\(line.number)").frame(width: 40, alignment: .trailing)
-                            .foregroundStyle(highlight.contains(line.number) ? Theme.inkSoft : Theme.inkMuted.opacity(0.6))
-                        Text(line.text.isEmpty ? " " : line.text).fixedSize(horizontal: true, vertical: false)
-                            .foregroundStyle(highlight.contains(line.number) ? Theme.ink : Theme.inkSoft)
+                            .foregroundStyle(inUnit ? Theme.inkSoft : Theme.inkMuted.opacity(0.6))
+                        Text(Theme.Syntax.attributedLine(
+                            line.text,
+                            spans: line.spans,
+                            baseForeground: inUnit ? Theme.ink : Theme.inkSoft,
+                            foregroundOpacity: inUnit ? 1.0 : 0.72
+                        ))
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                     .font(Theme.Text.mono)
                     .padding(.vertical, 1).padding(.horizontal, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(highlight.contains(line.number) ? Theme.accentWash : Color.clear)
+                    .background(inUnit ? Theme.accentWash : Color.clear)
                 }
             }
             .padding(.vertical, 4)

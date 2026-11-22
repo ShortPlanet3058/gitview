@@ -447,12 +447,17 @@ public final class WorkspaceSession {
     }
 
     private func identity(for analysis: RepositoryAnalysis) -> Identity {
-        let known = Set(contributors.map(\.name))
-        if !preferences.identityName.isEmpty {
-            return Identity(names: [preferences.identityName])
+        let overrideName = preferences.identityName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let overrideEmail = preferences.identityEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !overrideName.isEmpty || !overrideEmail.isEmpty {
+            return Identity(
+                names: overrideName.isEmpty ? [] : [overrideName],
+                emails: overrideEmail.isEmpty ? [] : [overrideEmail]
+            )
         }
-        let configured = analysis.info.configuredUserNames.filter { known.contains($0) }
-        return Identity(names: configured)
+        let knownNames = Set(contributors.map(\.name))
+        let configuredNames = analysis.info.configuredUserNames.filter { knownNames.contains($0) }
+        return Identity(names: configuredNames, emails: analysis.info.configuredUserEmails)
     }
 
     func markCatchUpSeen() {

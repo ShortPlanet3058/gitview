@@ -17,7 +17,56 @@ public struct FileHistoryEntry: Identifiable, Hashable, Sendable {
     public var churn: Int { insertions + deletions }
 }
 
+/// Full metadata, message body, parents, and per-file +/- stats for a single commit.
+public struct CommitDetail: Hashable, Sendable {
+    public let sha: String
+    public let authorName: String
+    public let authorEmail: String
+    public let authorDate: Date
+    public let committerName: String
+    public let committerEmail: String
+    public let committerDate: Date
+    public let parents: [String]
+    public let subject: String
+    public let body: String
+    public let deltas: [FileDelta]
+
+    public init(sha: String, authorName: String, authorEmail: String, authorDate: Date,
+                committerName: String, committerEmail: String, committerDate: Date,
+                parents: [String], subject: String, body: String, deltas: [FileDelta]) {
+        self.sha = sha
+        self.authorName = authorName
+        self.authorEmail = authorEmail
+        self.authorDate = authorDate
+        self.committerName = committerName
+        self.committerEmail = committerEmail
+        self.committerDate = committerDate
+        self.parents = parents
+        self.subject = subject
+        self.body = body
+        self.deltas = deltas
+    }
+}
+
 extension GitRepository {
+    /// Reads full commit headers, full body, parent SHAs, and per-file line counts.
+    public func commitDetail(sha: String) throws -> CommitDetail {
+        let root = try validate()
+        let metaOutput = try GitProcess.capture(
+            arguments: ["show", "--no-patch", "--no-color",
+                        "--format=%H%x1f%aN%x1f%aE%x1f%aI%x1f%cN%x1f%cE%x1f%cI%x1f%P%x1f%s%x1e%b", sha],
+            in: root)
+        let statOutput = (try? GitProcess.capture(
+            arguments: ["show", "--no-color", "--no-ext-diff", "--no-textconv",
+                        "--diff-merges=off", "--format=", "--numstat", "-z", "-M", sha],
+            in: root)) ?? ""
+        let deltas = DiffStatParser.parseNumstat(statOutput)
+        guard let detail = CommitDetailParser.parse(metaOutput, deltas: deltas) else {
+            throw GitError.failed(command: "show \(sha)", code: 1, stderr: "Could not parse commit metadata.")
+        }
+        return detail
+    }
+
     /// A file's history, following renames.
     ///
     /// `--follow` rather than filtering the history already in memory: it genuinely tracks
@@ -92,5 +141,40 @@ enum FileHistoryParser {
         let sides = field.components(separatedBy: " => ")
         guard sides.count == 2 else { return (nil, field) }
         return (sides[0], sides[1])
+    }
+}
+
+enum CommitDetailParser {
+    static func parse(_ output: String, deltas: [FileDelta]) -> CommitDetail? {
+        let sections = output.split(separator: "\u{1E}", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let headerRaw = sections.first else { return nil }
+        let fields = String(headerRaw)
+            .split(separator: "\u{1F}", maxSplits: 8, omittingEmptySubsequences: false)
+            .map(String.init)
+        guard fields.count == 9,
+              !fields[0].isEmpty,
+              let authorDate = ISO8601.parse(fields[3]),
+              let committerDate = ISO8601.parse(fields[6]) else {
+            return nil
+        }
+        let parents = fields[7]
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .map(String.init)
+        let body = sections.count > 1
+            ? String(sections[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        return CommitDetail(
+            sha: fields[0],
+            authorName: fields[1],
+            authorEmail: fields[2],
+            authorDate: authorDate,
+            committerName: fields[4],
+            committerEmail: fields[5],
+            committerDate: committerDate,
+            parents: parents,
+            subject: fields[8],
+            body: body,
+            deltas: deltas
+        )
     }
 }

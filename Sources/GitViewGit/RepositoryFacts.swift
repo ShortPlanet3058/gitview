@@ -92,8 +92,36 @@ public struct RepositoryInfo: Hashable, Sendable {
     public let readmeSummary: String?
     /// `user.name` from git config, used to recognise "your" commits. Empty when unset.
     public let configuredUserNames: Set<String>
+    /// `user.email` from git config (lowercased), used alongside names for identity matching.
+    public let configuredUserEmails: Set<String>
     public let unreleased: UnreleasedSummary?
     public let inventory: FileInventory
+
+    public init(
+        root: URL,
+        currentBranch: String,
+        defaultBranch: String,
+        remoteURL: String?,
+        remoteWebURL: URL?,
+        packedBytes: Int64?,
+        readmeSummary: String?,
+        configuredUserNames: Set<String>,
+        configuredUserEmails: Set<String> = [],
+        unreleased: UnreleasedSummary?,
+        inventory: FileInventory
+    ) {
+        self.root = root
+        self.currentBranch = currentBranch
+        self.defaultBranch = defaultBranch
+        self.remoteURL = remoteURL
+        self.remoteWebURL = remoteWebURL
+        self.packedBytes = packedBytes
+        self.readmeSummary = readmeSummary
+        self.configuredUserNames = configuredUserNames
+        self.configuredUserEmails = configuredUserEmails
+        self.unreleased = unreleased
+        self.inventory = inventory
+    }
 }
 
 extension GitRepository {
@@ -113,6 +141,7 @@ extension GitRepository {
             packedBytes: Self.objectStoreBytes(in: root),
             readmeSummary: Self.readmeSummary(in: root),
             configuredUserNames: Self.configuredUserNames(in: root),
+            configuredUserEmails: Self.configuredUserEmails(in: root),
             unreleased: unreleasedSummary(),
             inventory: Self.inventory(in: root)
         )
@@ -216,14 +245,22 @@ extension GitRepository {
     /// overrides the global identity, and the same person appears under both across a
     /// history.
     static func configuredUserNames(in root: URL) -> Set<String> {
-        var names = Set<String>()
-        for scope in [["config", "--local", "user.name"], ["config", "--global", "user.name"]] {
+        configuredConfigValues(key: "user.name", in: root)
+    }
+
+    static func configuredUserEmails(in root: URL) -> Set<String> {
+        Set(configuredConfigValues(key: "user.email", in: root).map { $0.lowercased() })
+    }
+
+    private static func configuredConfigValues(key: String, in root: URL) -> Set<String> {
+        var values = Set<String>()
+        for scope in [["config", "--local", key], ["config", "--global", key]] {
             if let value = try? GitProcess.capture(arguments: scope, in: root) {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { names.insert(trimmed) }
+                if !trimmed.isEmpty { values.insert(trimmed) }
             }
         }
-        return names
+        return values
     }
 
     static func objectStoreBytes(in root: URL) -> Int64? {

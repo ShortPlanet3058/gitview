@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import GitViewCore
+import GitViewParse
 
 /// Design tokens. Dark is the concept's navy-charcoal; light is a matching cool neutral.
 /// Status colours are a fixed palette and are always paired with an icon and a label.
@@ -86,6 +87,94 @@ enum Theme {
         static let caption  = Font.system(size: 11)
         static let hero     = Font.system(size: 24, weight: .semibold)
         static let mono     = Font.system(size: 11, design: .monospaced)
+    }
+
+    enum Syntax {
+        static let keyword  = Color.adaptive(light: 0x7C3AED, dark: 0xC084FC)
+        static let type     = Color.adaptive(light: 0x0F766E, dark: 0x5EEAD4)
+        static let function = Color.adaptive(light: 0x1D4ED8, dark: 0x60A5FA)
+        static let string   = Color.adaptive(light: 0xB45309, dark: 0xFBBF24)
+        static let comment  = Color.adaptive(light: 0x64748B, dark: 0x7C8598)
+        static let number   = Color.adaptive(light: 0xC2410C, dark: 0xFB923C)
+        static let property = Color.adaptive(light: 0x0369A1, dark: 0x7DD3FC)
+
+        static func color(for kind: SyntaxTokenKind) -> Color {
+            switch kind {
+            case .keyword: return keyword
+            case .type: return type
+            case .function: return function
+            case .string: return string
+            case .comment: return comment
+            case .number: return number
+            case .property: return property
+            }
+        }
+
+        /// Builds a syntax-highlighted `AttributedString`, safely mapping UTF-16 spans and optional background highlights.
+        static func attributedLine(
+            _ text: String,
+            spans: [HighlightSpan],
+            baseForeground: Color,
+            foregroundOpacity: Double = 1.0,
+            emphasisUTF16Range: Range<Int>? = nil,
+            emphasisBackground: Color? = nil,
+            searchQuery: String = ""
+        ) -> AttributedString {
+            let display = text.isEmpty ? " " : text
+            var attributed = AttributedString(display)
+            attributed.foregroundColor = foregroundOpacity < 1.0 ? baseForeground.opacity(foregroundOpacity) : baseForeground
+
+            guard !text.isEmpty else { return attributed }
+
+            for span in spans {
+                if let attrRange = attributedRange(forUTF16: span.range, in: text, attributed: attributed) {
+                    let tokenColor = color(for: span.kind)
+                    attributed[attrRange].foregroundColor = foregroundOpacity < 1.0
+                        ? tokenColor.opacity(foregroundOpacity)
+                        : tokenColor
+                }
+            }
+
+            if let emphasisUTF16Range, let emphasisBackground,
+               let attrRange = attributedRange(forUTF16: emphasisUTF16Range, in: text, attributed: attributed) {
+                attributed[attrRange].backgroundColor = emphasisBackground
+            }
+
+            let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespaces)
+            if !trimmedQuery.isEmpty {
+                var searchStart = text.startIndex
+                while searchStart < text.endIndex,
+                      let found = text.range(of: trimmedQuery, options: .caseInsensitive, range: searchStart..<text.endIndex) {
+                    if let attrStart = AttributedString.Index(found.lowerBound, within: attributed),
+                       let attrEnd = AttributedString.Index(found.upperBound, within: attributed),
+                       attrStart < attrEnd {
+                        attributed[attrStart..<attrEnd].backgroundColor = Theme.warning.opacity(0.35)
+                    }
+                    searchStart = found.upperBound
+                }
+            }
+
+            return attributed
+        }
+
+        private static func attributedRange(forUTF16 range: Range<Int>, in text: String,
+                                            attributed: AttributedString) -> Range<AttributedString.Index>? {
+            let utf16 = text.utf16
+            let lower = min(max(0, range.lowerBound), utf16.count)
+            let upper = min(max(lower, range.upperBound), utf16.count)
+            guard lower < upper else { return nil }
+            let uStart = utf16.index(utf16.startIndex, offsetBy: lower)
+            let uEnd = utf16.index(utf16.startIndex, offsetBy: upper)
+            guard let sStart = String.Index(uStart, within: text),
+                  let sEnd = String.Index(uEnd, within: text),
+                  sStart < sEnd,
+                  let aStart = AttributedString.Index(sStart, within: attributed),
+                  let aEnd = AttributedString.Index(sEnd, within: attributed),
+                  aStart < aEnd else {
+                return nil
+            }
+            return aStart..<aEnd
+        }
     }
 }
 

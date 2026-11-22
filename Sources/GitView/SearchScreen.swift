@@ -16,11 +16,12 @@ struct GlobalSearchField: View {
                 Text(search.globalSearch.isEmpty ? "Search commits, files, functions…" : search.globalSearch)
                     .font(Theme.Text.body)
                     .foregroundStyle(search.globalSearch.isEmpty ? Theme.inkMuted : Theme.ink)
-                    .frame(width: 260, alignment: .leading)
+                    .lineLimit(1)
+                    .frame(minWidth: 160, idealWidth: 210, maxWidth: 240, alignment: .leading)
             } else {
                 TextField("Search commits, files, functions…", text: $search.globalSearch)
                     .textFieldStyle(.plain).font(Theme.Text.body).focused($focused)
-                    .frame(width: 260)
+                    .frame(minWidth: 160, idealWidth: 210, maxWidth: 240)
             }
             if search.isSearching {
                 Button { search.clear() } label: {
@@ -124,6 +125,7 @@ struct SearchScreen: View {
                         .padding(.vertical, 4).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { CommitActions(commit: commit) }
                 }
             }
         }
@@ -153,6 +155,15 @@ struct SearchScreen: View {
                         .padding(.vertical, 4).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        if let url = session.analysis?.root.appendingPathComponent(unit.filePath),
+                           FileManager.default.fileExists(atPath: url.path) {
+                            Button("Open in Editor at Line \(unit.lineRange.lowerBound)") {
+                                openInEditor(url, line: unit.lineRange.lowerBound)
+                            }
+                        }
+                        PathActions(path: unit.filePath)
+                    }
                 }
             }
         }
@@ -175,6 +186,7 @@ struct SearchScreen: View {
                         .padding(.vertical, 4).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { PathActions(path: path) }
                 }
             }
         }
@@ -207,6 +219,15 @@ struct SearchScreen: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            if let url = session.analysis?.root.appendingPathComponent(match.path),
+                               FileManager.default.fileExists(atPath: url.path) {
+                                Button("Open in Editor at Line \(match.line)") {
+                                    openInEditor(url, line: match.line)
+                                }
+                            }
+                            PathActions(path: match.path)
+                        }
                     }
                 }
             }
@@ -233,6 +254,7 @@ struct SearchScreen: View {
                         .padding(.vertical, 4).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { CommitActions(commit: commit) }
                 }
             }
         }

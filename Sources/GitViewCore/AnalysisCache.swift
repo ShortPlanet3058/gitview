@@ -13,7 +13,7 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 /// Stored under Caches on purpose: it is reconstructible, and the system may evict it.
 public enum AnalysisCache {
     /// Bumped whenever the meaning of stored results or schema changes.
-    public static let formatVersion = 4
+    public static let formatVersion = 5
 
     public struct Payload: Codable, Sendable {
         public let formatVersion: Int
@@ -220,7 +220,14 @@ public enum AnalysisCache {
         guard exec(db, "BEGIN IMMEDIATE TRANSACTION;") else { return false }
 
         if existingVersion != formatVersion {
-            guard exec(db, "DELETE FROM meta; DELETE FROM commits; DELETE FROM branch_heads; DELETE FROM file_units;") else {
+            let resetSQL = """
+            DROP TABLE IF EXISTS meta;
+            DROP TABLE IF EXISTS authors;
+            DROP TABLE IF EXISTS commits;
+            DROP TABLE IF EXISTS branch_heads;
+            DROP TABLE IF EXISTS file_units;
+            """
+            guard exec(db, resetSQL), exec(db, schemaSQL) else {
                 _ = exec(db, "ROLLBACK;")
                 return false
             }
@@ -281,10 +288,15 @@ public enum AnalysisCache {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS authors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        UNIQUE(name, email)
+    );
     CREATE TABLE IF NOT EXISTS commits (
         sha TEXT PRIMARY KEY,
-        author TEXT NOT NULL,
-        email TEXT NOT NULL DEFAULT '',
+        author_id INTEGER NOT NULL,
         timestamp REAL NOT NULL,
         subject TEXT NOT NULL,
         changes_blob BLOB NOT NULL
@@ -402,35 +414,92 @@ public enum AnalysisCache {
         return sqlite3_step(stmt) == SQLITE_DONE
     }
 
+    private static func readAuthorsByKey(_ db: OpaquePointer) -> [AuthorKey: Int64] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, name, email FROM authors;", -1, &stmt, nil) == SQLITE_OK,
+              let stmt else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+        var map: [AuthorKey: Int64] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let nameC = sqlite3_column_text(stmt, 1),
+                  let emailC = sqlite3_column_text(stmt, 2) else { continue }
+            map[AuthorKey(name: String(cString: nameC), email: String(cString: emailC))] = sqlite3_column_int64(stmt, 0)
+        }
+        return map
+    }
+
+    private static func readAuthorsByID(_ db: OpaquePointer) -> [Int64: AuthorKey] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, name, email FROM authors;", -1, &stmt, nil) == SQLITE_OK,
+              let stmt else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+        var map: [Int64: AuthorKey] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let nameC = sqlite3_column_text(stmt, 1),
+                  let emailC = sqlite3_column_text(stmt, 2) else { continue }
+            map[sqlite3_column_int64(stmt, 0)] = AuthorKey(name: String(cString: nameC), email: String(cString: emailC))
+        }
+        return map
+    }
+
+    private struct AuthorKey: Hashable {
+        let name: String
+        let email: String
+    }
+
     private static func upsertCommits(_ db: OpaquePointer, commits: [Commit]) -> Bool {
+        var authorIDs = readAuthorsByKey(db)
+        var insertAuthorStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "INSERT INTO authors (name, email) VALUES (?, ?);",
+            -1, &insertAuthorStmt, nil
+        ) == SQLITE_OK, let insertAuthorStmt else { return false }
+        defer { sqlite3_finalize(insertAuthorStmt) }
+
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(
             db,
-            "INSERT OR IGNORE INTO commits (sha, author, email, timestamp, subject, changes_blob) VALUES (?, ?, ?, ?, ?, ?);",
+            "INSERT OR IGNORE INTO commits (sha, author_id, timestamp, subject, changes_blob) VALUES (?, ?, ?, ?, ?);",
             -1, &stmt, nil
         ) == SQLITE_OK, let stmt else { return false }
         defer { sqlite3_finalize(stmt) }
 
         for commit in commits {
+            let key = AuthorKey(name: commit.author, email: commit.email)
+            let authorID: Int64
+            if let existing = authorIDs[key] {
+                authorID = existing
+            } else {
+                sqlite3_reset(insertAuthorStmt)
+                sqlite3_clear_bindings(insertAuthorStmt)
+                bindText(insertAuthorStmt, index: 1, commit.author)
+                bindText(insertAuthorStmt, index: 2, commit.email)
+                guard sqlite3_step(insertAuthorStmt) == SQLITE_DONE else { return false }
+                let newID = sqlite3_last_insert_rowid(db)
+                authorIDs[key] = newID
+                authorID = newID
+            }
+
             let encodedChanges = encodeFileChanges(commit.fileChanges)
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
             bindText(stmt, index: 1, commit.sha)
-            bindText(stmt, index: 2, commit.author)
-            bindText(stmt, index: 3, "")
-            sqlite3_bind_double(stmt, 4, commit.date.timeIntervalSince1970)
-            bindText(stmt, index: 5, commit.subject)
-            bindBlob(stmt, index: 6, encodedChanges)
+            sqlite3_bind_int64(stmt, 2, authorID)
+            sqlite3_bind_double(stmt, 3, commit.date.timeIntervalSince1970)
+            bindText(stmt, index: 4, commit.subject)
+            bindBlob(stmt, index: 5, encodedChanges)
             guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
         }
         return true
     }
 
     private static func readAllCommits(_ db: OpaquePointer) -> [String: Commit] {
+        let authors = readAuthorsByID(db)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(
             db,
-            "SELECT sha, author, timestamp, subject, changes_blob FROM commits;",
+            "SELECT sha, author_id, timestamp, subject, changes_blob FROM commits;",
             -1, &stmt, nil
         ) == SQLITE_OK, let stmt else { return [:] }
         defer { sqlite3_finalize(stmt) }
@@ -438,14 +507,16 @@ public enum AnalysisCache {
         var commits: [String: Commit] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let shaC = sqlite3_column_text(stmt, 0),
-                  let authorC = sqlite3_column_text(stmt, 1),
                   let subjectC = sqlite3_column_text(stmt, 3),
                   let blob = columnBlob(stmt, index: 4),
                   let changes = decodeFileChanges(blob) else { continue }
             let sha = String(cString: shaC)
+            let authorID = sqlite3_column_int64(stmt, 1)
+            let identity = authors[authorID] ?? AuthorKey(name: "", email: "")
             commits[sha] = Commit(
                 sha: sha,
-                author: String(cString: authorC),
+                author: identity.name,
+                email: identity.email,
                 date: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
                 subject: String(cString: subjectC),
                 fileChanges: changes

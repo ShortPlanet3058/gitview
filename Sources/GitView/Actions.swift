@@ -15,19 +15,117 @@ func revealInFinder(_ url: URL) {
     NSWorkspace.shared.activateFileViewerSelecting([url])
 }
 
+@MainActor
 func openInTerminal(_ directory: URL) {
-    NSWorkspace.shared.open(
-        [directory],
-        withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
-        configuration: NSWorkspace.OpenConfiguration())
+    let bundleIDs: [String]
+    switch AppPreferences.shared.preferredTerminal {
+    case .terminal: bundleIDs = ["com.apple.Terminal"]
+    case .iterm:    bundleIDs = ["com.googlecode.iterm2"]
+    case .ghostty:  bundleIDs = ["com.mitchellh.ghostty"]
+    case .warp:     bundleIDs = ["dev.warp.Warp-Stable", "dev.warp.Warp"]
+    case .wezterm:  bundleIDs = ["com.github.wez.wezterm"]
+    }
+    let appURL = bundleIDs.lazy
+        .compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+        .first ?? URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+    NSWorkspace.shared.open([directory], withApplicationAt: appURL,
+                            configuration: NSWorkspace.OpenConfiguration())
 }
 
-/// Opens a file in whichever app the user has already chosen for that file type.
-///
-/// Deliberately not a hardcoded editor: asking the system means the file opens in the
-/// editor this person actually uses, without GitView holding a preference for it.
-func openInEditor(_ url: URL) {
+/// Opens a file (optionally jumping to `line`) using the configured editor or system default.
+@MainActor
+func openInEditor(_ url: URL, line: Int? = nil) {
+    let chosen = AppPreferences.shared.preferredEditor
+    if chosen == .system {
+        NSWorkspace.shared.open(url)
+        return
+    }
+
+    let candidates: [ExternalEditor] = chosen == .auto
+        ? [.cursor, .vscode, .zed, .sublime, .xcode]
+        : [chosen]
+
+    for editor in candidates {
+        let spec = editorSpec(for: editor)
+        if let cliPath = spec.cliPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            let args = line.map { spec.lineArgs(url.path, $0) } ?? [url.path]
+            launchDetached(executablePath: cliPath, arguments: args, fallbackURL: url)
+            return
+        }
+        if let appURL = spec.bundleIDs.lazy
+            .compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) })
+            .first {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL,
+                                    configuration: NSWorkspace.OpenConfiguration())
+            return
+        }
+    }
+
     NSWorkspace.shared.open(url)
+}
+
+private struct EditorLaunchSpec {
+    let cliPaths: [String]
+    let bundleIDs: [String]
+    let lineArgs: (String, Int) -> [String]
+}
+
+private func editorSpec(for editor: ExternalEditor) -> EditorLaunchSpec {
+    switch editor {
+    case .cursor:
+        return EditorLaunchSpec(
+            cliPaths: ["/opt/homebrew/bin/cursor", "/usr/local/bin/cursor",
+                       "/Applications/Cursor.app/Contents/Resources/app/bin/cursor"],
+            bundleIDs: ["com.todesktop.230313mzl4w4u92"],
+            lineArgs: { ["--goto", "\($0):\($1)"] }
+        )
+    case .vscode:
+        return EditorLaunchSpec(
+            cliPaths: ["/opt/homebrew/bin/code", "/usr/local/bin/code",
+                       "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"],
+            bundleIDs: ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"],
+            lineArgs: { ["--goto", "\($0):\($1)"] }
+        )
+    case .zed:
+        return EditorLaunchSpec(
+            cliPaths: ["/opt/homebrew/bin/zed", "/usr/local/bin/zed",
+                       "/Applications/Zed.app/Contents/MacOS/cli"],
+            bundleIDs: ["dev.zed.Zed", "dev.zed.Zed-Preview"],
+            lineArgs: { ["\($0):\($1)"] }
+        )
+    case .sublime:
+        return EditorLaunchSpec(
+            cliPaths: ["/opt/homebrew/bin/subl", "/usr/local/bin/subl",
+                       "/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl"],
+            bundleIDs: ["com.sublimetext.4", "com.sublimetext.3"],
+            lineArgs: { ["\($0):\($1)"] }
+        )
+    case .xcode:
+        return EditorLaunchSpec(
+            cliPaths: ["/usr/bin/xed"],
+            bundleIDs: ["com.apple.dt.Xcode"],
+            lineArgs: { ["--line", "\($1)", $0] }
+        )
+    case .auto, .system:
+        return EditorLaunchSpec(cliPaths: [], bundleIDs: [], lineArgs: { path, _ in [path] })
+    }
+}
+
+private func launchDetached(executablePath: String, arguments: [String], fallbackURL: URL) {
+    Task.detached(priority: .userInitiated) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            await MainActor.run {
+                _ = NSWorkspace.shared.open(fallbackURL)
+            }
+        }
+    }
 }
 
 /// Right-click actions for a path inside the repository. `path` is repository-relative,

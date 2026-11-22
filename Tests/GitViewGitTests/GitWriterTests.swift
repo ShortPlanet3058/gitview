@@ -249,4 +249,82 @@ final class GitWriterTests: XCTestCase {
                           "got: \(text)")
         }
     }
+
+    func testCreateSwitchAndDeleteMergedBranch() throws {
+        try repository.createBranch(name: "topic", checkout: true)
+        XCTAssertEqual(try state().branch, "topic")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        XCTAssertEqual(try state().branch, "main")
+
+        try repository.deleteMergedBranch(name: "topic")
+        let branchList = try GitProcess.capture(arguments: ["branch", "--list", "topic"], in: root)
+        XCTAssertTrue(branchList.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    func testFetchAndPullFastForwardOnly() throws {
+        let remote = root.appendingPathComponent("../remote-sync-\(UUID().uuidString).git").standardized
+        let peer = root.appendingPathComponent("../peer-sync-\(UUID().uuidString)").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", remote.path], in: root)
+        defer {
+            try? FileManager.default.removeItem(at: remote)
+            try? FileManager.default.removeItem(at: peer)
+        }
+        try run(["remote", "add", "origin", remote.path])
+        try repository.push(remote: "origin", branch: "main", setUpstream: true)
+
+        _ = try GitProcess.capture(arguments: ["clone", "-q", "-b", "main", remote.path, peer.path], in: root)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Peer"], in: peer)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "peer@example.com"], in: peer)
+        try "from peer\n".write(to: peer.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "tracked.txt"], in: peer)
+        _ = try GitProcess.capture(arguments: ["commit", "-q", "-m", "Peer commit"], in: peer)
+        _ = try GitProcess.capture(arguments: ["push", "-q", "origin", "HEAD:main"], in: peer)
+
+        try repository.fetch(prune: true)
+        XCTAssertEqual(try state().behind, 1)
+
+        try repository.pullFastForwardOnly()
+        XCTAssertEqual(try state().behind, 0)
+        XCTAssertEqual(read("tracked.txt"), "from peer\n")
+    }
+
+    func testApplyPatchSingleHunkStageUnstageAndDiscard() throws {
+        let original = (1...30).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        try write("multi.txt", original)
+        try repository.stage(paths: ["multi.txt"])
+        _ = try repository.commit(subject: "Add 30 lines")
+
+        var editedLines = (1...30).map { "line \($0)" }
+        editedLines[1] = "line 2 EDITED"
+        editedLines[27] = "line 28 EDITED"
+        try write("multi.txt", editedLines.joined(separator: "\n") + "\n")
+
+        let initialDiff = try repository.diff(.workingTree(staged: false), path: "multi.txt", context: 3)
+        XCTAssertEqual(initialDiff.hunks.count, 2)
+
+        // Stage only the first hunk.
+        let firstPatch = initialDiff.hunks[0].patch(oldPath: initialDiff.oldPath, newPath: initialDiff.path)
+        try repository.applyPatch(firstPatch, cached: true, reverse: false)
+
+        let stagedDiff = try repository.diff(.workingTree(staged: true), path: "multi.txt", context: 3)
+        let unstagedAfterStage = try repository.diff(.workingTree(staged: false), path: "multi.txt", context: 3)
+        XCTAssertEqual(stagedDiff.hunks.count, 1)
+        XCTAssertEqual(unstagedAfterStage.hunks.count, 1)
+
+        // Unstage the staged hunk back to working tree.
+        let stagedPatch = stagedDiff.hunks[0].patch(oldPath: stagedDiff.oldPath, newPath: stagedDiff.path)
+        try repository.applyPatch(stagedPatch, cached: true, reverse: true)
+        XCTAssertTrue(try repository.diff(.workingTree(staged: true), path: "multi.txt", context: 3).isEmpty)
+
+        // Discard only the first hunk from working tree; keep the second hunk edit intact.
+        let unstagedBeforeDiscard = try repository.diff(.workingTree(staged: false), path: "multi.txt", context: 3)
+        XCTAssertEqual(unstagedBeforeDiscard.hunks.count, 2)
+        let discardPatch = unstagedBeforeDiscard.hunks[0].patch(oldPath: unstagedBeforeDiscard.oldPath, newPath: unstagedBeforeDiscard.path)
+        try repository.applyPatch(discardPatch, cached: false, reverse: true)
+
+        let contents = try XCTUnwrap(read("multi.txt"))
+        XCTAssertTrue(contents.contains("line 2\n"))
+        XCTAssertTrue(contents.contains("line 28 EDITED\n"))
+    }
 }

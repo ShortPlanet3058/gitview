@@ -16,6 +16,7 @@ public struct GitLogParser {
     // Current commit
     private var sha: String?
     private var author: String = ""
+    private var email: String = ""
     private var date: Date = .distantPast
     private var subject: String = ""
     private var fileChanges: [FileChange] = []
@@ -43,6 +44,7 @@ public struct GitLogParser {
                 flushCommit()
                 sha = header.sha
                 author = header.author
+                email = header.email
                 date = header.date
                 subject = header.subject
                 return
@@ -128,41 +130,43 @@ public struct GitLogParser {
         defer {
             sha = nil
             author = ""
+            email = ""
             date = .distantPast
             subject = ""
             fileChanges = []
         }
         guard let sha else { return }
-        commits.append(Commit(sha: sha, author: author, date: date, subject: subject, fileChanges: fileChanges))
+        commits.append(Commit(sha: sha, author: author, email: email, date: date,
+                              subject: subject, fileChanges: fileChanges))
     }
 
     // MARK: - Header parsing
 
-    struct Header { let sha: String; let author: String; let date: Date; let subject: String }
+    struct Header { let sha: String; let author: String; let email: String; let date: Date; let subject: String }
 
     /// Field separator in the commit header: ASCII unit separator, emitted by `%x1f`.
     static let fieldSeparator: Character = "\u{1F}"
 
-    /// Parses `@@@<sha> US <author> US <iso8601 date> [US <subject>]`.
-    ///
-    /// Author names and subjects are arbitrary text — pipes, colons and tabs all occur in
-    /// real histories — so no printable separator is safe. 0x1F is a control character git
-    /// never emits inside these fields. The subject is split with `maxSplits` so a stray
-    /// separator inside it cannot shift fields.
+    /// Parses `@@@<sha> US <author> US <email> US <iso8601 date> [US <subject>]`, while
+    /// still accepting the 4-field header format (`sha | author | date | subject`) so legacy
+    /// test fixtures continue to parse.
     static func parseCommitHeader(_ line: ArraySlice<UInt8>) -> Header? {
         let body = line.dropFirst(3).decoded
-        let fields = body.split(separator: fieldSeparator, maxSplits: 3, omittingEmptySubsequences: false)
+        let fields = body.split(separator: fieldSeparator, maxSplits: 4, omittingEmptySubsequences: false)
         guard fields.count >= 3 else { return nil }
 
         let sha = String(fields[0])
-        // A sha is 40 (or 64) hex characters. Requiring that stops a diff body line
-        // beginning with "@@@" from being mistaken for a commit boundary.
         guard sha.count == 40 || sha.count == 64,
               sha.allSatisfy({ $0.isHexDigit }) else { return nil }
 
-        guard let date = ISO8601.parse(String(fields[2])) else { return nil }
-        let subject = fields.count > 3 ? String(fields[3]) : ""
-        return Header(sha: sha, author: String(fields[1]), date: date, subject: subject)
+        if let legacyDate = ISO8601.parse(String(fields[2])) {
+            let subject = fields.dropFirst(3).map(String.init).joined(separator: String(fieldSeparator))
+            return Header(sha: sha, author: String(fields[1]), email: "", date: legacyDate, subject: subject)
+        }
+
+        guard fields.count >= 4, let date = ISO8601.parse(String(fields[3])) else { return nil }
+        let subject = fields.count > 4 ? String(fields[4]) : ""
+        return Header(sha: sha, author: String(fields[1]), email: String(fields[2]), date: date, subject: subject)
     }
 
     // MARK: - Path handling

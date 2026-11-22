@@ -47,6 +47,25 @@ struct HotspotsScreen: View {
                 }
             }
         }
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.downArrow) {
+            navigation.selectedUnitID = NavigationStore.stepSelection(
+                in: shown.map(\.id), current: navigation.selectedUnitID, delta: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            navigation.selectedUnitID = NavigationStore.stepSelection(
+                in: shown.map(\.id), current: navigation.selectedUnitID, delta: -1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if navigation.selectedUnitID == nil, let first = shown.first {
+                navigation.selectedUnitID = first.id
+                return .handled
+            }
+            return .ignored
+        }
     }
 
     private var controls: some View {

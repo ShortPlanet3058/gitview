@@ -7,11 +7,32 @@ import GitViewGit
 struct ChangesScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @State private var selectedEntryID: String?
+
+    private struct SelectableEntry: Identifiable {
+        let id: String
+        let file: WorkingState.FileStatus
+        let staged: Bool
+        let title: String
+    }
 
     private var state: WorkingState { session.analysis?.workingState ?? .clean }
 
+    private var orderedEntries: [SelectableEntry] {
+        var entries: [SelectableEntry] = []
+        entries.append(contentsOf: state.staged.map {
+            SelectableEntry(id: "staged:\($0.path)", file: $0, staged: true, title: "Staged changes")
+        })
+        entries.append(contentsOf: state.unstaged.map {
+            SelectableEntry(id: "unstaged:\($0.path)", file: $0, staged: false, title: "Uncommitted changes")
+        })
+        entries.append(contentsOf: state.untracked.map {
+            SelectableEntry(id: "untracked:\($0.path)", file: $0, staged: false, title: "Untracked file")
+        })
+        return entries
+    }
+
     var body: some View {
-        @Bindable var workingCopy = workingCopy
         Page {
             HStack(alignment: .top) {
                 ScreenHeader(title: "Changes", subtitle: subtitle)
@@ -29,32 +50,39 @@ struct ChangesScreen: View {
                 cleanCard
             } else {
                 if !state.staged.isEmpty {
-                    fileSection("Staged", state.staged, tint: Theme.good, staged: true)
+                    fileSection("Staged", state.staged, tint: Theme.good, staged: true, sectionPrefix: "staged")
                 }
                 if !state.staged.isEmpty || !workingCopy.commitSubject.isEmpty { commitCard }
                 if !state.unstaged.isEmpty {
-                    fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false)
+                    fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false, sectionPrefix: "unstaged")
                 }
                 if !state.untracked.isEmpty {
-                    fileSection("Untracked", state.untracked, tint: Theme.inkMuted, staged: false)
+                    fileSection("Untracked", state.untracked, tint: Theme.inkMuted, staged: false, sectionPrefix: "untracked")
                 }
             }
 
             pushCard
             stashCard
         }
-        .alert(item: $workingCopy.confirmation) { confirmation in
-            // Alert rather than a quiet inline action: these are the operations with no undo.
-            if let alternativeLabel = confirmation.alternativeLabel, let alternative = confirmation.alternative {
-                return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
-                             primaryButton: .default(Text(alternativeLabel), action: alternative),
-                             secondaryButton: .destructive(Text(confirmation.confirmLabel),
-                                                           action: confirmation.perform))
-            }
-            return Alert(title: Text(confirmation.title), message: Text(confirmation.message),
-                         primaryButton: .destructive(Text(confirmation.confirmLabel),
-                                                     action: confirmation.perform),
-                         secondaryButton: .cancel())
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.downArrow) {
+            selectedEntryID = NavigationStore.stepSelection(
+                in: orderedEntries.map(\.id), current: selectedEntryID, delta: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            selectedEntryID = NavigationStore.stepSelection(
+                in: orderedEntries.map(\.id), current: selectedEntryID, delta: -1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            let entries = orderedEntries
+            let chosen = entries.first(where: { $0.id == selectedEntryID }) ?? entries.first
+            guard let chosen else { return .ignored }
+            selectedEntryID = chosen.id
+            session.inspector.showDiff(.workingTree(staged: chosen.staged), path: chosen.file.path, title: chosen.title)
+            return .handled
         }
     }
 
@@ -110,7 +138,7 @@ struct ChangesScreen: View {
     }
 
     private func fileSection(_ title: String, _ files: [WorkingState.FileStatus],
-                             tint: Color, staged: Bool) -> some View {
+                             tint: Color, staged: Bool, sectionPrefix: String) -> some View {
         Card(padding: Theme.Space.s) {
             VStack(spacing: 0) {
                 HStack {
@@ -126,7 +154,8 @@ struct ChangesScreen: View {
                 .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
                 HairlineDivider()
                 ForEach(files) { file in
-                    row(file, tint: tint, staged: staged)
+                    let entryID = "\(sectionPrefix):\(file.path)"
+                    row(file, tint: tint, staged: staged, entryID: entryID)
                         .contextMenu { PathActions(path: file.path) }
                     if file.id != files.last?.id { HairlineDivider() }
                 }
@@ -134,13 +163,15 @@ struct ChangesScreen: View {
         }
     }
 
-    private func row(_ file: WorkingState.FileStatus, tint: Color, staged: Bool) -> some View {
-        HStack(spacing: Theme.Space.s) {
+    private func row(_ file: WorkingState.FileStatus, tint: Color, staged: Bool, entryID: String) -> some View {
+        let isSelected = selectedEntryID == entryID
+        return HStack(spacing: Theme.Space.s) {
             Text(marker(file, staged: staged))
                 .font(Theme.Text.mono).foregroundStyle(tint).frame(width: 16)
             Button {
-                session.inspector.showDiff(.workingTree(staged: staged), path: file.path,
-                               title: staged ? "Staged changes" : "Uncommitted changes")
+                selectedEntryID = entryID
+                let title = staged ? "Staged changes" : (file.isUntracked ? "Untracked file" : "Uncommitted changes")
+                session.inspector.showDiff(.workingTree(staged: staged), path: file.path, title: title)
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(file.path).font(Theme.Text.body).foregroundStyle(Theme.ink)
@@ -154,7 +185,6 @@ struct ChangesScreen: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(file.isUntracked)
 
             if staged {
                 Button("Unstage") { workingCopy.unstage([file.path]) }
@@ -173,6 +203,8 @@ struct ChangesScreen: View {
             }
         }
         .padding(.horizontal, Theme.Space.m).padding(.vertical, 7)
+        .background(isSelected ? Theme.accentWash : .clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .opacity(workingCopy.writeInFlight ? 0.5 : 1)
     }
 

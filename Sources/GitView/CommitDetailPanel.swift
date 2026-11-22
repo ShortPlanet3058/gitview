@@ -1,12 +1,18 @@
 import SwiftUI
 import GitViewCore
+import GitViewGit
 
 /// What one commit actually changed — including which functions it touched, which is the
 /// thing GitView knows and a commit viewer normally cannot tell you.
 struct CommitDetailPanel: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(RiskStore.self) private var risk
+    @Environment(InspectorStore.self) private var inspector
     let commit: Commit
+
+    private var detail: CommitDetail? {
+        inspector.commitDetails[commit.sha]
+    }
 
     private var touched: [RiskRow] {
         guard let churn = risk.churn else { return [] }
@@ -20,6 +26,9 @@ struct CommitDetailPanel: View {
             header
             ScrollColumn {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
+                    if let body = detail?.body, !body.isEmpty {
+                        bodyCard(body)
+                    }
                     functionsCard
                     filesCard
                 }
@@ -27,6 +36,9 @@ struct CommitDetailPanel: View {
             }
         }
         .background(Theme.surface)
+        .task(id: commit.sha) {
+            inspector.ensureCommitDetail(sha: commit.sha)
+        }
     }
 
     private var header: some View {
@@ -45,9 +57,36 @@ struct CommitDetailPanel: View {
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             HStack(spacing: Theme.Space.s) {
                 Avatar(name: commit.author, size: 22)
-                Text(commit.author).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-                Text("· \(commit.date.formatted(.dateTime.year().month(.abbreviated).day().hour().minute()))")
-                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: Theme.Space.xs) {
+                        Text(commit.author).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
+                        let email = detail?.authorEmail ?? commit.email
+                        if !email.isEmpty {
+                            Text("<\(email)>").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    Text(commit.date.formatted(.dateTime.year().month(.abbreviated).day().hour().minute()))
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                }
+            }
+            if let parents = detail?.parents, !parents.isEmpty {
+                HStack(spacing: Theme.Space.xs) {
+                    Text(parents.count == 1 ? "Parent" : "Parents")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    ForEach(parents, id: \.self) { parentSHA in
+                        let inHistory = session.analysis?.commits.contains(where: { $0.sha == parentSHA }) ?? false
+                        Button(String(parentSHA.prefix(7))) {
+                            if inHistory {
+                                session.navigation.selectedCommitSHA = parentSHA
+                            } else {
+                                copyToPasteboard(parentSHA)
+                            }
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                        .help(inHistory ? "Jump to parent \(parentSHA)" : "Copy parent SHA \(parentSHA)")
+                    }
+                }
             }
             HStack(spacing: Theme.Space.s) {
                 Button("Copy SHA") {
@@ -66,6 +105,19 @@ struct CommitDetailPanel: View {
         .padding(Theme.Space.l).padding(.top, Theme.Space.xl)
         .background(Theme.raised)
         .overlay(alignment: .bottom) { HairlineDivider() }
+    }
+
+    private func bodyCard(_ messageBody: String) -> some View {
+        Card(padding: Theme.Space.m) {
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                CardHeader(title: "Commit message")
+                Text(messageBody)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
     }
 
     @ViewBuilder
@@ -123,7 +175,8 @@ struct CommitDetailPanel: View {
     }
 
     private var filesCard: some View {
-        Card(padding: Theme.Space.m) {
+        let deltaByPath = Dictionary(uniqueKeysWithValues: (detail?.deltas ?? []).map { ($0.path, $0) })
+        return Card(padding: Theme.Space.m) {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 CardHeader(title: "Files changed", subtitle: "\(commit.fileChanges.count)")
                 if commit.fileChanges.isEmpty {
@@ -146,8 +199,16 @@ struct CommitDetailPanel: View {
                                     }
                                 }
                                 Spacer()
-                                Text("\(change.hunks.count) hunk\(change.hunks.count == 1 ? "" : "s")")
-                                    .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                                if let delta = deltaByPath[change.path], !delta.isBinary {
+                                    HStack(spacing: 4) {
+                                        Text("+\(delta.insertions)").foregroundStyle(Theme.good)
+                                        Text("−\(delta.deletions)").foregroundStyle(Theme.critical)
+                                    }
+                                    .font(Theme.Text.caption.monospacedDigit())
+                                } else {
+                                    Text("\(change.hunks.count) hunk\(change.hunks.count == 1 ? "" : "s")")
+                                        .font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                                }
                                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                                     .foregroundStyle(Theme.inkMuted)
                             }
