@@ -87,9 +87,13 @@ public struct UnitHistoryService: Sendable {
         var match: CodeUnit?
         if let source = try? provider(commit.sha, path),
            let units = try? extractor.extract(source: source, filePath: path) {
-            // Overloads share a name; take the one nearest the unit's current position,
-            // which is the best guess without tracking the body across revisions.
-            let candidates: [CodeUnit] = units.filter { $0.name == unit.name && $0.kind == unit.kind }
+            // Overloads share a name; prefer exact disambiguated match, then fall back to the
+            // base name nearest the unit's current position (handles pre-overload revisions).
+            let exact = units.filter { $0.name == unit.name && $0.kind == unit.kind }
+            let targetBase = Self.baseName(of: unit.name)
+            let candidates = !exact.isEmpty ? exact : units.filter {
+                $0.kind == unit.kind && Self.baseName(of: $0.name) == targetBase
+            }
             let target: Int = unit.lineRange.lowerBound
             match = candidates.min { a, b in
                 let da: Int = abs(a.lineRange.lowerBound - target)
@@ -101,5 +105,17 @@ public struct UnitHistoryService: Sendable {
             sha: commit.sha, date: commit.date, author: commit.author, subject: commit.subject,
             path: path, complexity: match?.complexity, lineCount: match?.lineCount
         )
+    }
+
+    private static func baseName(of name: String) -> String {
+        var stripped = name
+        if let lineMarker = stripped.range(of: "@L", options: .backwards),
+           stripped[lineMarker.upperBound...].allSatisfy(\.isNumber) {
+            stripped = String(stripped[..<lineMarker.lowerBound])
+        }
+        if stripped.hasSuffix(")"), let open = stripped.lastIndex(of: "(") {
+            return String(stripped[..<open])
+        }
+        return stripped
     }
 }

@@ -149,4 +149,17 @@ final class LanguageSupportTests: XCTestCase {
         XCTAssertEqual(versions["tree-sitter-javascript"], "0.25.0")
         XCTAssertEqual(versions["tree-sitter-css"], "0.25.0")
     }
+
+    func testRustTraitImplQualifiesMethodsWithTargetTypeRatherThanTrait() throws {
+        let source = """
+        trait Display {}
+        struct Widget {}
+        impl Display for Widget {
+            fn fmt(&self) -> i32 { 0 }
+        }
+        """
+        let units = try UnitExtractor(support: .rust).extract(source: source, filePath: "widget.rs")
+        XCTAssertTrue(units.contains { $0.name == "Widget.fmt" }, "\(units.map(\.name))")
+        XCTAssertFalse(units.contains { $0.name == "Display.fmt" }, "\(units.map(\.name))")
+    }
 }
