@@ -100,4 +100,30 @@ final class RecentRepositoriesTests: XCTestCase {
         RecentRepositories.clear(defaults: defaults)
         XCTAssertEqual(RecentRepositories.all(defaults: defaults), [])
     }
+
+    func testPinnedRepositoriesAndOrderedDeduplication() throws {
+        let a = try makeDirectory("alpha")
+        let b = try makeDirectory("beta")
+        let c = try makeDirectory("gamma")
+        RecentRepositories.remember(a, defaults: defaults)
+        RecentRepositories.remember(b, defaults: defaults)
+        RecentRepositories.remember(c, defaults: defaults)
+
+        XCTAssertFalse(RecentRepositories.isPinned(a, defaults: defaults))
+        RecentRepositories.pin(a, defaults: defaults)
+        RecentRepositories.pin(a, defaults: defaults) // idempotent
+        XCTAssertTrue(RecentRepositories.isPinned(a, defaults: defaults))
+
+        let ordered = RecentRepositories.ordered(defaults: defaults)
+        XCTAssertEqual(ordered.pinned.map(\.lastPathComponent), ["alpha"])
+        XCTAssertEqual(ordered.recent.map(\.lastPathComponent), ["gamma", "beta"])
+
+        RecentRepositories.togglePin(b, defaults: defaults)
+        XCTAssertTrue(RecentRepositories.isPinned(b, defaults: defaults))
+        RecentRepositories.togglePin(b, defaults: defaults)
+        XCTAssertFalse(RecentRepositories.isPinned(b, defaults: defaults))
+
+        RecentRepositories.forget(a, defaults: defaults)
+        XCTAssertFalse(RecentRepositories.isPinned(a, defaults: defaults))
+    }
 }

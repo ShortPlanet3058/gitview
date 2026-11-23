@@ -22,8 +22,11 @@ struct DiffViewer: View {
     @State private var hunkJumpTrigger = 0
     @State private var spansByLineID: [Int: [HighlightSpan]] = [:]
     @State private var fileSpansByLineNumber: [[HighlightSpan]] = []
+    @State private var fileSpansLoadedForDiff: FileDiff?
     @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
+    @State private var pairedLinesByHunkID: [Int: [DiffPresentation.SideBySidePair]] = [:]
     @State private var selectedLineIDs: Set<Int> = []
+    @State private var lastClickedLineID: Int?
     @State private var expandedGaps: [Int: GapExpansion] = [:]
     @FocusState private var findFieldFocused: Bool
 
@@ -64,13 +67,20 @@ struct DiffViewer: View {
         return false
     }
 
-    private func toggleLineSelection(_ line: DiffLine) {
+    private func toggleLineSelection(_ line: DiffLine, in hunk: DiffHunk? = nil) {
         guard supportsLineSelection, line.kind != .context else { return }
-        if selectedLineIDs.contains(line.id) {
-            selectedLineIDs.remove(line.id)
-        } else {
-            selectedLineIDs.insert(line.id)
-        }
+        let shiftPressed = NSEvent.modifierFlags.contains(.shift)
+        let selectableIDs = (hunk?.lines ?? [])
+            .filter { $0.kind != .context }
+            .map(\.id)
+        selectedLineIDs = DiffLineRangeSelector.toggledSelection(
+            current: selectedLineIDs,
+            lastClickedID: lastClickedLineID,
+            clickedID: line.id,
+            selectableIDsInHunk: selectableIDs,
+            shiftPressed: shiftPressed
+        )
+        lastClickedLineID = line.id
     }
 
     private func isLineSelected(_ line: DiffLine) -> Bool {
@@ -89,12 +99,17 @@ struct DiffViewer: View {
                 .map(\.id)
         }
         return diff.hunks
-            .flatMap { DiffPresentation.pairLines(in: $0.lines) }
+            .flatMap { pairedLinesByHunkID[$0.id] ?? DiffPresentation.pairLines(in: $0.lines) }
             .filter { pair in
                 (pair.left?.text.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
                 || (pair.right?.text.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
             }
             .map(\.id)
+    }
+
+    private var expandedGapHighlightTaskKey: String {
+        let count = activeDiff?.hunks.count ?? 0
+        return "\(request):\(count):\(!expandedGaps.isEmpty)"
     }
 
     var body: some View {
@@ -110,11 +125,13 @@ struct DiffViewer: View {
         .background(Theme.page)
         .onChange(of: request) {
             selectedLineIDs.removeAll()
+            lastClickedLineID = nil
             expandedGaps.removeAll()
             currentHunkIndex = 0
         }
         .onChange(of: activeDiff) {
             expandedGaps.removeAll()
+            lastClickedLineID = nil
         }
         .onChange(of: session.navigation.focusLocalFindRequest) { _, newValue in
             guard newValue > 0 else { return }
@@ -129,18 +146,22 @@ struct DiffViewer: View {
         .task(id: activeDiff) {
             await computeHighlightsAndInlineDiffs()
         }
+        .task(id: expandedGapHighlightTaskKey) {
+            await computeExpandedGapHighlightsIfNeeded()
+        }
     }
 
     private func computeHighlightsAndInlineDiffs() async {
+        fileSpansByLineNumber = []
+        fileSpansLoadedForDiff = nil
         guard let diff = activeDiff, !diff.isBinary, !diff.isEmpty else {
             spansByLineID = [:]
-            fileSpansByLineNumber = []
             inlineRangesByLineID = [:]
+            pairedLinesByHunkID = [:]
             return
         }
         let path = diff.path
         let hunks = diff.hunks
-        let fileLines = activeFileLines
         let inputs = hunks.flatMap(\.lines).map { line in
             DiffHighlightLineInput(
                 id: line.id,
@@ -149,20 +170,38 @@ struct DiffViewer: View {
                 includesInNew: line.kind != .deletion
             )
         }
-        let (spans, fileSpans, inline) = await Task.detached(priority: .userInitiated) {
+        let (spans, inline, paired) = await Task.detached(priority: .userInitiated) {
             let computedSpans = SyntaxHighlighter.highlightDiffLines(inputs, filePath: path)
-            let computedFileSpans: [[HighlightSpan]] = if let fileLines, !fileLines.isEmpty {
-                SyntaxHighlighter.highlightLines(source: fileLines.joined(separator: "\n"), filePath: path)
-            } else {
-                []
-            }
             let computedInline = DiffPresentation.computeInlineDiffRanges(in: hunks)
-            return (computedSpans, computedFileSpans, computedInline)
+            let computedPaired = Dictionary(uniqueKeysWithValues: hunks.map {
+                ($0.id, DiffPresentation.pairLines(in: $0.lines))
+            })
+            return (computedSpans, computedInline, computedPaired)
         }.value
         guard !Task.isCancelled, activeDiff == diff else { return }
         spansByLineID = spans
-        fileSpansByLineNumber = fileSpans
         inlineRangesByLineID = inline
+        pairedLinesByHunkID = paired
+    }
+
+    private func computeExpandedGapHighlightsIfNeeded() async {
+        guard !expandedGaps.isEmpty,
+              let diff = activeDiff,
+              !diff.isBinary,
+              !diff.isEmpty,
+              fileSpansLoadedForDiff != diff,
+              let fileLines = activeFileLines,
+              !fileLines.isEmpty else {
+            return
+        }
+        let path = diff.path
+        let source = fileLines.joined(separator: "\n")
+        let computed = await Task.detached(priority: .userInitiated) {
+            SyntaxHighlighter.highlightLines(source: source, filePath: path)
+        }.value
+        guard !Task.isCancelled, activeDiff == diff else { return }
+        fileSpansByLineNumber = computed
+        fileSpansLoadedForDiff = diff
     }
 
     // MARK: - Header & Find bar
@@ -216,6 +255,19 @@ struct DiffViewer: View {
                     options: DiffLayoutMode.allCases.map { ($0, $0.rawValue) },
                     selection: $preferences.diffLayoutMode
                 )
+                Button {
+                    preferences.wrapCodeLines.toggle()
+                } label: {
+                    Image(systemName: "arrow.turn.down.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(preferences.wrapCodeLines ? Theme.accent : Theme.inkSoft)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                        .strokeBorder(preferences.wrapCodeLines ? Theme.accent.opacity(0.6) : .clear, lineWidth: 1)
+                )
+                .help(preferences.wrapCodeLines ? "Wrap long lines (enabled)" : "Wrap long lines (disabled)")
                 Button {
                     preferences.diffIgnoreWhitespace.toggle()
                 } label: {
@@ -472,8 +524,11 @@ struct DiffViewer: View {
                     return Dictionary(uniqueKeysWithValues: gaps.map { ($0.index, $0) })
                 }()
                 let shouldHideGaps = filterMatchesOnly && !trimmedQuery.isEmpty
+                let scrollAxes: Axis.Set = (preferences.wrapCodeLines || preferences.diffLayoutMode == .sideBySide)
+                    ? .vertical
+                    : [.vertical, .horizontal]
                 ScrollViewReader { proxy in
-                    ScrollColumn {
+                    ScrollColumn(axes: scrollAxes) {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             if !shouldHideGaps, let fileLines, let leadingGap = gapsByIndex[0] {
                                 gapSection(leadingGap, fileLines: fileLines, isLeading: true, isTrailing: false)
@@ -494,6 +549,21 @@ struct DiffViewer: View {
                             }
                         }
                         .padding(.bottom, Theme.Space.xl)
+                    }
+                    .focusable(!staticRendering)
+                    .focusEffectDisabled()
+                    .onKeyPress(characters: CharacterSet(charactersIn: "[]")) { press in
+                        guard !findFieldFocused, !diff.hunks.isEmpty else { return .ignored }
+                        if press.characters == "[" {
+                            currentHunkIndex = (currentHunkIndex - 1 + diff.hunks.count) % diff.hunks.count
+                            hunkJumpTrigger += 1
+                            return .handled
+                        } else if press.characters == "]" {
+                            currentHunkIndex = (currentHunkIndex + 1) % diff.hunks.count
+                            hunkJumpTrigger += 1
+                            return .handled
+                        }
+                        return .ignored
                     }
                     .onChange(of: currentMatchIndex) {
                         let targetIDs = matchingTargetIDs
@@ -527,11 +597,11 @@ struct DiffViewer: View {
                 hunkHeader(hunk, in: diff)
                     .id("hunk:\(hunk.id)")
                 ForEach(visibleLines) { line in
-                    unifiedRow(line).id(line.id)
+                    unifiedRow(line, in: hunk).id(line.id)
                 }
             }
         } else {
-            let paired = DiffPresentation.pairLines(in: hunk.lines)
+            let paired = pairedLinesByHunkID[hunk.id] ?? DiffPresentation.pairLines(in: hunk.lines)
             let visiblePairs = shouldFilter
                 ? paired.filter {
                     ($0.left?.text.localizedCaseInsensitiveContains(query) ?? false)
@@ -542,7 +612,7 @@ struct DiffViewer: View {
                 hunkHeader(hunk, in: diff)
                     .id("hunk:\(hunk.id)")
                 ForEach(visiblePairs) { pair in
-                    sideBySideRow(pair)
+                    sideBySideRow(pair, in: hunk)
                         .id(pair.id)
                 }
             }
@@ -771,7 +841,7 @@ struct DiffViewer: View {
         }
     }
 
-    private func unifiedRow(_ line: DiffLine) -> some View {
+    private func unifiedRow(_ line: DiffLine, in hunk: DiffHunk? = nil) -> some View {
         let numberWidth = max(46, CGFloat(preferences.codeFontSize) * 4.2)
         return HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 0) {
@@ -786,10 +856,17 @@ struct DiffViewer: View {
                     .foregroundStyle(markerColor(line))
             }
             .contentShape(Rectangle())
-            .onTapGesture { toggleLineSelection(line) }
-            Text(renderedLineText(line))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            .onTapGesture { toggleLineSelection(line, in: hunk) }
+            if preferences.wrapCodeLines {
+                Text(renderedLineText(line))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                Text(renderedLineText(line))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .textSelection(.enabled)
+            }
             if line.missingTrailingNewline {
                 Text(" ↵ no newline at end of file")
                     .foregroundStyle(Theme.warning)
@@ -804,19 +881,19 @@ struct DiffViewer: View {
         .contextMenu { lineContextMenu(line) }
     }
 
-    private func sideBySideRow(_ pair: DiffPresentation.SideBySidePair) -> some View {
+    private func sideBySideRow(_ pair: DiffPresentation.SideBySidePair, in hunk: DiffHunk? = nil) -> some View {
         HStack(spacing: 0) {
-            sideBySideCell(line: pair.left, sideNumber: pair.left?.oldNumber)
+            sideBySideCell(line: pair.left, sideNumber: pair.left?.oldNumber, in: hunk)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Rectangle().fill(Theme.hairline).frame(width: 1)
-            sideBySideCell(line: pair.right, sideNumber: pair.right?.newNumber)
+            sideBySideCell(line: pair.right, sideNumber: pair.right?.newNumber, in: hunk)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(Theme.Text.monoFont(size: preferences.codeFontSize))
     }
 
     @ViewBuilder
-    private func sideBySideCell(line: DiffLine?, sideNumber: Int?) -> some View {
+    private func sideBySideCell(line: DiffLine?, sideNumber: Int?, in hunk: DiffHunk? = nil) -> some View {
         let numberWidth = max(40, CGFloat(preferences.codeFontSize) * 3.8)
         if let line {
             HStack(alignment: .top, spacing: 0) {
@@ -830,15 +907,33 @@ struct DiffViewer: View {
                         .foregroundStyle(markerColor(line))
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { toggleLineSelection(line) }
-                Text(renderedLineText(line))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if line.missingTrailingNewline {
+                .onTapGesture { toggleLineSelection(line, in: hunk) }
+                if preferences.wrapCodeLines {
+                    Text(renderedLineText(line))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            Text(renderedLineText(line))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .textSelection(.enabled)
+                            if line.missingTrailingNewline {
+                                Text(" ↵")
+                                    .foregroundStyle(Theme.warning)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if preferences.wrapCodeLines && line.missingTrailingNewline {
                     Text(" ↵")
                         .foregroundStyle(Theme.warning)
                 }
-                Spacer(minLength: 0)
+                if preferences.wrapCodeLines {
+                    Spacer(minLength: 0)
+                }
             }
             .padding(.horizontal, Theme.Space.s)
             .padding(.vertical, 1)
@@ -963,6 +1058,40 @@ enum DiffPresentation {
             }
         }
         return result
+    }
+}
+
+enum DiffLineRangeSelector {
+    static func toggledSelection(
+        current: Set<Int>,
+        lastClickedID: Int?,
+        clickedID: Int,
+        selectableIDsInHunk: [Int],
+        shiftPressed: Bool
+    ) -> Set<Int> {
+        var next = current
+        if shiftPressed,
+           let anchor = lastClickedID,
+           let startIndex = selectableIDsInHunk.firstIndex(of: anchor),
+           let endIndex = selectableIDsInHunk.firstIndex(of: clickedID) {
+            let range = min(startIndex, endIndex)...max(startIndex, endIndex)
+            let shouldSelect = !next.contains(clickedID)
+            for id in selectableIDsInHunk[range] {
+                if shouldSelect {
+                    next.insert(id)
+                } else {
+                    next.remove(id)
+                }
+            }
+            return next
+        }
+
+        if next.contains(clickedID) {
+            next.remove(clickedID)
+        } else {
+            next.insert(clickedID)
+        }
+        return next
     }
 }
 

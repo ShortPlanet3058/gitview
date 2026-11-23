@@ -32,6 +32,7 @@ final class ExternalOpenRouter {
     static let openNotification = Notification.Name("GitViewOpenRepositoryURL")
 
     private var pendingURL: URL?
+    private var pendingNewWindowURL: URL?
 
     private init() {}
 
@@ -41,9 +42,18 @@ final class ExternalOpenRouter {
         NotificationCenter.default.post(name: Self.openNotification, object: nil)
     }
 
+    func enqueueNewWindow(_ url: URL) {
+        pendingNewWindowURL = Self.repositoryDirectoryURL(from: url)
+    }
+
     func consumePendingURL() -> URL? {
         defer { pendingURL = nil }
         return pendingURL
+    }
+
+    func consumePendingNewWindowURL() -> URL? {
+        defer { pendingNewWindowURL = nil }
+        return pendingNewWindowURL
     }
 
     static func repositoryDirectoryURL(from url: URL) -> URL? {
@@ -53,6 +63,26 @@ final class ExternalOpenRouter {
             return isDir.boolValue ? standardized : standardized.deletingLastPathComponent()
         }
         return standardized
+    }
+}
+
+@MainActor
+func openWorkspaceTab(openWindow: OpenWindowAction) {
+    let existingWindows = Set(NSApp.windows.map { ObjectIdentifier($0) })
+    let hostWindow = NSApp.keyWindow
+    openWindow(id: "workspace")
+    guard let hostWindow else { return }
+    Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(50))
+        guard let candidate = NSApp.windows.first(where: {
+            !existingWindows.contains(ObjectIdentifier($0)) && $0.canBecomeMain
+        }) else {
+            return
+        }
+        if candidate.tabGroup == nil || candidate.tabGroup !== hostWindow.tabGroup {
+            hostWindow.addTabbedWindow(candidate, ordered: .above)
+        }
+        candidate.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -72,7 +102,9 @@ public struct WorkspaceWindowView: View {
             .withWorkspaceEnvironment(session)
             .focusedSceneValue(\.workspaceSession, session)
             .onAppear {
-                if let url = ExternalOpenRouter.shared.consumePendingURL() {
+                if let url = ExternalOpenRouter.shared.consumePendingNewWindowURL() {
+                    session.open(url: url)
+                } else if let url = ExternalOpenRouter.shared.consumePendingURL() {
                     session.open(url: url)
                 }
             }
@@ -94,6 +126,7 @@ public struct WorkspaceWindowView: View {
 }
 
 public struct GitViewCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
     private let session: WorkspaceSession?
     @Bindable private var preferences: AppPreferences
 
@@ -104,6 +137,11 @@ public struct GitViewCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(after: .newItem) {
+            Button("New Tab") {
+                openWorkspaceTab(openWindow: openWindow)
+            }
+            .keyboardShortcut("t")
+
             Button("Open Repository…") {
                 if let session { chooseRepository(into: session) }
             }
@@ -237,6 +275,7 @@ public final class GitViewAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = true
         if CommandLine.arguments.contains("--screenshot") {
             headlessScreenshotSession = WorkspaceSession.makeForLaunchArgumentsIfNeeded(preferences: .shared)
         }

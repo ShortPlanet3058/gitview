@@ -366,6 +366,19 @@ private struct FileContentWorkspace: View {
                 }
             }
             Button {
+                preferences.wrapCodeLines.toggle()
+            } label: {
+                Image(systemName: "arrow.turn.down.left")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(preferences.wrapCodeLines ? Theme.accent : Theme.inkSoft)
+            }
+            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(preferences.wrapCodeLines ? Theme.accent.opacity(0.6) : .clear, lineWidth: 1)
+            )
+            .help(preferences.wrapCodeLines ? "Wrap long lines (enabled)" : "Wrap long lines (disabled)")
+            Button {
                 goToLineText = highlightedLine.map(String.init) ?? ""
                 showingGoToLine = true
             } label: {
@@ -480,8 +493,9 @@ private struct FileContentWorkspace: View {
                 : indexed
             let lineNumWidth = max(48, CGFloat(preferences.codeFontSize) * 4.3)
             let codeFont = Theme.Text.monoFont(size: preferences.codeFontSize)
+            let codeAxes: Axis.Set = preferences.wrapCodeLines ? .vertical : [.vertical, .horizontal]
             ScrollViewReader { proxy in
-                ScrollColumn {
+                ScrollColumn(axes: codeAxes) {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(rows, id: \.lineNumber) { row in
                             let isHighlighted = highlightedLine == row.lineNumber
@@ -491,15 +505,28 @@ private struct FileContentWorkspace: View {
                                     .foregroundStyle(isHighlighted ? Theme.accent : Theme.inkMuted)
                                     .frame(width: lineNumWidth, alignment: .trailing)
                                     .padding(.trailing, Theme.Space.m)
-                                Text(Theme.Syntax.attributedLine(
-                                    row.text,
-                                    spans: row.spans,
-                                    baseForeground: Theme.ink,
-                                    searchQuery: query
-                                ))
-                                .font(codeFont)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
+                                if preferences.wrapCodeLines {
+                                    Text(Theme.Syntax.attributedLine(
+                                        row.text,
+                                        spans: row.spans,
+                                        baseForeground: Theme.ink,
+                                        searchQuery: query
+                                    ))
+                                    .font(codeFont)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                                } else {
+                                    Text(Theme.Syntax.attributedLine(
+                                        row.text,
+                                        spans: row.spans,
+                                        baseForeground: Theme.ink,
+                                        searchQuery: query
+                                    ))
+                                    .font(codeFont)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .textSelection(.enabled)
+                                }
                                 Spacer(minLength: 0)
                             }
                             .padding(.horizontal, Theme.Space.m)

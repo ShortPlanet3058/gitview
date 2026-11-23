@@ -16,7 +16,7 @@ struct GitViewMainApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("GitView") {
+        WindowGroup("GitView", id: "workspace") {
             WorkspaceWindowView(preferences: preferences)
                 .frame(minWidth: 1100, minHeight: 640)
                 .preferredColorScheme(preferredScheme)
