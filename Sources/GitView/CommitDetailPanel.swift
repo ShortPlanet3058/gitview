@@ -17,6 +17,8 @@ struct CommitDetailPanel: View {
     @State private var showingTagPopover = false
     @State private var newTagName = ""
     @State private var newTagMessage = ""
+    @State private var showingResetPopover = false
+    @State private var selectedResetMode: ResetMode = .soft
 
     private var detail: CommitDetail? {
         inspector.commitDetails[commit.sha]
@@ -56,6 +58,9 @@ struct CommitDetailPanel: View {
             HStack {
                 if preferences.advanced {
                     ShaChip(sha: commit.sha)
+                    if let signature = detail?.signature, signature.status != .none {
+                        signatureChip(signature)
+                    }
                 } else {
                     Text("Saved snapshot")
                         .font(Theme.Text.caption.weight(.semibold))
@@ -147,6 +152,46 @@ struct CommitDetailPanel: View {
                             NSPasteboard.general.setString(commit.sha, forType: .string)
                         }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+
+                        if let root = session.analysis?.root,
+                           commit.sha != session.analysis?.commits.first?.sha {
+                            Button("Compare with HEAD") {
+                                session.navigation.openCompareWorkspace(
+                                    from: commit.sha,
+                                    to: "HEAD",
+                                    in: root
+                                )
+                            }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        }
+
+                        Button("Reset here…") {
+                            selectedResetMode = .soft
+                            showingResetPopover = true
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                        .popover(isPresented: $showingResetPopover, arrowEdge: .bottom) {
+                            resetHerePopover
+                        }
+
+                        Button("Checkout detached") {
+                            workingCopy.checkoutDetached(rev: commit.sha)
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+
+                        if commit.sha != session.analysis?.commits.first?.sha {
+                            Menu("Bisect") {
+                                Button("Start Bisect (this commit = Good, HEAD = Bad)") {
+                                    workingCopy.bisectStart(bad: "HEAD", good: commit.sha)
+                                    session.show(.changes)
+                                }
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .disabled(workingCopy.writeInFlight)
+                        }
                     }
 
                     if let web = session.analysis?.info.remoteWebURL {
@@ -209,6 +254,65 @@ struct CommitDetailPanel: View {
         }
         .padding(Theme.Space.l)
         .frame(width: 300)
+    }
+
+    private func signatureChip(_ signature: CommitSignature) -> some View {
+        let tint: Color = switch signature.status {
+        case .good:
+            Theme.good
+        case .bad, .revoked, .expiredSignature, .expiredKey:
+            Theme.critical
+        case .untrusted, .unknownKey:
+            Theme.warning
+        case .none:
+            Theme.inkMuted
+        }
+        let icon = signature.status == .good ? "checkmark.seal.fill" : "exclamationmark.shield"
+        let tooltip = [signature.status.label, signature.signer, signature.key]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+
+        return HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(signature.status.label)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(tint.opacity(0.14), in: Capsule())
+        .help(tooltip)
+    }
+
+    private var resetHerePopover: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            Text("Reset Current Branch to \(String(commit.sha.prefix(7)))")
+                .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            Picker("Reset mode", selection: $selectedResetMode) {
+                ForEach(ResetMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            HStack {
+                Spacer()
+                Button("Cancel") { showingResetPopover = false }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Reset…") {
+                    showingResetPopover = false
+                    workingCopy.confirmReset(
+                        to: commit.sha,
+                        subject: commit.subject,
+                        mode: selectedResetMode
+                    )
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(workingCopy.writeInFlight)
+            }
+        }
+        .padding(Theme.Space.l)
+        .frame(width: 320)
     }
 
     private func bodyCard(_ messageBody: String) -> some View {

@@ -805,6 +805,87 @@ extension GitRepository {
         }
         try write(["remote", "remove", trimmedName])
     }
+
+    public func reset(to rev: String, mode: ResetMode) throws {
+        let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "reset", message: "Target revision cannot be empty.")
+        }
+        try write(["reset", "--\(mode.rawValue)", trimmed])
+    }
+
+    public func checkoutDetached(rev: String) throws {
+        let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "checkout --detach", message: "Target revision cannot be empty.")
+        }
+        try write(["checkout", "--detach", trimmed])
+    }
+
+    public func bisectStart(bad: String, good: String) throws {
+        let trimmedBad = bad.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGood = good.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBad.isEmpty, !trimmedGood.isEmpty else {
+            throw GitWriteError(command: "bisect start", message: "Both a bad and a good revision are required.")
+        }
+        try write(["bisect", "start", trimmedBad, trimmedGood])
+    }
+
+    public func bisectMark(_ verdict: BisectVerdict) throws {
+        try write(["bisect", verdict.rawValue])
+    }
+
+    public func bisectStatus() -> BisectStatus? {
+        guard let root = try? validate(),
+              Self.operation(in: root) == .bisect,
+              let headLine = (try? GitProcess.capture(arguments: ["log", "-1", "--format=%H%x1f%s", "HEAD"], in: root)) else {
+            return nil
+        }
+        let fields = headLine.trimmingCharacters(in: .newlines)
+            .split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false)
+            .map(String.init)
+        guard fields.count == 2, !fields[0].isEmpty else { return nil }
+        let logOutput = (try? GitProcess.capture(arguments: ["bisect", "log"], in: root)) ?? ""
+        let logLines = logOutput
+            .split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.hasPrefix("#") }
+        return BisectStatus(currentSHA: fields[0], currentSubject: fields[1], logLines: Array(logLines.suffix(12)))
+    }
+}
+
+public enum ResetMode: String, CaseIterable, Identifiable, Sendable {
+    case soft
+    case mixed
+    case hard
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .soft:  return "Soft (keep staged)"
+        case .mixed: return "Mixed (keep working tree)"
+        case .hard:  return "Hard (discard changes)"
+        }
+    }
+}
+
+public enum BisectVerdict: String, Sendable {
+    case good
+    case bad
+    case skip
+}
+
+public struct BisectStatus: Hashable, Sendable {
+    public let currentSHA: String
+    public let currentSubject: String
+    public let logLines: [String]
+
+    public init(currentSHA: String, currentSubject: String, logLines: [String]) {
+        self.currentSHA = currentSHA
+        self.currentSubject = currentSubject
+        self.logLines = logLines
+    }
 }
 
 public enum ConflictBlockChoice: Sendable, Hashable {

@@ -8,6 +8,7 @@ struct RepositoryManagementSheet: View {
     enum Tab: String, CaseIterable, Identifiable {
         case remotes = "Remotes"
         case worktrees = "Worktrees"
+        case submodules = "Submodules"
         var id: String { rawValue }
     }
 
@@ -43,6 +44,10 @@ struct RepositoryManagementSheet: View {
     @State private var createNewWorktreeBranch = true
     @State private var worktreeFolder: URL?
 
+    // Submodules
+    @State private var submodules: [SubmoduleInfo] = []
+    @State private var loadingSubmodules = false
+
     @State private var pendingConfirmation: PendingConfirmation?
 
     private var analysis: RepositoryAnalysis? { session.analysis }
@@ -75,7 +80,7 @@ struct RepositoryManagementSheet: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Remotes & Worktrees")
+                    Text("Remotes, Worktrees & Submodules")
                         .font(Theme.Text.title)
                         .foregroundStyle(Theme.ink)
                     if let root = analysis?.root {
@@ -122,6 +127,8 @@ struct RepositoryManagementSheet: View {
                         remotesBody
                     case .worktrees:
                         worktreesBody
+                    case .submodules:
+                        submodulesBody
                     }
                 }
                 .padding(Theme.Space.l)
@@ -129,6 +136,10 @@ struct RepositoryManagementSheet: View {
         }
         .frame(width: 720, height: 520)
         .background(Theme.page)
+        .onAppear { loadSubmodules() }
+        .onChange(of: tab) {
+            if tab == .submodules { loadSubmodules() }
+        }
         .alert(item: $pendingConfirmation) { confirmation in
             switch confirmation {
             case .removeRemote(let name):
@@ -442,6 +453,113 @@ struct RepositoryManagementSheet: View {
         panel.prompt = "Select"
         if panel.runModal() == .OK, let url = panel.url {
             worktreeFolder = url
+        }
+    }
+
+    // MARK: - Submodules
+
+    @ViewBuilder
+    private var submodulesBody: some View {
+        Card {
+            HStack(spacing: Theme.Space.m) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Submodules").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                    Text("Initialize, update recursively, or open submodules in GitView.")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                }
+                Spacer()
+                Button("Refresh") { loadSubmodules() }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(loadingSubmodules)
+                Button("Update & Init All") {
+                    workingCopy.updateSubmodules {
+                        loadSubmodules()
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                .disabled(submodules.isEmpty || workingCopy.writeInFlight)
+            }
+        }
+
+        Card(padding: Theme.Space.s) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("CONFIGURED SUBMODULES (\(submodules.count))")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                    Spacer()
+                    if loadingSubmodules {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, Theme.Space.s)
+                .padding(.vertical, 6)
+                HairlineDivider()
+
+                if submodules.isEmpty {
+                    Text(loadingSubmodules ? "Loading submodules…" : "No git submodules configured in this repository.")
+                        .font(Theme.Text.body)
+                        .foregroundStyle(Theme.inkMuted)
+                        .padding(Theme.Space.m)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(submodules) { sub in
+                        submoduleRow(sub)
+                        if sub.id != submodules.last?.id {
+                            HairlineDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func submoduleRow(_ sub: SubmoduleInfo) -> some View {
+        let tint: Color = switch sub.state {
+        case .clean:         Theme.good
+        case .uninitialized: Theme.inkMuted
+        case .modified:      Theme.warning
+        case .mergeConflict: Theme.critical
+        }
+        return HStack(spacing: Theme.Space.s) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(sub.path)
+                        .font(Theme.Text.mono.weight(.semibold))
+                        .foregroundStyle(Theme.ink)
+                    Chip(text: sub.state.label, tint: tint)
+                    if let describe = sub.describe {
+                        Chip(text: describe, tint: Theme.accent)
+                    }
+                }
+                Text(String(sub.sha.prefix(12)))
+                    .font(Theme.Text.caption.monospaced())
+                    .foregroundStyle(Theme.inkMuted)
+            }
+            Spacer()
+            if let root = analysis?.root, sub.state != .uninitialized {
+                let target = root.appendingPathComponent(sub.path)
+                Button("Open") {
+                    dismiss()
+                    session.open(url: target)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+            }
+        }
+        .padding(.horizontal, Theme.Space.s)
+        .padding(.vertical, 8)
+    }
+
+    private func loadSubmodules() {
+        guard let root = analysis?.root else { return }
+        loadingSubmodules = true
+        Task.detached(priority: .userInitiated) {
+            let loaded = GitRepository(url: root).submodules()
+            await MainActor.run {
+                guard self.analysis?.root == root else { return }
+                self.submodules = loaded
+                self.loadingSubmodules = false
+            }
         }
     }
 }

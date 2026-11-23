@@ -731,4 +731,47 @@ final class GitWriterTests: XCTestCase {
         XCTAssertThrowsError(try repository.push(remote: "origin", branch: "feat/amend-push", setUpstream: false))
         try repository.push(remote: "origin", branch: "feat/amend-push", setUpstream: false, forceWithLease: true)
     }
+
+    func testResetModesCheckoutDetachedAndBisectLifecycle() throws {
+        let c0 = try repository.headSHA()
+        try write("tracked.txt", "c1\n")
+        try repository.stage(paths: ["tracked.txt"])
+        let c1 = try repository.commit(subject: "Commit 1")
+
+        try write("tracked.txt", "c2\n")
+        try repository.stage(paths: ["tracked.txt"])
+        let c2 = try repository.commit(subject: "Commit 2")
+
+        // Mixed reset keeps changes in working tree unstaged.
+        try repository.reset(to: c1, mode: .mixed)
+        XCTAssertEqual(try repository.headSHA(), c1)
+        XCTAssertEqual(try state().unstaged.map(\.path), ["tracked.txt"])
+        XCTAssertTrue(try state().staged.isEmpty)
+
+        // Hard reset discards working tree modifications cleanly.
+        try repository.reset(to: c1, mode: .hard)
+        XCTAssertTrue(try state().isClean)
+        XCTAssertEqual(read("tracked.txt"), "c1\n")
+
+        // Checkout detached HEAD at initial commit and return to main.
+        try repository.checkoutDetached(rev: c0)
+        XCTAssertNil(try state().branch)
+        XCTAssertEqual(try repository.headSHA(), c0)
+        try repository.checkoutBranch("main")
+
+        // Bisect start, good/bad, and reset.
+        try write("tracked.txt", "c2b\n")
+        try repository.stageAll()
+        let badSHA = try repository.commit(subject: "Bad commit")
+        XCTAssertNotEqual(c2, badSHA)
+
+        try repository.bisectStart(bad: "HEAD", good: c0)
+        XCTAssertEqual(try state().operation, .bisect)
+        let bisect = try XCTUnwrap(repository.bisectStatus())
+        XCTAssertEqual(bisect.currentSHA, c1)
+
+        try repository.bisectMark(.bad)
+        try repository.abortOperation(.bisect)
+        XCTAssertNil(try state().operation)
+    }
 }

@@ -62,6 +62,7 @@ public final class WorkspaceSession {
     private(set) var recentActivityBuckets: [ActivityBucket] = []
     private(set) var overviewMetrics: OverviewMetrics = .empty
     public private(set) var pullRequestsByBranch: [String: PullRequestSummary] = [:]
+    public private(set) var openPullRequests: [PullRequestSummary] = []
     public private(set) var lastAutoFetchDate: Date?
 
     @ObservationIgnored private var watcher: RepositoryWatcher?
@@ -214,12 +215,14 @@ public final class WorkspaceSession {
             || inspector.diffRequest != nil
             || inspector.fileHistoryPath != nil
             || search.isSearching
+            || navigation.isCompareWorkspacePresented
             || navigation.hasDetailSelection
     }
 
     func show(_ screen: NavigationStore.Screen) {
         navigation.isCommandPalettePresented = false
         navigation.isShortcutsSheetPresented = false
+        navigation.isCompareWorkspacePresented = false
         inspector.diffRequest = nil
         inspector.fileHistoryPath = nil
         if search.isSearching { search.clear() }
@@ -245,6 +248,7 @@ public final class WorkspaceSession {
         if inspector.diffRequest != nil { inspector.diffRequest = nil; return true }
         if inspector.fileHistoryPath != nil { inspector.fileHistoryPath = nil; return true }
         if search.isSearching { search.clear(); return true }
+        if navigation.isCompareWorkspacePresented { navigation.isCompareWorkspacePresented = false; return true }
         if navigation.hasDetailSelection {
             navigation.clearDetailSelections()
             return true
@@ -304,6 +308,7 @@ public final class WorkspaceSession {
         autoFetchTask = nil
         lastAutoFetchDate = nil
         pullRequestsByBranch = [:]
+        openPullRequests = []
         state = .loading(LoadingProgress(stage: "Checking the repository"))
         risk.resetForOpen()
         navigation.clearForOpen()
@@ -439,6 +444,7 @@ public final class WorkspaceSession {
         prFetchTask?.cancel()
         guard case .loaded(let current) = state else {
             pullRequestsByBranch = [:]
+            openPullRequests = []
             return
         }
         let root = current.root
@@ -452,6 +458,7 @@ public final class WorkspaceSession {
             for pr in prs where byBranch[pr.headRefName] == nil {
                 byBranch[pr.headRefName] = pr
             }
+            self.openPullRequests = prs
             self.pullRequestsByBranch = byBranch
         }
     }

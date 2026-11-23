@@ -120,6 +120,14 @@ struct AppShell: View {
             GitCommandLogSheet()
                 .withWorkspaceEnvironment(session)
         }
+        .sheet(isPresented: $navigation.isPullRequestsSheetPresented) {
+            PullRequestsSheet()
+                .withWorkspaceEnvironment(session)
+        }
+        .sheet(isPresented: $navigation.isInteractiveRebaseSheetPresented) {
+            InteractiveRebaseSheet()
+                .withWorkspaceEnvironment(session)
+        }
     }
 
     @ViewBuilder
@@ -142,7 +150,9 @@ struct AppShell: View {
         case .loaded:
             if let request = session.inspector.diffRequest { DiffViewer(request: request) }
             else if let path = session.inspector.fileHistoryPath { FileHistoryView(path: path) }
-            else if session.search.isSearching { SearchScreen() } else {
+            else if session.search.isSearching { SearchScreen() }
+            else if session.navigation.isCompareWorkspacePresented { CompareWorkspaceView() }
+            else {
             switch session.navigation.screen {
             case .overview: OverviewScreen()
             case .changes: ChangesScreen()
@@ -522,6 +532,9 @@ struct TopBar: View {
         }
         if session.inspector.diffRequest != nil {
             return (session.inspector.diffRequest!.path as NSString).lastPathComponent
+        }
+        if session.navigation.isCompareWorkspacePresented {
+            return "Compare"
         }
         return session.navigation.screen.displayTitle(advanced: preferences.advanced)
     }

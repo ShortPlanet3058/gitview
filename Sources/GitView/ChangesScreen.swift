@@ -508,8 +508,8 @@ struct ChangesScreen: View {
         return Card(padding: Theme.Space.m) {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 HStack(spacing: Theme.Space.s) {
-                    Image(systemName: readyToContinue ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(readyToContinue ? Theme.good : Theme.warning)
+                    Image(systemName: operation == .bisect ? "magnifyingglass.circle.fill" : (readyToContinue ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
+                        .foregroundStyle(operation == .bisect ? Theme.accent : (readyToContinue ? Theme.good : Theme.warning))
                     Text(operation.label).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
                     Spacer()
                     Button(abortButtonTitle(operation)) {
@@ -525,10 +525,33 @@ struct ChangesScreen: View {
                         .disabled(workingCopy.writeInFlight)
                     }
                 }
-                Text(readyToContinue
-                     ? "All conflicts are resolved — continue to finish."
-                     : "Resolve conflicts below, then continue or safely abort.")
-                    .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                if operation == .bisect {
+                    if let bisect = workingCopy.bisectStatus {
+                        Text("Testing \(String(bisect.currentSHA.prefix(7))) · \(bisect.currentSubject)")
+                            .font(Theme.Text.mono)
+                            .foregroundStyle(Theme.inkSoft)
+                            .lineLimit(2)
+                    } else {
+                        Text("Test the checked-out commit and mark whether the bug is present.")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                    }
+                    HStack(spacing: Theme.Space.xs) {
+                        Button("Mark Good") { workingCopy.bisectMark(.good) }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            .disabled(workingCopy.writeInFlight)
+                        Button("Mark Bad") { workingCopy.bisectMark(.bad) }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            .disabled(workingCopy.writeInFlight)
+                        Button("Skip") { workingCopy.bisectMark(.skip) }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            .disabled(workingCopy.writeInFlight)
+                    }
+                } else {
+                    Text(readyToContinue
+                         ? "All conflicts are resolved — continue to finish."
+                         : "Resolve conflicts below, then continue or safely abort.")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                }
             }
         }
     }

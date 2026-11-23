@@ -109,8 +109,12 @@ public final class NavigationStore {
     public var isReflogSheetPresented: Bool = false
     public var isManageRepoSheetPresented: Bool = false
     public var isCommandLogSheetPresented: Bool = false
+    public var isPullRequestsSheetPresented: Bool = false
+    public var isInteractiveRebaseSheetPresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
+    public var isCompareWorkspacePresented: Bool = false
+    public var compareSelectedFile: String?
     public var compareFrom: String = ""
     public var compareTo: String = "HEAD"
     var comparison: ComparisonResult?
@@ -134,12 +138,26 @@ public final class NavigationStore {
         selectedFilePath = nil
         isCommandPalettePresented = false
         isShortcutsSheetPresented = false
+        isCompareWorkspacePresented = false
+        compareSelectedFile = nil
+        isPullRequestsSheetPresented = false
+        isInteractiveRebaseSheetPresented = false
         comparison = nil
         comparisonInFlight = false
     }
 
+    public func openCompareWorkspace(from: String, to: String, initialFile: String? = nil, in root: URL) {
+        compareFrom = from
+        compareTo = to
+        compareSelectedFile = initialFile
+        isCompareWorkspacePresented = true
+        if comparison?.from != from || comparison?.to != to {
+            runComparison(in: root)
+        }
+    }
+
     public func runComparison(in root: URL) {
-        guard !compareFrom.isEmpty, !comparisonInFlight else { return }
+        guard !compareFrom.isEmpty else { return }
         let from = compareFrom
         let to = compareTo
         comparisonInFlight = true
@@ -149,8 +167,15 @@ public final class NavigationStore {
             let deltas = (try? repository.fileDeltas(from: from, to: to)) ?? []
             let result = ComparisonResult(from: from, to: to, commits: commits, deltas: deltas)
             await MainActor.run {
+                guard self.compareFrom == from, self.compareTo == to else { return }
                 self.comparison = result
                 self.comparisonInFlight = false
+                if let selected = self.compareSelectedFile,
+                   !result.deltas.contains(where: { $0.path == selected }) {
+                    self.compareSelectedFile = result.deltas.first?.path
+                } else if self.compareSelectedFile == nil {
+                    self.compareSelectedFile = result.deltas.first?.path
+                }
             }
         }
     }

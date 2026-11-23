@@ -17,6 +17,56 @@ public struct FileHistoryEntry: Identifiable, Hashable, Sendable {
     public var churn: Int { insertions + deletions }
 }
 
+/// Verification state of a commit's GPG or SSH signature (`%G?`, `%GS`, `%GK`).
+public struct CommitSignature: Hashable, Sendable {
+    public enum Status: String, Hashable, Sendable {
+        case good
+        case bad
+        case untrusted
+        case unknownKey
+        case expiredKey
+        case expiredSignature
+        case revoked
+        case none
+
+        public var label: String {
+            switch self {
+            case .good:             return "Signed"
+            case .bad:              return "Bad signature"
+            case .untrusted:        return "Untrusted signature"
+            case .unknownKey:       return "Unverified key"
+            case .expiredKey:       return "Expired key"
+            case .expiredSignature: return "Expired signature"
+            case .revoked:          return "Revoked key"
+            case .none:             return "Unsigned"
+            }
+        }
+
+        static func fromGitCode(_ code: String) -> Status {
+            switch code.trimmingCharacters(in: .whitespacesAndNewlines) {
+            case "G": return .good
+            case "B": return .bad
+            case "U": return .untrusted
+            case "E": return .unknownKey
+            case "Y": return .expiredKey
+            case "X": return .expiredSignature
+            case "R": return .revoked
+            default:  return .none
+            }
+        }
+    }
+
+    public let status: Status
+    public let signer: String
+    public let key: String
+
+    public init(status: Status, signer: String, key: String) {
+        self.status = status
+        self.signer = signer
+        self.key = key
+    }
+}
+
 /// Full metadata, message body, parents, and per-file +/- stats for a single commit.
 public struct CommitDetail: Hashable, Sendable {
     public let sha: String
@@ -30,10 +80,12 @@ public struct CommitDetail: Hashable, Sendable {
     public let subject: String
     public let body: String
     public let deltas: [FileDelta]
+    public let signature: CommitSignature?
 
     public init(sha: String, authorName: String, authorEmail: String, authorDate: Date,
                 committerName: String, committerEmail: String, committerDate: Date,
-                parents: [String], subject: String, body: String, deltas: [FileDelta]) {
+                parents: [String], subject: String, body: String, deltas: [FileDelta],
+                signature: CommitSignature? = nil) {
         self.sha = sha
         self.authorName = authorName
         self.authorEmail = authorEmail
@@ -45,6 +97,7 @@ public struct CommitDetail: Hashable, Sendable {
         self.subject = subject
         self.body = body
         self.deltas = deltas
+        self.signature = signature
     }
 }
 
@@ -54,7 +107,7 @@ extension GitRepository {
         let root = try validate()
         let metaOutput = try GitProcess.capture(
             arguments: ["show", "--no-patch", "--no-color",
-                        "--format=%H%x1f%aN%x1f%aE%x1f%aI%x1f%cN%x1f%cE%x1f%cI%x1f%P%x1f%s%x1e%b", sha],
+                        "--format=%H%x1f%aN%x1f%aE%x1f%aI%x1f%cN%x1f%cE%x1f%cI%x1f%P%x1f%s%x1f%G?%x1f%GS%x1f%GK%x1e%b", sha],
             in: root)
         let statOutput = (try? GitProcess.capture(
             arguments: ["show", "--no-color", "--no-ext-diff", "--no-textconv",
@@ -149,9 +202,9 @@ enum CommitDetailParser {
         let sections = output.split(separator: "\u{1E}", maxSplits: 1, omittingEmptySubsequences: false)
         guard let headerRaw = sections.first else { return nil }
         let fields = String(headerRaw)
-            .split(separator: "\u{1F}", maxSplits: 8, omittingEmptySubsequences: false)
+            .split(separator: "\u{1F}", maxSplits: 11, omittingEmptySubsequences: false)
             .map(String.init)
-        guard fields.count == 9,
+        guard fields.count >= 9,
               !fields[0].isEmpty,
               let authorDate = ISO8601.parse(fields[3]),
               let committerDate = ISO8601.parse(fields[6]) else {
@@ -160,6 +213,17 @@ enum CommitDetailParser {
         let parents = fields[7]
             .split(separator: " ", omittingEmptySubsequences: true)
             .map(String.init)
+        let signature: CommitSignature?
+        if fields.count >= 12 {
+            let status = CommitSignature.Status.fromGitCode(fields[9])
+            let signer = fields[10].trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = fields[11].trimmingCharacters(in: .whitespacesAndNewlines)
+            signature = (status == .none && signer.isEmpty && key.isEmpty)
+                ? nil
+                : CommitSignature(status: status, signer: signer, key: key)
+        } else {
+            signature = nil
+        }
         let body = sections.count > 1
             ? String(sections[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
@@ -174,7 +238,8 @@ enum CommitDetailParser {
             parents: parents,
             subject: fields[8],
             body: body,
-            deltas: deltas
+            deltas: deltas,
+            signature: signature
         )
     }
 }

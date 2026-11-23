@@ -64,7 +64,7 @@ struct ReleasesScreen: View {
                 compareCard(analysis)
 
                 if let comparison = navigation.comparison {
-                    comparisonResult(comparison)
+                    comparisonResult(comparison, root: analysis.root)
                 }
 
                 Card(padding: Theme.Space.s) {
@@ -196,7 +196,7 @@ struct ReleasesScreen: View {
         }
     }
 
-    private func comparisonResult(_ comparison: ComparisonResult) -> some View {
+    private func comparisonResult(_ comparison: ComparisonResult, root: URL) -> some View {
         let stat = comparison.stat
         let notes = ReleaseNotes.markdown(title: "\(comparison.from) → \(comparison.to)",
                                           commits: comparison.commits)
@@ -205,6 +205,17 @@ struct ReleasesScreen: View {
                 HStack {
                     CardHeader(title: "\(comparison.from) → \(comparison.to)")
                     Spacer()
+                    if !comparison.isEmpty {
+                        Button("Review all \(comparison.deltas.count) file\(comparison.deltas.count == 1 ? "" : "s")") {
+                            navigation.openCompareWorkspace(
+                                from: comparison.from,
+                                to: comparison.to,
+                                in: root
+                            )
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .controlSize(.small)
+                    }
                     Button(copied ? "Copied" : "Copy release notes") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(notes, forType: .string)
@@ -212,6 +223,7 @@ struct ReleasesScreen: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
                     }
                     .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.small)
                 }
 
                 if comparison.isEmpty {
@@ -257,9 +269,12 @@ struct ReleasesScreen: View {
                             Text("Most changed files").font(Theme.Text.heading).foregroundStyle(Theme.ink)
                             ForEach(comparison.deltas.prefix(8)) { delta in
                                 Button {
-                                    session.inspector.showDiff(.range(from: comparison.from, to: comparison.to),
-                                                   path: delta.path,
-                                                   title: "\(comparison.from) → \(comparison.to)")
+                                    navigation.openCompareWorkspace(
+                                        from: comparison.from,
+                                        to: comparison.to,
+                                        initialFile: delta.path,
+                                        in: root
+                                    )
                                 } label: {
                                 HStack(spacing: Theme.Space.s) {
                                     // Middle, not head: two modules can share a filename, and
