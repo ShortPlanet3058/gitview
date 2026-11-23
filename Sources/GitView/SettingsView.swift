@@ -16,24 +16,42 @@ public struct SettingsView: View {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 Card {
                     VStack(alignment: .leading, spacing: Theme.Space.m) {
-                        CardHeader(
-                            title: "Risk model",
-                            info: "A function's risk is its complexity combined with how much it has changed "
-                                + "recently. The half-life sets how fast a commit's weight fades: at 365 days a "
-                                + "year-old commit counts half as much as one made today."
+                        CardHeader(title: "Experience mode")
+                        SegmentPicker(
+                            options: [(false, "Standard"), (true, "Advanced")],
+                            selection: $preferences.advanced
                         )
-                        HStack {
-                            Text("Half-life").font(Theme.Text.body).foregroundStyle(Theme.ink)
-                            Spacer()
-                            Text("\(Int(preferences.halfLifeDays)) days")
-                                .font(Theme.Text.body.monospacedDigit())
-                                .foregroundStyle(Theme.inkSoft)
-                        }
-                        Slider(value: $preferences.halfLifeDays, in: 30...1095, step: 5)
-                        Text(halfLifeCaption)
+                        Text(preferences.advanced
+                             ? "Advanced unlocks hunk & line staging, stashes, blame time-travel, branch graphs, worktrees, tags, hotspots, and coupling analysis."
+                             : "Standard focuses on everyday Git: saving changes, switching branches, and browsing history and files cleanly without technical jargon.")
                             .font(Theme.Text.caption)
                             .foregroundStyle(Theme.inkMuted)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if preferences.advanced {
+                    Card {
+                        VStack(alignment: .leading, spacing: Theme.Space.m) {
+                            CardHeader(
+                                title: "Risk model",
+                                info: "A function's risk is its complexity combined with how much it has changed "
+                                    + "recently. The half-life sets how fast a commit's weight fades: at 365 days a "
+                                    + "year-old commit counts half as much as one made today."
+                            )
+                            HStack {
+                                Text("Half-life").font(Theme.Text.body).foregroundStyle(Theme.ink)
+                                Spacer()
+                                Text("\(Int(preferences.halfLifeDays)) days")
+                                    .font(Theme.Text.body.monospacedDigit())
+                                    .foregroundStyle(Theme.inkSoft)
+                            }
+                            Slider(value: $preferences.halfLifeDays, in: 30...1095, step: 5)
+                            Text(halfLifeCaption)
+                                .font(Theme.Text.caption)
+                                .foregroundStyle(Theme.inkMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
@@ -81,48 +99,52 @@ public struct SettingsView: View {
                             .labelsHidden()
                             .frame(width: 200)
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Custom git executable path (optional)")
-                                .font(Theme.Text.caption)
-                                .foregroundStyle(Theme.inkSoft)
-                            TextField("/opt/homebrew/bin/git", text: $preferences.gitExecutablePath)
-                                .textFieldStyle(.roundedBorder)
+                        if preferences.advanced {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Custom git executable path (optional)")
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkSoft)
+                                TextField("/opt/homebrew/bin/git", text: $preferences.gitExecutablePath)
+                                    .textFieldStyle(.roundedBorder)
+                            }
                         }
                     }
                 }
 
-                Card {
-                    VStack(alignment: .leading, spacing: Theme.Space.m) {
-                        CardHeader(
-                            title: "What counts",
-                            info: "Exclusions and thresholds shared across open windows."
-                        )
-                        Toggle("Exclude test code from hotspots", isOn: $preferences.excludeTests)
-                            .toggleStyle(.switch)
-                        Toggle("Exclude vendored and generated code", isOn: $preferences.excludeGenerated)
-                            .toggleStyle(.switch)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Also ignore paths containing")
-                                .font(Theme.Text.caption)
-                                .foregroundStyle(Theme.inkSoft)
-                            TextField("CNIOLLHTTP, Generated", text: $preferences.ignoredPaths)
-                                .textFieldStyle(.roundedBorder)
-                            Text("Comma separated. For vendored code that carries no generated marker.")
-                                .font(Theme.Text.caption)
-                                .foregroundStyle(Theme.inkMuted)
+                if preferences.advanced {
+                    Card {
+                        VStack(alignment: .leading, spacing: Theme.Space.m) {
+                            CardHeader(
+                                title: "What counts",
+                                info: "Exclusions and thresholds shared across open windows."
+                            )
+                            Toggle("Exclude test code from hotspots", isOn: $preferences.excludeTests)
+                                .toggleStyle(.switch)
+                            Toggle("Exclude vendored and generated code", isOn: $preferences.excludeGenerated)
+                                .toggleStyle(.switch)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Also ignore paths containing")
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkSoft)
+                                TextField("CNIOLLHTTP, Generated", text: $preferences.ignoredPaths)
+                                    .textFieldStyle(.roundedBorder)
+                                Text("Comma separated. For vendored code that carries no generated marker.")
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkMuted)
+                            }
+                            Stepper(
+                                "Ignore functions with fewer than \(preferences.minimumCommits) commit\(preferences.minimumCommits == 1 ? "" : "s")",
+                                value: $preferences.minimumCommits,
+                                in: 1...25
+                            )
+                            Stepper(
+                                "Pairs need at least \(preferences.minSharedCommits) shared commits",
+                                value: $preferences.minSharedCommits,
+                                in: 2...20
+                            )
                         }
-                        Stepper(
-                            "Ignore functions with fewer than \(preferences.minimumCommits) commit\(preferences.minimumCommits == 1 ? "" : "s")",
-                            value: $preferences.minimumCommits,
-                            in: 1...25
-                        )
-                        Stepper(
-                            "Pairs need at least \(preferences.minSharedCommits) shared commits",
-                            value: $preferences.minSharedCommits,
-                            in: 2...20
-                        )
+                        .font(Theme.Text.body)
                     }
-                    .font(Theme.Text.body)
                 }
 
                 Card {

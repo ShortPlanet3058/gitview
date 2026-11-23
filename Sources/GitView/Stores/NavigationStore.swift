@@ -26,6 +26,14 @@ public final class NavigationStore {
             }
         }
 
+        public func displayTitle(advanced: Bool) -> String {
+            switch self {
+            case .commits: return advanced ? "Commits" : "History"
+            case .contributors: return advanced ? "Contributors" : "People"
+            default: return title
+            }
+        }
+
         public var symbol: String {
             switch self {
             case .overview: return "square.grid.2x2"
@@ -43,16 +51,32 @@ public final class NavigationStore {
         }
     }
 
-    public static let repositoryScreens: [Screen] = [
-        .overview, .changes, .commits, .branches, .releases, .contributors, .files, .activity
+    public static let standardScreens: [Screen] = [
+        .overview, .changes, .commits, .branches, .files, .contributors
     ]
 
+    public static let workspaceScreens: [Screen] = [.overview, .changes, .files]
+    public static let historyScreens: [Screen] = [.commits, .branches, .releases, .contributors, .activity]
+    public static let analysisOnlyScreens: [Screen] = [.hotspots, .coupling, .statistics]
+
+    public static let repositoryScreens: [Screen] = standardScreens
+
     public func analysisScreens(advanced: Bool) -> [Screen] {
-        advanced ? [.hotspots, .coupling, .statistics] : [.hotspots, .coupling]
+        advanced ? Self.analysisOnlyScreens : []
     }
 
     public func visibleScreens(advanced: Bool) -> [Screen] {
-        Self.repositoryScreens + analysisScreens(advanced: advanced)
+        advanced
+            ? (Self.workspaceScreens + Self.historyScreens + Self.analysisOnlyScreens)
+            : Self.standardScreens
+    }
+
+    public func ensureVisibleScreen(advanced: Bool) {
+        let visible = visibleScreens(advanced: advanced)
+        if !visible.contains(screen) {
+            screen = .overview
+            clearDetailSelections()
+        }
     }
 
     public var screen: Screen = .overview

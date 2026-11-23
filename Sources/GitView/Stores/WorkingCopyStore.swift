@@ -99,6 +99,32 @@ public final class WorkingCopyStore {
         commitBody = ""
     }
 
+    public func commitAndPush() {
+        let subject = commitSubject
+        let body = commitBody
+        perform("commit and push", reloadHistory: true) { repository in
+            _ = try repository.commit(subject: subject, body: body)
+            if let plan = try? repository.pushPlan() {
+                try repository.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+            }
+        }
+        commitSubject = ""
+        commitBody = ""
+    }
+
+    public func sync() {
+        perform("sync", reloadHistory: true) { repository in
+            try repository.fetch(prune: true)
+            let fresh = try repository.workingState()
+            if fresh.behind > 0 {
+                try repository.pullFastForwardOnly()
+            }
+            if let plan = try repository.pushPlan(), !plan.isEmpty {
+                try repository.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+            }
+        }
+    }
+
     public func stashEverything(includeUntracked: Bool) {
         let message = stashMessage
         perform("stash") { try $0.stashPush(message: message, includeUntracked: includeUntracked) }

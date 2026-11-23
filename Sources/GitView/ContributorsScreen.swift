@@ -14,8 +14,12 @@ struct ContributorsScreen: View {
         let top = people.map(\.share).max() ?? 1
         Page {
             HStack(alignment: .top) {
-                ScreenHeader(title: "Contributors",
-                             subtitle: "Who works on this, and who to ask about what.")
+                ScreenHeader(
+                    title: preferences.advanced ? "Contributors" : "People",
+                    subtitle: preferences.advanced
+                        ? "Who works on this, and who to ask about what."
+                        : "Everyone who has contributed to this project."
+                )
                 Spacer()
                 if preferences.advanced {
                     Button { exportCSV(people) } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
@@ -23,12 +27,12 @@ struct ContributorsScreen: View {
                 }
             }
             HStack {
-                SearchField(text: $query, prompt: "Find a contributor",
+                SearchField(text: $query, prompt: preferences.advanced ? "Find a contributor" : "Find a person",
                             focusTrigger: navigation.focusLocalFindRequest).frame(maxWidth: 300)
                 Spacer()
                 Text("\(people.count) people").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
-            if let ownership = session.ownership {
+            if preferences.advanced, let ownership = session.ownership {
                 KnowledgeRiskCard(index: ownership)
             }
 

@@ -169,11 +169,13 @@ struct PathActions: View {
 /// Right-click actions for a commit.
 struct CommitActions: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     let commit: Commit
 
     var body: some View {
         Button("Show This Commit") { session.navigation.selectedCommitSHA = commit.sha }
-        if let selected = session.navigation.selectedCommitSHA,
+        if preferences.advanced,
+           let selected = session.navigation.selectedCommitSHA,
            selected != commit.sha,
            let root = session.analysis?.root {
             Button("Compare with Selected (\(String(selected.prefix(7))))") {
@@ -184,8 +186,10 @@ struct CommitActions: View {
             }
         }
         Divider()
-        Button("Copy SHA") { copyToPasteboard(commit.sha) }
-        Button("Copy Short SHA") { copyToPasteboard(String(commit.sha.prefix(7))) }
+        if preferences.advanced {
+            Button("Copy SHA") { copyToPasteboard(commit.sha) }
+            Button("Copy Short SHA") { copyToPasteboard(String(commit.sha.prefix(7))) }
+        }
         Button("Copy Subject") { copyToPasteboard(commit.subject) }
         Button("Copy Author") { copyToPasteboard(commit.author) }
         if let web = session.analysis?.info.remoteWebURL {

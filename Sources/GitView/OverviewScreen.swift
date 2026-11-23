@@ -19,6 +19,7 @@ import GitViewParse
 /// it makes — less detail here, one click to all of it.
 struct OverviewScreen: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
 
     private let gap = Theme.Space.m
 
@@ -114,13 +115,15 @@ struct OverviewScreen: View {
 
     private func numbersRow(_ analysis: RepositoryAnalysis, narrow: Bool) -> some View {
         let metrics = session.overviewMetrics
+        let advanced = preferences.advanced
         return HStack(spacing: narrow ? Theme.Space.s : gap) {
             NumberTile(icon: "clock.arrow.circlepath", tint: .blue, destination: .commits,
                        value: session.readiness.hasHistory ? analysis.commits.count.formatted() : "—",
-                       label: "Commits", detail: narrow ? nil : commitsThisMonth(metrics))
+                       label: advanced ? "Commits" : "History",
+                       detail: narrow ? nil : commitsThisMonth(metrics))
             NumberTile(icon: "person.2", tint: .aqua, destination: .contributors,
                        value: session.readiness.hasHistory ? session.contributors.count.formatted() : "—",
-                       label: session.contributors.count == 1 ? "Contributor" : "Contributors",
+                       label: advanced ? (session.contributors.count == 1 ? "Contributor" : "Contributors") : "People",
                        detail: narrow ? nil : activePeople(metrics))
             NumberTile(icon: "doc.text.fill", tint: .orange, destination: .files,
                        value: analysis.info.inventory.fileCount.formatted(),
@@ -128,20 +131,27 @@ struct OverviewScreen: View {
             NumberTile(icon: "arrow.triangle.branch", tint: .violet, destination: .branches,
                        value: metrics.localBranchCount.formatted(),
                        label: metrics.localBranchCount == 1 ? "Branch" : "Branches",
-                       detail: narrow ? nil : (metrics.remoteBranchCount > 0
+                       detail: (narrow || !advanced) ? nil : (metrics.remoteBranchCount > 0
                            ? "\(metrics.remoteBranchCount) on the remote" : nil))
-            NumberTile(icon: "tag", tint: .yellow, destination: .releases,
-                       value: analysis.tags.count.formatted(),
-                       label: analysis.tags.count == 1 ? "Release" : "Releases",
-                       detail: narrow ? nil : unreleasedDetail())
+            if advanced {
+                NumberTile(icon: "tag", tint: .yellow, destination: .releases,
+                           value: analysis.tags.count.formatted(),
+                           label: analysis.tags.count == 1 ? "Release" : "Releases",
+                           detail: narrow ? nil : unreleasedDetail())
+            }
         }
     }
 
     private func bottomRow(_ analysis: RepositoryAnalysis, compact: Bool, narrow: Bool) -> some View {
         HStack(spacing: narrow ? Theme.Space.s : gap) {
-            HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
-            HotspotsTile(limit: compact ? 2 : 4).frame(maxWidth: .infinity)
-            ActivityTile().frame(maxWidth: .infinity)
+            if preferences.advanced {
+                HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
+                HotspotsTile(limit: compact ? 2 : 4).frame(maxWidth: .infinity)
+                ActivityTile().frame(maxWidth: .infinity)
+            } else {
+                RecentHistoryTile(limit: compact ? 3 : 5).frame(maxWidth: .infinity)
+                HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
+            }
         }
     }
 
@@ -168,6 +178,7 @@ struct OverviewScreen: View {
 /// A fixed-size dashboard tile that opens the tab holding the full version of itself.
 struct DashTile<Content: View>: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     let title: String
     var subtitle: String? = nil
     var info: String? = nil
@@ -215,7 +226,7 @@ struct DashTile<Content: View>: View {
         .onTapGesture { if let destination { session.show(destination) } }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(destination.map { "Open \($0.title)" } ?? "")
+        .help(destination.map { "Open \($0.displayTitle(advanced: preferences.advanced))" } ?? "")
     }
 }
 
@@ -277,29 +288,33 @@ struct CatchUpTile: View {
 
 struct WorkingCopyTile: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(WorkingCopyStore.self) private var workingCopy
     let state: WorkingState
     var compact = false
 
+    private var changedCount: Int {
+        Set(state.staged.map(\.path) + state.unstaged.map(\.path)).count
+    }
+
     var body: some View {
-        DashTile(title: "Your working copy", destination: .changes) {
+        DashTile(title: preferences.advanced ? "Your working copy" : "Your work", destination: .changes) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
                     Text(state.branch ?? "detached").font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
-                    if state.ahead > 0 {
-                        Chip(text: "\(state.ahead) ahead")
-                    }
-                    if state.behind > 0 {
-                        Chip(text: "\(state.behind) behind")
+                    if preferences.advanced {
+                        if state.ahead > 0 { Chip(text: "\(state.ahead) ahead") }
+                        if state.behind > 0 { Chip(text: "\(state.behind) behind") }
                     }
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(Theme.inkSoft)
 
-                if state.isClean && !state.hasUnpushedCommits && state.stashes.isEmpty {
+                if state.isClean && !state.hasUnpushedCommits && (preferences.advanced ? state.stashes.isEmpty : true) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.good)
-                        Text("Nothing uncommitted, nothing unpushed.")
+                        Text(preferences.advanced ? "Nothing uncommitted, nothing unpushed." : "Everything is saved and synced.")
                             .font(Theme.Text.body).foregroundStyle(Theme.inkSoft).lineLimit(2)
                     }
                     // A clean tile would otherwise be three words and a lot of nothing.
@@ -313,6 +328,31 @@ struct WorkingCopyTile: View {
                             Text(head.author).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft).lineLimit(1)
                             Text("· \(RiskExplanation.relative(head.date, now: Date()))")
                                 .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        }
+                    }
+                } else if !preferences.advanced {
+                    if !state.conflicted.isEmpty {
+                        countRow(state.conflicted.count, "file\(state.conflicted.count == 1 ? "" : "s") with conflicts",
+                                 "exclamationmark.triangle.fill", Theme.critical)
+                    }
+                    countRow(changedCount, "modified file\(changedCount == 1 ? "" : "s")", "pencil", Theme.warning)
+                    countRow(state.untracked.count, "new file\(state.untracked.count == 1 ? "" : "s")", "plus.circle", Theme.inkMuted)
+                    if state.ahead > 0 {
+                        countRow(state.ahead, "commit\(state.ahead == 1 ? "" : "s") ready to share", "arrow.up.circle", Theme.accent)
+                    }
+                    if state.behind > 0 {
+                        countRow(state.behind, "update\(state.behind == 1 ? "" : "s") to pull", "arrow.down.circle", Theme.accent)
+                    }
+                    if !compact {
+                        Spacer(minLength: 4)
+                        HStack(spacing: Theme.Space.s) {
+                            Button("Review changes") { session.show(.changes) }
+                                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            if (state.ahead > 0 || state.behind > 0) && state.isClean {
+                                Button("Sync") { workingCopy.sync() }
+                                    .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                                    .disabled(workingCopy.writeInFlight)
+                            }
                         }
                     }
                 } else {
@@ -345,6 +385,7 @@ struct WorkingCopyTile: View {
 /// One number, its label, and one line of context.
 struct NumberTile: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     let icon: String
     let tint: Theme.Tint
     let destination: NavigationStore.Screen
@@ -383,7 +424,7 @@ struct NumberTile: View {
         .onTapGesture { session.show(destination) }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help("Open \(destination.title)")
+        .help("Open \(destination.displayTitle(advanced: preferences.advanced))")
     }
 }
 
@@ -454,12 +495,14 @@ struct HealthTile: View {
     var checks = 3
 
     var body: some View {
-        DashTile(title: "Repository health",
-                 info: "Five checks, 100 points: recent activity (25), active contributors (20), branch "
-                     + "hygiene (15), large files (15), and complex code under change (25). The full "
-                     + "breakdown is on the Statistics tab; the score is a heuristic to start a "
-                     + "conversation, not a verdict.",
-                 destination: preferences.advanced ? .statistics : .hotspots,
+        DashTile(title: preferences.advanced ? "Repository health" : "Project health",
+                 info: preferences.advanced
+                     ? "Five checks, 100 points: recent activity (25), active contributors (20), branch "
+                         + "hygiene (15), large files (15), and complex code under change (25). The full "
+                         + "breakdown is on the Statistics tab; the score is a heuristic to start a "
+                         + "conversation, not a verdict."
+                     : "A quick summary of how active and tidy this repository is.",
+                 destination: preferences.advanced ? .statistics : nil,
                  needs: \.hasUnits, waitingFor: "the source files") {
             if let health = risk.health {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
@@ -546,6 +589,41 @@ struct HotspotsTile: View {
                             Spacer(minLength: 0)
                             Text("\(row.commitCount)×").font(Theme.Text.caption.monospacedDigit())
                                 .foregroundStyle(Theme.inkMuted)
+                        }
+                        .frame(height: 30)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+}
+
+struct RecentHistoryTile: View {
+    @Environment(WorkspaceSession.self) private var session
+    var limit = 5
+
+    var body: some View {
+        DashTile(title: "Recent activity",
+                 subtitle: "latest changes",
+                 destination: .commits,
+                 needs: \.hasHistory) {
+            let commits = session.analysis?.commits.prefix(limit) ?? []
+            if commits.isEmpty {
+                Text("No saved history yet.")
+                    .font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(commits), id: \.sha) { commit in
+                        HStack(spacing: Theme.Space.s) {
+                            Avatar(name: commit.author, size: 22)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(commit.subject.isEmpty ? "(no message)" : commit.subject)
+                                    .font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+                                Text("\(commit.author) · \(RiskExplanation.relative(commit.date, now: Date()))")
+                                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
                         }
                         .frame(height: 30)
                     }

@@ -339,4 +339,37 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertFalse(store.graphLayoutInProgress)
         XCTAssertEqual(store.graphPositions.count, 2)
     }
+
+    @MainActor
+    func testStandardAndAdvancedNavigationDifferentiationAndFallback() {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        prefs.advanced = false
+        let session = WorkspaceSession(preferences: prefs, consumeLaunchArgumentsIfAvailable: false)
+
+        let standard = session.navigation.visibleScreens(advanced: false)
+        XCTAssertEqual(standard, [.overview, .changes, .commits, .branches, .files, .contributors])
+        XCTAssertEqual(NavigationStore.Screen.commits.displayTitle(advanced: false), "History")
+        XCTAssertEqual(NavigationStore.Screen.commits.displayTitle(advanced: true), "Commits")
+        XCTAssertEqual(NavigationStore.Screen.contributors.displayTitle(advanced: false), "People")
+        XCTAssertEqual(NavigationStore.Screen.contributors.displayTitle(advanced: true), "Contributors")
+
+        let advanced = session.navigation.visibleScreens(advanced: true)
+        XCTAssertEqual(advanced.count, 11)
+        XCTAssertTrue(advanced.contains(.hotspots))
+        XCTAssertTrue(advanced.contains(.coupling))
+        XCTAssertTrue(advanced.contains(.statistics))
+        XCTAssertTrue(advanced.contains(.releases))
+        XCTAssertTrue(advanced.contains(.activity))
+
+        // Leaving Advanced mode while viewing an Advanced-only screen falls back cleanly to Overview.
+        prefs.advanced = true
+        session.show(.statistics)
+        XCTAssertEqual(session.navigation.screen, .statistics)
+
+        prefs.advanced = false
+        XCTAssertEqual(session.navigation.screen, .overview)
+    }
 }

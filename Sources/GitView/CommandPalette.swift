@@ -89,15 +89,17 @@ struct CommandPaletteOverlay: View {
     private var entries: [CommandPaletteEntry] {
         var items: [CommandPaletteEntry] = []
 
+        let advanced = session.preferences.advanced
         if session.hasRepository {
             for screen in session.visibleScreens {
+                let title = screen.displayTitle(advanced: advanced)
                 items.append(CommandPaletteEntry(
                     id: "screen:\(screen.rawValue)",
-                    title: screen.title,
-                    subtitle: "Switch to \(screen.title) screen",
+                    title: title,
+                    subtitle: "Switch to \(title) screen",
                     category: "Screen",
                     symbol: screen.symbol,
-                    keywords: screen.rawValue,
+                    keywords: "\(screen.rawValue) \(screen.title) \(title)",
                     perform: { session.show(screen) }
                 ))
             }
@@ -117,7 +119,7 @@ struct CommandPaletteOverlay: View {
             items.append(CommandPaletteEntry(
                 id: "action:refresh",
                 title: "Refresh Repository",
-                subtitle: "Re-read git history and working tree",
+                subtitle: "Re-read repository state",
                 category: "Action",
                 symbol: "arrow.clockwise",
                 keywords: "reload sync",
@@ -125,25 +127,37 @@ struct CommandPaletteOverlay: View {
             ))
             items.append(CommandPaletteEntry(
                 id: "action:mode",
-                title: session.preferences.advanced ? "Switch to Standard Mode" : "Switch to Advanced Mode",
-                subtitle: "Toggle metrics and Statistics screen",
+                title: advanced ? "Switch to Standard Mode" : "Switch to Advanced Mode",
+                subtitle: "Toggle between everyday Git and full analysis views",
                 category: "Action",
                 symbol: "slider.horizontal.3",
                 keywords: "advanced standard mode",
                 perform: { session.preferences.advanced.toggle() }
             ))
             if analysis.info.remoteURL != nil || session.workingCopy.pushPlan != nil {
-                items.append(CommandPaletteEntry(
-                    id: "action:fetch",
-                    title: "Fetch All Remotes",
-                    subtitle: "git fetch --all --prune",
-                    category: "Action",
-                    symbol: "arrow.down.circle",
-                    keywords: "remote fetch prune",
-                    perform: { session.workingCopy.fetch() }
-                ))
+                if advanced {
+                    items.append(CommandPaletteEntry(
+                        id: "action:fetch",
+                        title: "Fetch All Remotes",
+                        subtitle: "git fetch --all --prune",
+                        category: "Action",
+                        symbol: "arrow.down.circle",
+                        keywords: "remote fetch prune",
+                        perform: { session.workingCopy.fetch() }
+                    ))
+                } else {
+                    items.append(CommandPaletteEntry(
+                        id: "action:sync",
+                        title: "Sync with Remote",
+                        subtitle: "Fetch updates, pull, and share commits",
+                        category: "Action",
+                        symbol: "arrow.triangle.2.circlepath",
+                        keywords: "sync pull push remote",
+                        perform: { session.workingCopy.sync() }
+                    ))
+                }
             }
-            if analysis.workingState.behind > 0 {
+            if advanced && analysis.workingState.behind > 0 {
                 items.append(CommandPaletteEntry(
                     id: "action:pull",
                     title: "Pull Fast-Forward (\(analysis.workingState.behind) behind)",
@@ -155,7 +169,8 @@ struct CommandPaletteOverlay: View {
                 ))
             }
 
-            for branch in analysis.branches.prefix(80) {
+            let branchPool = advanced ? analysis.branches : analysis.branches.filter { !$0.isRemote }
+            for branch in branchPool.prefix(80) {
                 let target = branch.checkoutTarget
                 items.append(CommandPaletteEntry(
                     id: "branch:\(branch.id)",
@@ -185,13 +200,16 @@ struct CommandPaletteOverlay: View {
             }
 
             for commit in analysis.commits.prefix(150) {
+                let subtitle = advanced
+                    ? "\(String(commit.sha.prefix(7))) · \(commit.author)"
+                    : commit.author
                 items.append(CommandPaletteEntry(
                     id: "commit:\(commit.sha)",
                     title: commit.subject.isEmpty ? String(commit.sha.prefix(7)) : commit.subject,
-                    subtitle: "\(String(commit.sha.prefix(7))) · \(commit.author)",
-                    category: "Commit",
+                    subtitle: subtitle,
+                    category: advanced ? "Commit" : "History",
                     symbol: "clock.arrow.circlepath",
-                    keywords: "\(commit.sha) \(commit.author)",
+                    keywords: advanced ? "\(commit.sha) \(commit.author)" : commit.author,
                     perform: {
                         session.navigation.selectedCommitSHA = commit.sha
                         session.inspector.ensureCommitDetail(sha: commit.sha)
@@ -199,19 +217,21 @@ struct CommandPaletteOverlay: View {
                 ))
             }
 
-            for row in session.risk.allRankedRows.prefix(150) {
-                items.append(CommandPaletteEntry(
-                    id: "unit:\(row.id.uuidString)",
-                    title: row.name,
-                    subtitle: row.location,
-                    category: "Hotspot",
-                    symbol: "flame",
-                    keywords: "\(row.name) \(row.filePath)",
-                    perform: {
-                        session.show(.hotspots)
-                        session.navigation.selectedUnitID = row.id
-                    }
-                ))
+            if advanced {
+                for row in session.risk.allRankedRows.prefix(150) {
+                    items.append(CommandPaletteEntry(
+                        id: "unit:\(row.id.uuidString)",
+                        title: row.name,
+                        subtitle: row.location,
+                        category: "Hotspot",
+                        symbol: "flame",
+                        keywords: "\(row.name) \(row.filePath)",
+                        perform: {
+                            session.show(.hotspots)
+                            session.navigation.selectedUnitID = row.id
+                        }
+                    ))
+                }
             }
         }
 
