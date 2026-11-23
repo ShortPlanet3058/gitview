@@ -87,17 +87,20 @@ public final class SearchStore {
         deepSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            let repository = GitRepository(url: root)
-            let code = (try? repository.grep(term, limit: 60)) ?? []
-            let history = (try? repository.commitsChanging(term, limit: 25)) ?? []
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self,
-                      self.globalSearch.trimmingCharacters(in: .whitespaces) == query else { return }
-                self.codeMatches = code
-                self.historyMatches = history
-                self.deepSearchInFlight = false
-            }
+            let (code, history) = await Self.performDeepSearch(root: root, term: term)
+            guard !Task.isCancelled,
+                  let self,
+                  self.globalSearch.trimmingCharacters(in: .whitespaces) == query else { return }
+            self.codeMatches = code
+            self.historyMatches = history
+            self.deepSearchInFlight = false
         }
+    }
+
+    private nonisolated static func performDeepSearch(root: URL, term: String) async -> ([CodeMatch], [Commit]) {
+        let repository = GitRepository(url: root)
+        async let codeTask = (try? repository.grepAsync(term, limit: 60)) ?? []
+        async let historyTask = (try? repository.commitsChangingAsync(term, limit: 25)) ?? []
+        return await (codeTask, historyTask)
     }
 }

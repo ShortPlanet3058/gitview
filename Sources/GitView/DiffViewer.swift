@@ -111,6 +111,11 @@ struct DiffViewer: View {
             showingFindBar = true
             findFieldFocused = true
         }
+        .onChange(of: workingCopy.worktreeTick) {
+            if !embedded, case .workingTree(staged: false) = request.source {
+                reloadActiveDiff()
+            }
+        }
         .task(id: activeDiff) {
             await computeHighlightsAndInlineDiffs()
         }
@@ -627,14 +632,15 @@ struct DiffViewer: View {
     }
 
     private func unifiedRow(_ line: DiffLine) -> some View {
-        HStack(alignment: .top, spacing: 0) {
+        let numberWidth = max(46, CGFloat(preferences.codeFontSize) * 4.2)
+        return HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 0) {
                 lineSelectionCheckbox(for: line)
                 Text(line.oldNumber.map(String.init) ?? "")
-                    .frame(width: 46, alignment: .trailing)
+                    .frame(width: numberWidth, alignment: .trailing)
                     .foregroundStyle(Theme.inkMuted)
                 Text(line.newNumber.map(String.init) ?? "")
-                    .frame(width: 46, alignment: .trailing)
+                    .frame(width: numberWidth, alignment: .trailing)
                     .foregroundStyle(Theme.inkMuted)
                 Text(marker(line)).frame(width: 16, alignment: .center)
                     .foregroundStyle(markerColor(line))
@@ -650,7 +656,7 @@ struct DiffViewer: View {
             }
             Spacer(minLength: 0)
         }
-        .font(Theme.Text.mono)
+        .font(Theme.Text.monoFont(size: preferences.codeFontSize))
         .padding(.horizontal, Theme.Space.l)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -666,17 +672,18 @@ struct DiffViewer: View {
             sideBySideCell(line: pair.right, sideNumber: pair.right?.newNumber)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(Theme.Text.mono)
+        .font(Theme.Text.monoFont(size: preferences.codeFontSize))
     }
 
     @ViewBuilder
     private func sideBySideCell(line: DiffLine?, sideNumber: Int?) -> some View {
+        let numberWidth = max(40, CGFloat(preferences.codeFontSize) * 3.8)
         if let line {
             HStack(alignment: .top, spacing: 0) {
                 HStack(spacing: 0) {
                     lineSelectionCheckbox(for: line)
                     Text(sideNumber.map(String.init) ?? "")
-                        .frame(width: 40, alignment: .trailing)
+                        .frame(width: numberWidth, alignment: .trailing)
                         .foregroundStyle(Theme.inkMuted)
                     Text(marker(line))
                         .frame(width: 14, alignment: .center)

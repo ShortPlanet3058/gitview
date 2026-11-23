@@ -100,6 +100,11 @@ struct ChangesScreen: View {
         .onChange(of: state) {
             syncSelectionAndInlineDiff(entries: entries, reloadCurrent: true)
         }
+        .onChange(of: workingCopy.worktreeTick) {
+            if let activeEntry, case .workingTree(staged: false) = activeEntry.diffRequest.source {
+                session.inspector.reloadInlineDiff()
+            }
+        }
         .onChange(of: preferences.advanced) {
             syncSelectionAndInlineDiff(entries: entries)
         }

@@ -53,10 +53,29 @@ public enum DiffLayoutMode: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
+    case system = "system"
+    case light = "light"
+    case dark = "dark"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+}
+
 /// Persisted application-wide settings shared across windows and observed by sessions.
 @MainActor
 @Observable
 public final class AppPreferences {
+    public static let defaultCodeFontSize: Double = 11
+    public static let codeFontSizeRange: ClosedRange<Double> = 9...18
+
     public enum ChangeKind: Sendable {
         case riskModel
         case coupling
@@ -167,6 +186,25 @@ public final class AppPreferences {
         }
     }
 
+    public var appearanceMode: AppearanceMode {
+        didSet {
+            defaults.set(appearanceMode.rawValue, forKey: "appearanceMode")
+            notify(.environment)
+        }
+    }
+
+    public var codeFontSize: Double {
+        didSet {
+            let clamped = min(max(codeFontSize, Self.codeFontSizeRange.lowerBound), Self.codeFontSizeRange.upperBound)
+            if clamped != codeFontSize {
+                codeFontSize = clamped
+                return
+            }
+            defaults.set(codeFontSize, forKey: "codeFontSize")
+            notify(.environment)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.advanced = defaults.bool(forKey: "advancedMode")
@@ -189,6 +227,22 @@ public final class AppPreferences {
         self.diffLayoutMode = defaults.string(forKey: "diffLayoutMode")
             .flatMap(DiffLayoutMode.init(rawValue:)) ?? .unified
         self.diffIgnoreWhitespace = defaults.bool(forKey: "diffIgnoreWhitespace")
+        self.appearanceMode = defaults.string(forKey: "appearanceMode")
+            .flatMap(AppearanceMode.init(rawValue:)) ?? .system
+        let storedFontSize = defaults.object(forKey: "codeFontSize") as? Double ?? Self.defaultCodeFontSize
+        self.codeFontSize = min(max(storedFontSize, Self.codeFontSizeRange.lowerBound), Self.codeFontSizeRange.upperBound)
+    }
+
+    public func increaseCodeFontSize() {
+        codeFontSize = min(codeFontSize + 1, Self.codeFontSizeRange.upperBound)
+    }
+
+    public func decreaseCodeFontSize() {
+        codeFontSize = max(codeFontSize - 1, Self.codeFontSizeRange.lowerBound)
+    }
+
+    public func resetCodeFontSize() {
+        codeFontSize = Self.defaultCodeFontSize
     }
 
     @discardableResult

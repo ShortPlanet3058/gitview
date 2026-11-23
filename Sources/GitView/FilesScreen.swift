@@ -315,14 +315,16 @@ private struct FileContentWorkspace: View {
             let rows = (filterMatchesOnly && !query.isEmpty)
                 ? indexed.filter { $0.text.localizedCaseInsensitiveContains(query) }
                 : indexed
+            let lineNumWidth = max(48, CGFloat(preferences.codeFontSize) * 4.3)
+            let codeFont = Theme.Text.monoFont(size: preferences.codeFontSize)
             ScrollColumn {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(rows, id: \.lineNumber) { row in
                         HStack(alignment: .top, spacing: 0) {
                             Text("\(row.lineNumber)")
-                                .font(Theme.Text.mono)
+                                .font(codeFont)
                                 .foregroundStyle(Theme.inkMuted)
-                                .frame(width: 48, alignment: .trailing)
+                                .frame(width: lineNumWidth, alignment: .trailing)
                                 .padding(.trailing, Theme.Space.m)
                             Text(Theme.Syntax.attributedLine(
                                 row.text,
@@ -330,7 +332,7 @@ private struct FileContentWorkspace: View {
                                 baseForeground: Theme.ink,
                                 searchQuery: query
                             ))
-                            .font(Theme.Text.mono)
+                            .font(codeFont)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                             Spacer(minLength: 0)
@@ -438,10 +440,12 @@ private struct FileContentWorkspace: View {
 
                 Rectangle().fill(Theme.hairline).frame(width: 1)
 
+                let blameFont = Theme.Text.monoFont(size: preferences.codeFontSize)
+                let blameLineNumWidth = max(44, CGFloat(preferences.codeFontSize) * 4.0)
                 Text("\(line.lineNumber)")
-                    .font(Theme.Text.mono)
+                    .font(blameFont)
                     .foregroundStyle(Theme.inkMuted)
-                    .frame(width: 44, alignment: .trailing)
+                    .frame(width: blameLineNumWidth, alignment: .trailing)
                     .padding(.trailing, Theme.Space.s)
                     .padding(.vertical, 1)
 
@@ -451,7 +455,7 @@ private struct FileContentWorkspace: View {
                     baseForeground: Theme.ink,
                     searchQuery: query
                 ))
-                .font(Theme.Text.mono)
+                .font(blameFont)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .padding(.vertical, 1)

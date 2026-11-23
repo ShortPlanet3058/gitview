@@ -89,6 +89,10 @@ enum Theme {
         static let caption  = Font.system(size: 11)
         static let hero     = Font.system(size: 26, weight: .semibold)
         static let mono     = Font.system(size: 11, design: .monospaced)
+
+        static func monoFont(size: Double) -> Font {
+            Font.system(size: CGFloat(size), design: .monospaced)
+        }
     }
 
     enum Syntax {

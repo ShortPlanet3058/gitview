@@ -462,4 +462,84 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertFalse(hydrated.allUnits.isEmpty)
         XCTAssertEqual(hydrated.filesParsed, 1)
     }
+
+    func testRepositoryWatcherIgnoresBuildAndGitPaths() {
+        let root = "/tmp/sample-repo"
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/.git/index", relativeTo: root))
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/.build/debug/App", relativeTo: root))
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/node_modules/pkg/index.js", relativeTo: root))
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/App.xcodeproj/xcuserdata/finn.xcuserdatad/UserInterfaceState.xcuserstate", relativeTo: root))
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/.DS_Store", relativeTo: root))
+        XCTAssertTrue(RepositoryWatcher.shouldIgnoreWorktreePath(root, relativeTo: root))
+
+        XCTAssertFalse(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/Sources/App.swift", relativeTo: root))
+        XCTAssertFalse(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/README.md", relativeTo: root))
+        XCTAssertFalse(RepositoryWatcher.shouldIgnoreWorktreePath("\(root)/Sources/builder/Helpers.swift", relativeTo: root))
+    }
+
+    @MainActor
+    func testAppPreferencesAppearanceModeAndCodeFontSizePersistence() {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        XCTAssertEqual(prefs.appearanceMode, .system)
+        XCTAssertEqual(prefs.codeFontSize, 11)
+
+        prefs.appearanceMode = .dark
+        prefs.increaseCodeFontSize()
+        XCTAssertEqual(prefs.codeFontSize, 12)
+        prefs.codeFontSize = 40 // clamped to max 18
+        XCTAssertEqual(prefs.codeFontSize, 18)
+
+        let reloaded = AppPreferences(defaults: defaults)
+        XCTAssertEqual(reloaded.appearanceMode, .dark)
+        XCTAssertEqual(reloaded.codeFontSize, 18)
+
+        reloaded.codeFontSize = 3 // clamped to min 9
+        XCTAssertEqual(reloaded.codeFontSize, 9)
+        reloaded.resetCodeFontSize()
+        XCTAssertEqual(reloaded.codeFontSize, 11)
+    }
+
+    @MainActor
+    func testSearchStoreCompletesAsyncDeepSearch() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-searchstore-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Bob"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "bob@example.com"], in: tempRoot)
+        try "struct DeepSearchMarker {}\n".write(
+            to: tempRoot.appendingPathComponent("Marker.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        _ = try GitProcess.capture(arguments: ["add", "Marker.swift"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "Add marker"], in: tempRoot)
+
+        let store = SearchStore()
+        store.updateContext(
+            root: tempRoot,
+            commits: [],
+            filePaths: ["Marker.swift"],
+            units: [],
+            contributors: [],
+            branches: ["main"],
+            tags: []
+        )
+        store.globalSearch = "DeepSearchMarker"
+        XCTAssertTrue(store.deepSearchInFlight)
+
+        let deadline = Date().addingTimeInterval(4.0)
+        while store.deepSearchInFlight && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(30))
+        }
+
+        XCTAssertFalse(store.deepSearchInFlight)
+        XCTAssertEqual(store.codeMatches.map(\.path), ["Marker.swift"])
+        XCTAssertEqual(store.historyMatches.map(\.subject), ["Add marker"])
+    }
 }

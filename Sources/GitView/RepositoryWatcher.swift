@@ -1,29 +1,43 @@
 import Foundation
 import CoreServices
 
-/// Watches a repository's `.git` directory and reports — debounced — that something in it
-/// moved: a commit, a checkout, a fetch, a staged file, a stash.
-///
-/// Only `.git` is watched, not the working tree. A working tree holds build output
-/// (`.build` alone is tens of thousands of files here), so watching it would mean a
-/// constant stream of events that say nothing about the repository. Edits to tracked files
-/// are picked up when the window comes forward instead, which is when anyone would look.
-///
-/// Git writes many files for one logical operation — a rebase touches HEAD, refs, the index
-/// and several logs — so events are coalesced twice: by FSEvents' own latency window, and
-/// again by a debounce here. What arrives is "something changed", never "what changed": the
-/// model asks git that question, because only git can answer it correctly.
+/// Watches a repository's `.git` directory (for commits, checkouts, fetches, staging, stashes)
+/// and optionally the working tree (for side-by-side editor saves on dual-monitor setups),
+/// filtering out `.git` and noisy build/cache folders before debouncing callbacks.
 final class RepositoryWatcher: @unchecked Sendable {
+    private static let ignoredWorktreeSegments: Set<String> = [
+        ".git", ".build", "DerivedData", "node_modules", ".swiftpm",
+        "Pods", "Carthage", "target", "dist", "build", ".next", ".nuxt",
+        ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+        ".gradle", ".idea", ".DS_Store", "xcuserdata",
+    ]
+
     private var stream: FSEventStreamRef?
+    private var worktreeStream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "com.gitview.watcher", qos: .utility)
     private var pending: DispatchWorkItem?
+    private var pendingWorktree: DispatchWorkItem?
     private let debounce: TimeInterval
+    private let worktreeDebounce: TimeInterval
+    private let resolvedRootPath: String
     private let onChange: @Sendable () -> Void
+    private let onWorktreeChange: (@Sendable () -> Void)?
 
-    /// - Parameter onChange: called on an arbitrary queue, already debounced.
-    init?(root: URL, debounce: TimeInterval = 0.5, onChange: @escaping @Sendable () -> Void) {
+    /// - Parameters:
+    ///   - onChange: called on an arbitrary queue after `.git` activity, already debounced.
+    ///   - onWorktreeChange: optional debounced callback when non-ignored working-tree files change.
+    init?(
+        root: URL,
+        debounce: TimeInterval = 0.5,
+        worktreeDebounce: TimeInterval = 0.7,
+        onChange: @escaping @Sendable () -> Void,
+        onWorktreeChange: (@Sendable () -> Void)? = nil
+    ) {
         self.onChange = onChange
+        self.onWorktreeChange = onWorktreeChange
         self.debounce = debounce
+        self.worktreeDebounce = worktreeDebounce
+        self.resolvedRootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
 
         let watched = Self.watchedDirectories(for: root)
         guard !watched.isEmpty else { return nil }
@@ -54,6 +68,79 @@ final class RepositoryWatcher: @unchecked Sendable {
             stream = nil
             return nil
         }
+
+        if onWorktreeChange != nil {
+            var worktreeContext = FSEventStreamContext(
+                version: 0,
+                info: Unmanaged.passUnretained(self).toOpaque(),
+                retain: nil, release: nil, copyDescription: nil)
+
+            let worktreeCallback: FSEventStreamCallback = { _, info, _, eventPaths, _, _ in
+                guard let info else { return }
+                let watcher = Unmanaged<RepositoryWatcher>.fromOpaque(info).takeUnretainedValue()
+                let paths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as? [String] ?? []
+                watcher.handleWorktreeEvents(paths)
+            }
+
+            if let wtStream = FSEventStreamCreate(
+                kCFAllocatorDefault, worktreeCallback, &worktreeContext,
+                [root.path] as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                0.5,
+                UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes))
+            {
+                FSEventStreamSetDispatchQueue(wtStream, queue)
+                if FSEventStreamStart(wtStream) {
+                    self.worktreeStream = wtStream
+                } else {
+                    FSEventStreamInvalidate(wtStream)
+                    FSEventStreamRelease(wtStream)
+                }
+            }
+        }
+    }
+
+    /// True when a working-tree path belongs to `.git` or an ignored build/cache directory.
+    static func shouldIgnoreWorktreePath(_ path: String, relativeTo rootPath: String) -> Bool {
+        let normalizedRoot = normalize(path: rootPath)
+        let normalizedPath = normalize(path: path)
+
+        let relative: String
+        if normalizedPath == normalizedRoot {
+            return true
+        } else if normalizedPath.hasPrefix(normalizedRoot + "/") {
+            relative = String(normalizedPath.dropFirst(normalizedRoot.count + 1))
+        } else {
+            let resolvedRoot = normalize(path: URL(fileURLWithPath: rootPath).standardizedFileURL.resolvingSymlinksInPath().path)
+            let resolvedPath = normalize(path: URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path)
+            if resolvedPath == resolvedRoot {
+                return true
+            } else if resolvedPath.hasPrefix(resolvedRoot + "/") {
+                relative = String(resolvedPath.dropFirst(resolvedRoot.count + 1))
+            } else {
+                relative = normalizedPath
+            }
+        }
+
+        let components = relative.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return true }
+        for segment in components {
+            if ignoredWorktreeSegments.contains(segment) {
+                return true
+            }
+            if segment.hasSuffix(".xcuserdatad") || segment.hasSuffix(".xcuserstate") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func normalize(path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if standardized.count > 1 && standardized.hasSuffix("/") {
+            return String(standardized.dropLast())
+        }
+        return standardized
     }
 
     /// Resolves `.git` directories to watch, handling worktrees and submodules where `.git` is
@@ -89,7 +176,7 @@ final class RepositoryWatcher: @unchecked Sendable {
         return [root]
     }
 
-    /// Collapses a burst of events into one call.
+    /// Collapses a burst of `.git` events into one call.
     private func schedule() {
         pending?.cancel()
         let work = DispatchWorkItem { [onChange] in onChange() }
@@ -97,14 +184,38 @@ final class RepositoryWatcher: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + debounce, execute: work)
     }
 
+    private func handleWorktreeEvents(_ paths: [String]) {
+        guard onWorktreeChange != nil else { return }
+        let hasRelevantChange = paths.contains { !Self.shouldIgnoreWorktreePath($0, relativeTo: resolvedRootPath) }
+        guard hasRelevantChange else { return }
+        scheduleWorktree()
+    }
+
+    private func scheduleWorktree() {
+        guard let onWorktreeChange else { return }
+        pendingWorktree?.cancel()
+        let work = DispatchWorkItem { onWorktreeChange() }
+        pendingWorktree = work
+        queue.asyncAfter(deadline: .now() + worktreeDebounce, execute: work)
+    }
+
     func stop() {
         pending?.cancel()
         pending = nil
-        guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
-        self.stream = nil
+        pendingWorktree?.cancel()
+        pendingWorktree = nil
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            self.stream = nil
+        }
+        if let worktreeStream {
+            FSEventStreamStop(worktreeStream)
+            FSEventStreamInvalidate(worktreeStream)
+            FSEventStreamRelease(worktreeStream)
+            self.worktreeStream = nil
+        }
     }
 
     deinit { stop() }

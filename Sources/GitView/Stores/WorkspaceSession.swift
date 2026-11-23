@@ -97,6 +97,7 @@ public final class WorkspaceSession {
         }
         workingCopy.onWorkingStateRefreshed = { [weak self] root, fresh in
             guard let self, case .loaded(var current) = self.state, current.root == root else { return }
+            guard current.workingState != fresh else { return }
             current.workingState = fresh
             self.state = .loaded(current)
         }
@@ -714,9 +715,20 @@ public final class WorkspaceSession {
 
     private func startWatching(_ root: URL) {
         watcher?.stop()
-        watcher = RepositoryWatcher(root: root) { [weak self] in
-            Task { @MainActor in self?.repositoryMayHaveMoved() }
-        }
+        watcher = RepositoryWatcher(
+            root: root,
+            onChange: { [weak self] in
+                Task { @MainActor in self?.repositoryMayHaveMoved() }
+            },
+            onWorktreeChange: { [weak self] in
+                Task { @MainActor in self?.workingTreeMayHaveChanged() }
+            }
+        )
+    }
+
+    private func workingTreeMayHaveChanged() {
+        guard case .loaded = state, !isRefreshing, !workingCopy.writeInFlight else { return }
+        workingCopy.refreshWorkingState(notifyWorktreeTick: true)
     }
 
     private func repositoryMayHaveMoved() {

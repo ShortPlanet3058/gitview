@@ -29,6 +29,8 @@ public final class WorkingCopyStore {
     public private(set) var pushPlan: GitRepository.PushPlan?
     public private(set) var headCommitInfo: GitRepository.HeadCommitInfo?
     public var divergedPullPrompt = false
+    /// Bumped when a working-tree change event triggers a status refresh so active diffs reload even if status flags stayed dirty.
+    public private(set) var worktreeTick: Int = 0
 
     @ObservationIgnored var rootProvider: () -> URL? = { nil }
     @ObservationIgnored var onWorkingStateRefreshed: (URL, WorkingState) -> Void = { _, _ in }
@@ -44,14 +46,18 @@ public final class WorkingCopyStore {
         headCommitInfo = nil
         amendLastCommit = false
         divergedPullPrompt = false
+        worktreeTick = 0
     }
 
-    public func refreshWorkingState() {
+    public func refreshWorkingState(notifyWorktreeTick: Bool = false) {
         guard let root = rootProvider() else { return }
         Task.detached(priority: .utility) {
             let fresh = (try? GitRepository(url: root).workingState()) ?? .clean
             await MainActor.run {
                 self.onWorkingStateRefreshed(root, fresh)
+                if notifyWorktreeTick && self.rootProvider() == root {
+                    self.worktreeTick += 1
+                }
             }
         }
     }

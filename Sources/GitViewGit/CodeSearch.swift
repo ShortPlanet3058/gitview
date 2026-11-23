@@ -24,6 +24,22 @@ extension GitRepository {
         return CodeSearchParser.parseGrep(output ?? "", limit: limit)
     }
 
+    /// Async, cancellable variant of `grep(_:limit:)`.
+    public func grepAsync(_ pattern: String, limit: Int = 200) async throws -> [CodeMatch] {
+        let root = try validate()
+        do {
+            let output = try await GitProcess.captureAsync(
+                arguments: ["grep", "-z", "-n", "-I", "--no-color", "--fixed-strings",
+                            "--max-count=\(max(limit / 10, 3))", "-e", pattern],
+                in: root
+            )
+            return CodeSearchParser.parseGrep(output, limit: limit)
+        } catch GitError.failed(_, 1, _) {
+            // `git grep` exits with code 1 when zero lines match.
+            return []
+        }
+    }
+
     /// Commits that changed how many times `term` appears — git's "pickaxe".
     ///
     /// This is the archaeology question: when was this symbol introduced, and when did it
@@ -34,6 +50,17 @@ extension GitRepository {
         let output = try GitProcess.capture(
             arguments: ["log", "--max-count=\(limit)", "--pretty=format:%H%x1f%aN%x1f%aI%x1f%s",
                         "-S", term, "--no-color"], in: root)
+        return CodeSearchParser.parseCommitHeaders(output)
+    }
+
+    /// Async, cancellable variant of `commitsChanging(_:limit:)`.
+    public func commitsChangingAsync(_ term: String, limit: Int = 40) async throws -> [Commit] {
+        let root = try validate()
+        let output = try await GitProcess.captureAsync(
+            arguments: ["log", "--max-count=\(limit)", "--pretty=format:%H%x1f%aN%x1f%aI%x1f%s",
+                        "-S", term, "--no-color"],
+            in: root
+        )
         return CodeSearchParser.parseCommitHeaders(output)
     }
 }

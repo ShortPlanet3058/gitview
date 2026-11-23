@@ -56,4 +56,35 @@ final class CodeSearchParserTests: XCTestCase {
         let output = "aaa\u{1F}Ann\u{1F}2024-01-01T00:00:00Z\u{1F}fix: a|b — done"
         XCTAssertEqual(CodeSearchParser.parseCommitHeaders(output).first?.subject, "fix: a|b — done")
     }
+
+    func testGrepAsyncAndCommitsChangingAsync() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-codesearch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRoot)
+        try "let uniqueSearchToken = 99\n".write(
+            to: tempRoot.appendingPathComponent("Sample.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        _ = try GitProcess.capture(arguments: ["add", "Sample.swift"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "Introduce token"], in: tempRoot)
+
+        let repo = GitRepository(url: tempRoot)
+        let matches = try await repo.grepAsync("uniqueSearchToken", limit: 20)
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.path, "Sample.swift")
+        XCTAssertEqual(matches.first?.line, 1)
+
+        let noMatches = try await repo.grepAsync("definitelyMissingSymbol123", limit: 20)
+        XCTAssertTrue(noMatches.isEmpty)
+
+        let commits = try await repo.commitsChangingAsync("uniqueSearchToken", limit: 10)
+        XCTAssertEqual(commits.count, 1)
+        XCTAssertEqual(commits.first?.subject, "Introduce token")
+    }
 }
