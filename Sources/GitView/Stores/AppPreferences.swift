@@ -69,6 +69,24 @@ public enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum AutoFetchInterval: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+    case thirtyMinutes = 1800
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .off: return "Off"
+        case .fiveMinutes: return "Every 5 minutes"
+        case .fifteenMinutes: return "Every 15 minutes"
+        case .thirtyMinutes: return "Every 30 minutes"
+        }
+    }
+}
+
 /// Persisted application-wide settings shared across windows and observed by sessions.
 @MainActor
 @Observable
@@ -205,6 +223,13 @@ public final class AppPreferences {
         }
     }
 
+    public var autoFetchInterval: AutoFetchInterval {
+        didSet {
+            defaults.set(autoFetchInterval.rawValue, forKey: "autoFetchInterval")
+            notify(.environment)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.advanced = defaults.bool(forKey: "advancedMode")
@@ -231,6 +256,8 @@ public final class AppPreferences {
             .flatMap(AppearanceMode.init(rawValue:)) ?? .system
         let storedFontSize = defaults.object(forKey: "codeFontSize") as? Double ?? Self.defaultCodeFontSize
         self.codeFontSize = min(max(storedFontSize, Self.codeFontSizeRange.lowerBound), Self.codeFontSizeRange.upperBound)
+        let storedAutoFetch = defaults.object(forKey: "autoFetchInterval") as? Int ?? 0
+        self.autoFetchInterval = AutoFetchInterval(rawValue: storedAutoFetch) ?? .off
     }
 
     public func increaseCodeFontSize() {

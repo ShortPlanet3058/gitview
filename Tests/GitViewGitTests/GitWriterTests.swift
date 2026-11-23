@@ -676,4 +676,59 @@ final class GitWriterTests: XCTestCase {
         XCTAssertEqual(try repository.headSHA(), initialSHA)
         XCTAssertEqual(try state().staged.map(\.path), ["tracked.txt"])
     }
+
+    func testCommandRecorderLogsSuccessAndFailureAndTemplateAndRecentMessages() throws {
+        GitCommandRecorder.shared.clear(for: root)
+        defer { GitCommandRecorder.shared.clear(for: root) }
+
+        // Configure a commit template with comments that should be stripped.
+        let templateURL = root.appendingPathComponent(".gitmessage")
+        try "# Comment header\nfeat: template subject\n\nTemplate body\n# Trailing comment\n".write(
+            to: templateURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        try run(["config", "commit.template", ".gitmessage"])
+        XCTAssertEqual(repository.commitTemplate(), "feat: template subject\n\nTemplate body")
+
+        try write("tracked.txt", "hookless commit\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.commit(subject: "Recent subject", body: "Detailed body line", noVerify: true)
+
+        // Trigger a failing write command (commit with nothing staged).
+        XCTAssertThrowsError(try repository.commit(subject: "Should fail"))
+
+        let recorded = GitCommandRecorder.shared.records(for: root)
+        XCTAssertTrue(recorded.contains(where: { !$0.succeeded && $0.exitCode != 0 }))
+        XCTAssertTrue(recorded.contains(where: { $0.succeeded && $0.commandLine.contains("--no-verify") }))
+
+        let recent = try repository.recentCommitMessages(limit: 5)
+        XCTAssertEqual(recent.first?.subject, "Recent subject")
+        XCTAssertEqual(recent.first?.body, "Detailed body line")
+    }
+
+    func testForcePushWithLeaseToBareRemoteAfterAmendAndProtectedBranchHelper() throws {
+        XCTAssertTrue(GitRepository.isProtectedBranch("main", defaultBranch: "trunk"))
+        XCTAssertTrue(GitRepository.isProtectedBranch("trunk", defaultBranch: "trunk"))
+        XCTAssertFalse(GitRepository.isProtectedBranch("feat/work", defaultBranch: "main"))
+
+        let remoteURL = root.appendingPathComponent("../lease-remote-\(UUID().uuidString).git").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", "-b", "main", remoteURL.path], in: root)
+        defer { try? FileManager.default.removeItem(at: remoteURL) }
+
+        try repository.addRemote(name: "origin", url: remoteURL.path)
+        try repository.createBranch(name: "feat/amend-push")
+        try write("tracked.txt", "v1\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.commit(subject: "Initial feature commit")
+        try repository.push(remote: "origin", branch: "feat/amend-push", setUpstream: true)
+
+        // Amend pushed commit so history diverges from upstream.
+        try write("tracked.txt", "v2\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.amendCommit(subject: "Amended feature commit", allowPublished: true)
+
+        XCTAssertThrowsError(try repository.push(remote: "origin", branch: "feat/amend-push", setUpstream: false))
+        try repository.push(remote: "origin", branch: "feat/amend-push", setUpstream: false, forceWithLease: true)
+    }
 }

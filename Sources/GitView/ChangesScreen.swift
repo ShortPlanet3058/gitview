@@ -484,10 +484,15 @@ struct ChangesScreen: View {
         Card(padding: Theme.Space.m) {
             HStack(alignment: .top, spacing: Theme.Space.s) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.critical)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("git refused that").font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
                     Text(error).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    Button("View Log") {
+                        session.navigation.isCommandLogSheetPresented = true
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.mini)
                 }
                 Spacer()
                 Button { workingCopy.writeError = nil } label: {
@@ -856,6 +861,128 @@ struct ChangesScreen: View {
         }
     }
 
+    private var contributorIdentities: [(name: String, email: String)] {
+        guard let commits = session.analysis?.commits else { return [] }
+        var seenEmails: Set<String> = []
+        var result: [(name: String, email: String)] = []
+        for commit in commits {
+            let email = commit.email.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = commit.author.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !email.isEmpty else { continue }
+            let key = email.lowercased()
+            if seenEmails.insert(key).inserted {
+                result.append((name: name, email: email))
+            }
+        }
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    @ViewBuilder
+    private var composerUtilityBar: some View {
+        @Bindable var workingCopy = workingCopy
+        let coAuthors = contributorIdentities
+        let hasHistoryMenu = workingCopy.commitTemplateText != nil || !workingCopy.recentMessages.isEmpty
+        if !staticRendering && (hasHistoryMenu || !coAuthors.isEmpty || preferences.advanced) {
+            HStack(spacing: Theme.Space.xs) {
+                if hasHistoryMenu {
+                    Menu {
+                        if let template = workingCopy.commitTemplateText {
+                            Button("Apply Commit Template") {
+                                let lines = template.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                                workingCopy.commitSubject = lines.first.map(String.init) ?? ""
+                                workingCopy.commitBody = lines.count > 1
+                                    ? String(lines[1]).trimmingCharacters(in: .newlines)
+                                    : ""
+                            }
+                            if !workingCopy.recentMessages.isEmpty {
+                                Divider()
+                            }
+                        }
+                        ForEach(workingCopy.recentMessages.prefix(10)) { item in
+                            Button(item.subject) {
+                                workingCopy.commitSubject = item.subject
+                                workingCopy.commitBody = item.body
+                            }
+                        }
+                    } label: {
+                        Label("Messages", systemImage: "clock.arrow.circlepath")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Insert a commit template or reuse a recent commit message")
+                }
+
+                if !coAuthors.isEmpty {
+                    Menu {
+                        ForEach(coAuthors.prefix(25), id: \.email) { person in
+                            Button("\(person.name) <\(person.email)>") {
+                                workingCopy.appendCoAuthor(name: person.name, email: person.email)
+                            }
+                        }
+                    } label: {
+                        Label("Co-author", systemImage: "person.badge.plus")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Append a Co-authored-by trailer from repository contributors")
+                }
+
+                Spacer(minLength: 0)
+
+                if preferences.advanced {
+                    composerTogglePill(
+                        title: "Sign",
+                        systemImage: workingCopy.signCommit ? "checkmark.seal.fill" : "signature",
+                        isOn: $workingCopy.signCommit,
+                        tint: Theme.accent,
+                        helpText: "Sign this commit with GPG/SSH (git commit -S)"
+                    )
+                    composerTogglePill(
+                        title: "No-verify",
+                        systemImage: workingCopy.skipHooks ? "checkmark.circle.fill" : "bolt.slash",
+                        isOn: $workingCopy.skipHooks,
+                        tint: Theme.warning,
+                        helpText: "Skip pre-commit and commit-msg hooks (--no-verify)"
+                    )
+                }
+            }
+        }
+    }
+
+    private func composerTogglePill(
+        title: String,
+        systemImage: String,
+        isOn: Binding<Bool>,
+        tint: Color,
+        helpText: String
+    ) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 9, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(isOn.wrappedValue ? tint : Theme.inkSoft)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                isOn.wrappedValue ? tint.opacity(0.14) : Theme.wash,
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(isOn.wrappedValue ? tint.opacity(0.5) : Theme.hairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+
     // MARK: - Bottom Commit & Share Dock
 
     @ViewBuilder
@@ -961,6 +1088,8 @@ struct ChangesScreen: View {
                         }
                 }
 
+                composerUtilityBar
+
                 HStack(spacing: Theme.Space.s) {
                     if !preferences.advanced, workingCopy.pushPlan != nil || session.analysis?.info.remoteURL != nil {
                         Button(amending ? "Amend" : "Commit") {
@@ -1004,7 +1133,13 @@ struct ChangesScreen: View {
                 }
             }
 
-            if let plan = workingCopy.pushPlan, !plan.isEmpty {
+            if let plan = workingCopy.pushPlan,
+               (!plan.isEmpty || (preferences.advanced && workingCopy.lastPushRejectedNonFastForward)) {
+                let defaultBranch = session.analysis?.info.defaultBranch
+                let isProtected = GitRepository.isProtectedBranch(plan.branch, defaultBranch: defaultBranch)
+                let offerForceLease = preferences.advanced
+                    && !isProtected
+                    && ((state.ahead > 0 && state.behind > 0) || workingCopy.lastPushRejectedNonFastForward)
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.accent)
                     Text(preferences.advanced
@@ -1012,6 +1147,17 @@ struct ChangesScreen: View {
                          : "\(plan.commits.count) commit\(plan.commits.count == 1 ? "" : "s") ready to share")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft).lineLimit(1)
                     Spacer()
+                    if offerForceLease {
+                        Button("Force Push (lease)…") {
+                            workingCopy.confirmForcePushWithLease(
+                                defaultBranch: defaultBranch,
+                                allowProtected: true
+                            )
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                        .help("Safely force-push rewritten commits using --force-with-lease")
+                    }
                     Button(preferences.advanced ? "Push" : "Sync") {
                         preferences.advanced ? workingCopy.push() : workingCopy.sync()
                     }

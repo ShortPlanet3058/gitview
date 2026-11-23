@@ -131,6 +131,17 @@ public struct SettingsView: View {
                             .labelsHidden()
                             .frame(width: 200)
                         }
+                        HStack {
+                            Text("Background auto-fetch").font(Theme.Text.body).foregroundStyle(Theme.ink)
+                            Spacer()
+                            Picker("Background auto-fetch", selection: $preferences.autoFetchInterval) {
+                                ForEach(AutoFetchInterval.allCases) { interval in
+                                    Text(interval.title).tag(interval)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 200)
+                        }
                         if preferences.advanced {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Custom git executable path (optional)")

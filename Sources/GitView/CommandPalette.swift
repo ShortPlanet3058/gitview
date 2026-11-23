@@ -144,6 +144,15 @@ struct CommandPaletteOverlay: View {
                 perform: { session.refresh() }
             ))
             items.append(CommandPaletteEntry(
+                id: "action:commandLog",
+                title: "Git Command Log…",
+                subtitle: "Inspect executed git commands, durations, and output (⌘⇧L)",
+                category: "Action",
+                symbol: "apple.terminal",
+                keywords: "log console terminal git output stderr error",
+                perform: { session.navigation.isCommandLogSheetPresented = true }
+            ))
+            items.append(CommandPaletteEntry(
                 id: "action:shortcuts",
                 title: "Keyboard Shortcuts",
                 subtitle: "Show all keyboard shortcuts (⌘/)",

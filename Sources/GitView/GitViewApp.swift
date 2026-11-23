@@ -137,6 +137,12 @@ public struct GitViewCommands: Commands {
                 .keyboardShortcut("r")
                 .disabled(!(session?.hasRepository ?? false) || (session?.isRefreshing ?? false))
 
+            Button("Git Command Log…") {
+                session?.navigation.isCommandLogSheetPresented.toggle()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(!(session?.hasRepository ?? false))
+
             Button("Back") { session?.goBack() }
                 .keyboardShortcut("[")
                 .disabled(!(session?.canGoBack ?? false))
