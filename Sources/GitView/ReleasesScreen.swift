@@ -9,6 +9,7 @@ struct ReleasesScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(NavigationStore.self) private var navigation
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(\.staticRendering) private var staticRendering
     @State private var query = ""
     @State private var limit = 60
     @State private var copied = false
@@ -172,16 +173,22 @@ struct ReleasesScreen: View {
                            info: "Shows what is in the second reference but not the first — the same thing "
                                + "`git log from..to` lists. Works with any mixture of tags, branches and HEAD.")
                 HStack(spacing: Theme.Space.s) {
-                    Picker("", selection: $navigation.compareFrom) {
-                        Text("Choose…").tag("")
-                        ForEach(refs, id: \.self) { Text($0).tag($0) }
+                    if staticRendering {
+                        staticRefPill(navigation.compareFrom.isEmpty ? "Choose…" : navigation.compareFrom)
+                        Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+                        staticRefPill(navigation.compareTo)
+                    } else {
+                        Picker("", selection: $navigation.compareFrom) {
+                            Text("Choose…").tag("")
+                            ForEach(refs, id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden().frame(maxWidth: .infinity)
+                        Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+                        Picker("", selection: $navigation.compareTo) {
+                            ForEach(refs, id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden().frame(maxWidth: .infinity)
                     }
-                    .labelsHidden().frame(maxWidth: .infinity)
-                    Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
-                    Picker("", selection: $navigation.compareTo) {
-                        ForEach(refs, id: \.self) { Text($0).tag($0) }
-                    }
-                    .labelsHidden().frame(maxWidth: .infinity)
                     Button("Compare") { navigation.runComparison(in: analysis.root) }
                         .buttonStyle(PrimaryButtonStyle())
                         .disabled(navigation.compareFrom.isEmpty || navigation.comparisonInFlight)
@@ -194,6 +201,18 @@ struct ReleasesScreen: View {
                 }
             }
         }
+    }
+
+    private func staticRefPill(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
     }
 
     private func comparisonResult(_ comparison: ComparisonResult, root: URL) -> some View {
