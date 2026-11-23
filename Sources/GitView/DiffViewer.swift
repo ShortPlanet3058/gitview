@@ -422,6 +422,26 @@ struct DiffViewer: View {
             }
         }
         Button("Copy Line") { copyToPasteboard(line.text) }
+        if let web = session.analysis?.info.remoteWebURL,
+           let lineNumber = line.newNumber ?? line.oldNumber,
+           let targetSHA = permalinkSHA(for: request.source),
+           let permalink = GitHubBridge.linePermalinkURL(
+            remoteWebURL: web,
+            sha: targetSHA,
+            path: request.path,
+            line: lineNumber
+           ) {
+            Button("Copy Remote Permalink") { copyToPasteboard(permalink.absoluteString) }
+        }
+    }
+
+    private func permalinkSHA(for source: DiffSource) -> String? {
+        switch source {
+        case .commit(let sha): return sha
+        case .range(_, let to): return to
+        case .workingTree: return session.analysis?.workingState.headSHA ?? session.analysis?.commits.first?.sha
+        case .stash: return nil
+        }
     }
 
     // MARK: - Content

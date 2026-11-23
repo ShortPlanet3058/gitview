@@ -61,11 +61,13 @@ public final class WorkspaceSession {
     private(set) var unitsByID: [UUID: CodeUnit] = [:]
     private(set) var recentActivityBuckets: [ActivityBucket] = []
     private(set) var overviewMetrics: OverviewMetrics = .empty
+    public private(set) var pullRequestsByBranch: [String: PullRequestSummary] = [:]
 
     @ObservationIgnored private var watcher: RepositoryWatcher?
     @ObservationIgnored private var refreshNoteTask: Task<Void, Never>?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var codeAnalysisTask: Task<Void, Never>?
+    @ObservationIgnored private var prFetchTask: Task<Void, Never>?
     @ObservationIgnored private var lastAttempted: URL?
     @ObservationIgnored private var preferenceObserverID: UUID?
 
@@ -289,6 +291,9 @@ public final class WorkspaceSession {
         loadTask?.cancel()
         codeAnalysisTask?.cancel()
         codeAnalysisTask = nil
+        prFetchTask?.cancel()
+        prFetchTask = nil
+        pullRequestsByBranch = [:]
         state = .loading(LoadingProgress(stage: "Checking the repository"))
         risk.resetForOpen()
         navigation.clearForOpen()
@@ -412,7 +417,29 @@ public final class WorkspaceSession {
                 )
                 self.workingCopy.refreshPushPlan()
                 self.workingCopy.refreshHeadCommitInfo()
+                self.refreshPullRequests()
             }
+        }
+    }
+
+    func refreshPullRequests() {
+        prFetchTask?.cancel()
+        guard case .loaded(let current) = state else {
+            pullRequestsByBranch = [:]
+            return
+        }
+        let root = current.root
+        let webURL = current.info.remoteWebURL
+        prFetchTask = Task { [weak self] in
+            let prs = await GitHubBridge.fetchOpenPullRequests(in: root, remoteWebURL: webURL)
+            guard !Task.isCancelled,
+                  let self,
+                  self.analysis?.root == root else { return }
+            var byBranch: [String: PullRequestSummary] = [:]
+            for pr in prs where byBranch[pr.headRefName] == nil {
+                byBranch[pr.headRefName] = pr
+            }
+            self.pullRequestsByBranch = byBranch
         }
     }
 
@@ -573,6 +600,7 @@ public final class WorkspaceSession {
         }
         workingCopy.refreshPushPlan()
         workingCopy.refreshHeadCommitInfo()
+        refreshPullRequests()
 
         if let term = navigation.pendingSearch {
             navigation.pendingSearch = nil
@@ -736,6 +764,7 @@ public final class WorkspaceSession {
         workingCopy.refreshWorkingState()
         workingCopy.refreshPushPlan()
         workingCopy.refreshHeadCommitInfo()
+        refreshPullRequests()
 
         guard let knownHead = analysis.commits.first?.sha else { return }
         let root = analysis.root

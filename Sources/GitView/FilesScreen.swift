@@ -515,6 +515,11 @@ private struct FileContentWorkspace: View {
                                     openInEditor(root.appendingPathComponent(node.path), line: row.lineNumber)
                                 }
                                 Button("Copy Line") { copyToPasteboard(row.text) }
+                                if let web = info.remoteWebURL,
+                                   let sha = session.analysis?.workingState.headSHA ?? session.analysis?.commits.first?.sha,
+                                   let permalink = GitHubBridge.linePermalinkURL(remoteWebURL: web, sha: sha, path: node.path, line: row.lineNumber) {
+                                    Button("Copy Remote Permalink") { copyToPasteboard(permalink.absoluteString) }
+                                }
                             }
                         }
                     }
@@ -706,6 +711,16 @@ private struct FileContentWorkspace: View {
                 }
             }
             Button("Copy Line") { copyToPasteboard(line.text) }
+            if !line.isUncommitted,
+               let web = info.remoteWebURL,
+               let permalink = GitHubBridge.linePermalinkURL(
+                remoteWebURL: web,
+                sha: line.sha,
+                path: activeBlamePath,
+                line: line.lineNumber
+               ) {
+                Button("Copy Remote Permalink") { copyToPasteboard(permalink.absoluteString) }
+            }
         }
     }
 

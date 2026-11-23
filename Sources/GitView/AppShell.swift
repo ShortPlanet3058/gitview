@@ -108,6 +108,14 @@ struct AppShell: View {
             InitRepositorySheet()
                 .environment(session)
         }
+        .sheet(isPresented: $navigation.isReflogSheetPresented) {
+            ReflogSheet()
+                .withWorkspaceEnvironment(session)
+        }
+        .sheet(isPresented: $navigation.isManageRepoSheetPresented) {
+            RepositoryManagementSheet()
+                .withWorkspaceEnvironment(session)
+        }
     }
 
     @ViewBuilder
@@ -418,6 +426,12 @@ struct RepositoryMenu: View {
             action("Open Repository…", "folder.badge.plus") {
                 dismiss()
                 chooseRepository(into: session)
+            }
+            if preferences.advanced {
+                action("Manage Remotes & Worktrees…", "externaldrive.connected.to.line.below") {
+                    dismiss()
+                    session.navigation.isManageRepoSheetPresented = true
+                }
             }
             action("Reveal in Finder", "folder") { dismiss(); revealInFinder(analysis.root) }
             action("Open in Terminal", "terminal") { dismiss(); openInTerminal(analysis.root) }

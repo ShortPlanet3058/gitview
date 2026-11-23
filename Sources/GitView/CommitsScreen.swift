@@ -192,6 +192,14 @@ struct CommitsScreen: View {
                             options: Scope.allCases.map { ($0, $0.rawValue) },
                             selection: $scope
                         )
+                        Button {
+                            session.navigation.isReflogSheetPresented = true
+                        } label: {
+                            Label("Reflog", systemImage: "clock.arrow.2.circlepath")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .controlSize(.small)
+                        .help("Open git reflog recovery view")
                     }
                 }
             }

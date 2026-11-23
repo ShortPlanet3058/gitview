@@ -629,4 +629,51 @@ final class GitWriterTests: XCTestCase {
         XCTAssertEqual(read("other.txt"), "other\n")
         XCTAssertEqual(read("untracked-keep.txt"), "keep\n")
     }
+
+    func testRemoteAndWorktreeLifecycleAndSoftReset() throws {
+        let remote1 = root.appendingPathComponent("../wt-remote1-\(UUID().uuidString).git").standardized
+        let remote2 = root.appendingPathComponent("../wt-remote2-\(UUID().uuidString).git").standardized
+        let wtDir = root.appendingPathComponent("../wt-linked-\(UUID().uuidString)").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", remote1.path], in: root)
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", remote2.path], in: root)
+        defer {
+            try? FileManager.default.removeItem(at: remote1)
+            try? FileManager.default.removeItem(at: remote2)
+            try? FileManager.default.removeItem(at: wtDir)
+        }
+
+        // Remotes: add, set-url, rename, remove.
+        try repository.addRemote(name: "upstream", url: remote1.path)
+        XCTAssertEqual(try repository.info().remotes["upstream"], remote1.path)
+
+        try repository.setRemoteURL(name: "upstream", url: remote2.path)
+        XCTAssertEqual(try repository.info().remotes["upstream"], remote2.path)
+
+        try repository.renameRemote(from: "upstream", to: "backup")
+        let renamedRemotes = try repository.info().remotes
+        XCTAssertNil(renamedRemotes["upstream"])
+        XCTAssertEqual(renamedRemotes["backup"], remote2.path)
+
+        try repository.removeRemote(name: "backup")
+        XCTAssertNil(try repository.info().remotes["backup"])
+
+        // Worktrees: add, verify in info, remove, prune.
+        try repository.addWorktree(path: wtDir, branch: "wt-feature", createBranch: true, startPoint: "main")
+        let worktrees = try repository.info().worktrees
+        XCTAssertEqual(worktrees.count, 2)
+        XCTAssertTrue(worktrees.contains(where: { $0.branch == "wt-feature" }))
+
+        try repository.removeWorktree(path: wtDir.path)
+        try repository.pruneWorktrees()
+        XCTAssertEqual(try repository.info().worktrees.count, 1)
+
+        // Soft reset keeps working edits staged.
+        let initialSHA = try repository.headSHA()
+        try write("tracked.txt", "before soft reset\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.commit(subject: "Temporary commit")
+        try repository.resetSoft(to: initialSHA)
+        XCTAssertEqual(try repository.headSHA(), initialSHA)
+        XCTAssertEqual(try state().staged.map(\.path), ["tracked.txt"])
+    }
 }

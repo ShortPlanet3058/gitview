@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import GitViewCore
 import GitViewGit
 
@@ -23,12 +24,24 @@ struct BranchesScreen: View {
                 && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
             }
             Page {
-                ScreenHeader(
-                    title: "Branches",
-                    subtitle: advanced
-                        ? "Local and remote branches in this repository, newest activity first."
-                        : "Switch between branches or start a new branch."
-                )
+                HStack(alignment: .top) {
+                    ScreenHeader(
+                        title: "Branches",
+                        subtitle: advanced
+                            ? "Local and remote branches in this repository, newest activity first."
+                            : "Switch between branches or start a new branch."
+                    )
+                    Spacer()
+                    if advanced {
+                        Button {
+                            session.navigation.isManageRepoSheetPresented = true
+                        } label: {
+                            Label("Remotes & Worktrees", systemImage: "externaldrive.connected.to.line.below")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .controlSize(.small)
+                    }
+                }
                 HStack(spacing: Theme.Space.m) {
                     SearchField(text: $query, prompt: "Filter branches",
                                 focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 280)
@@ -159,6 +172,20 @@ struct BranchRow: View {
         advanced && !branch.isRemote && !branch.isCurrent && !branch.isDefault && !branch.isMerged
     }
 
+    private var openPR: PullRequestSummary? {
+        guard !branch.isRemote else { return nil }
+        return session.pullRequestsByBranch[branch.name]
+    }
+
+    private func prCheckColor(_ status: PullRequestSummary.CheckStatus) -> Color? {
+        switch status {
+        case .passing: return Theme.good
+        case .failing: return Theme.critical
+        case .pending: return Theme.warning
+        case .none: return nil
+        }
+    }
+
     var body: some View {
         HStack(spacing: Theme.Space.m) {
             HStack(spacing: Theme.Space.s) {
@@ -169,6 +196,25 @@ struct BranchRow: View {
                 if branch.isCurrent && !branch.isDefault { Chip(text: "Current", tint: Theme.good) }
                 if advanced && branch.isRemote { Chip(text: "remote") }
                 if advanced && branch.isMerged { Chip(text: "merged") }
+                if let pr = openPR {
+                    Button {
+                        NSWorkspace.shared.open(pr.url)
+                    } label: {
+                        HStack(spacing: 4) {
+                            if let dotColor = prCheckColor(pr.checkStatus) {
+                                Circle().fill(dotColor).frame(width: 6, height: 6)
+                            }
+                            Text("#\(pr.number)")
+                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Theme.accentWash, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open PR #\(pr.number): \(pr.title)")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
@@ -252,6 +298,22 @@ struct BranchRow: View {
                 onRename?(branch)
             }
             .disabled(workingCopy.writeInFlight)
+            if let pr = openPR {
+                Button("Open Pull Request #\(pr.number)") {
+                    NSWorkspace.shared.open(pr.url)
+                }
+            } else if !branch.isDefault,
+                      let info = session.analysis?.info,
+                      let web = info.remoteWebURL,
+                      let createURL = GitHubBridge.createPRURL(
+                        remoteWebURL: web,
+                        branch: branch.name,
+                        defaultBranch: info.defaultBranch
+                      ) {
+                Button("Create Pull Request…") {
+                    NSWorkspace.shared.open(createURL)
+                }
+            }
         }
         if canDeleteMerged {
             Divider()
