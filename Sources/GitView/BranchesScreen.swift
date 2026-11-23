@@ -144,6 +144,7 @@ struct BranchesScreen: View {
 struct BranchRow: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(\.staticRendering) private var staticRendering
     let branch: BranchInfo
     var advanced: Bool = true
     var currentBranch: String? = nil
@@ -194,16 +195,23 @@ struct BranchRow: View {
                     .disabled(workingCopy.writeInFlight)
                     .help("Delete merged branch")
                 }
-                Menu {
-                    rowActionsMenuContent
-                } label: {
+                if staticRendering {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.inkSoft)
+                        .frame(width: 24)
+                } else {
+                    Menu {
+                        rowActionsMenuContent
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.inkSoft)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 24)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 24)
             }
             .frame(width: 160, alignment: .trailing)
         }
