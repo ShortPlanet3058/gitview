@@ -9,6 +9,7 @@ struct AppShell: View {
     @Environment(AppPreferences.self) private var preferences
     @AppStorage("gitview.sidebarWidth") private var sidebarWidth: Double = 236
     @AppStorage("gitview.detailWidth") private var detailWidth: Double = 420
+    @State private var isDropTargeted = false
 
     var body: some View {
         @Bindable var workingCopy = workingCopy
@@ -43,9 +44,32 @@ struct AppShell: View {
         }
         .background(Theme.page)
         .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [8, 5]))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
             if session.navigation.isCommandPalettePresented {
                 CommandPaletteOverlay()
+            } else if session.navigation.isShortcutsSheetPresented {
+                KeyboardShortcutsOverlay()
             }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                var isDir: ObjCBool = false
+                let target: URL
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    target = url
+                } else {
+                    target = url.deletingLastPathComponent()
+                }
+                Task { @MainActor in session.open(url: target) }
+            }
+            return true
         }
         .animation(.easeInOut(duration: 0.2), value: session.loadProgress)
         .animation(.easeInOut(duration: 0.25), value: session.outsideChange)
@@ -160,8 +184,6 @@ struct AppShell: View {
 /// would look broken rather than pending.
 struct LoadingStrip: View {
     @Environment(WorkspaceSession.self) private var session
-    @State private var elapsed: TimeInterval = 0
-    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         if let progress = session.loadProgress, session.hasRepository {
@@ -176,10 +198,7 @@ struct LoadingStrip: View {
                         ProgressView(value: fraction).progressViewStyle(.linear).frame(width: 120)
                     }
                     Spacer()
-                    if elapsed >= 3 {
-                        Text("\(Int(elapsed))s").font(Theme.Text.caption.monospacedDigit())
-                            .foregroundStyle(Theme.inkMuted)
-                    }
+                    LoadingElapsedLabel(loadStarted: session.loadStarted)
                     Button("Stop") { session.cancelLoading() }
                         .buttonStyle(.plain)
                         .font(Theme.Text.caption)
@@ -190,9 +209,25 @@ struct LoadingStrip: View {
                 .background(Theme.wash)
                 Rectangle().fill(Theme.hairline).frame(height: 1)
             }
-            .onReceive(tick) { _ in
-                elapsed = session.loadStarted.map { Date().timeIntervalSince($0) } ?? 0
+        }
+    }
+}
+
+private struct LoadingElapsedLabel: View {
+    let loadStarted: Date?
+    @State private var elapsed: TimeInterval = 0
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Group {
+            if elapsed >= 3 {
+                Text("\(Int(elapsed))s")
+                    .font(Theme.Text.caption.monospacedDigit())
+                    .foregroundStyle(Theme.inkMuted)
             }
+        }
+        .onReceive(tick) { _ in
+            elapsed = loadStarted.map { Date().timeIntervalSince($0) } ?? 0
         }
     }
 }
@@ -1093,5 +1128,111 @@ struct FailedScreen: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct KeyboardShortcutsOverlay: View {
+    @Environment(WorkspaceSession.self) private var session
+
+    private struct ShortcutGroup: Identifiable {
+        let id: String
+        let title: String
+        let items: [(keys: String, description: String)]
+    }
+
+    private let groups: [ShortcutGroup] = [
+        ShortcutGroup(id: "nav", title: "Navigation", items: [
+            ("⌘K", "Open Command Palette"),
+            ("⌘1 – ⌘9", "Jump to visible tabs in order"),
+            ("⌘[ / Esc", "Go back or close inspector"),
+            ("⌘⇧D", "Switch Standard / Advanced mode"),
+            ("⌘R", "Refresh repository"),
+        ]),
+        ShortcutGroup(id: "search", title: "Search & Diffs", items: [
+            ("⌘F", "Filter current list or find in diff"),
+            ("⌘⇧F", "Find across entire repository"),
+        ]),
+        ShortcutGroup(id: "changes", title: "Changes Workspace", items: [
+            ("↑ / ↓", "Move between changed files"),
+            ("Space", "Include / stage or exclude selected file"),
+            ("⏎", "Expand diff preview to full window"),
+            ("⌘⏎", "Commit included changes"),
+        ]),
+        ShortcutGroup(id: "app", title: "Application", items: [
+            ("⌘O", "Open another repository"),
+            ("⌘,", "Open Settings"),
+            ("⌘/", "Show or hide this shortcuts guide"),
+        ]),
+    ]
+
+    var body: some View {
+        ZStack(alignment: .center) {
+            Color.black.opacity(0.32)
+                .ignoresSafeArea()
+                .onTapGesture { dismiss() }
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                    Text("Keyboard Shortcuts")
+                        .font(Theme.Text.title)
+                        .foregroundStyle(Theme.ink)
+                    Spacer()
+                    Button("ESC") { dismiss() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .padding(.horizontal, Theme.Space.l)
+                .padding(.vertical, Theme.Space.m)
+
+                HairlineDivider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Space.l) {
+                        ForEach(groups) { group in
+                            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                                Text(group.title.uppercased())
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Theme.inkMuted)
+                                    .tracking(0.5)
+                                ForEach(group.items, id: \.keys) { item in
+                                    HStack {
+                                        Text(item.description)
+                                            .font(Theme.Text.body)
+                                            .foregroundStyle(Theme.inkSoft)
+                                        Spacer()
+                                        Text(item.keys)
+                                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(Theme.ink)
+                                            .padding(.horizontal, 7).padding(.vertical, 3)
+                                            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                    }
+                                    .padding(.vertical, 2)
+                                }
+                            }
+                        }
+                    }
+                    .padding(Theme.Space.l)
+                }
+                .frame(maxHeight: 420)
+            }
+            .frame(width: 480)
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.hairline))
+            .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+    }
+
+    private func dismiss() {
+        session.navigation.isShortcutsSheetPresented = false
     }
 }

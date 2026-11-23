@@ -50,6 +50,14 @@ public final class InspectorStore {
         }
     }
 
+    public var ignoreWhitespace: Bool = false {
+        didSet {
+            guard oldValue != ignoreWhitespace else { return }
+            loadDiff()
+            loadInlineDiff()
+        }
+    }
+
     public private(set) var blame: [String: BlameOwnership] = [:]
     public private(set) var blameInFlight: Set<String> = []
 
@@ -223,8 +231,11 @@ public final class InspectorStore {
         }
         diffInFlight = true
         let context = diffContext
+        let ignoreWS = ignoreWhitespace
         Task.detached(priority: .userInitiated) {
-            let diff = try? GitRepository(url: root).diff(request.source, path: request.path, context: context)
+            let diff = try? GitRepository(url: root).diff(
+                request.source, path: request.path, context: context, ignoreWhitespace: ignoreWS
+            )
             await MainActor.run {
                 guard self.repositoryRoot == root, self.diffRequest == request else { return }
                 self.loadedDiff = diff
@@ -241,8 +252,11 @@ public final class InspectorStore {
         }
         inlineDiffInFlight = true
         let context = diffContext
+        let ignoreWS = ignoreWhitespace
         Task.detached(priority: .userInitiated) {
-            let diff = try? GitRepository(url: root).diff(request.source, path: request.path, context: context)
+            let diff = try? GitRepository(url: root).diff(
+                request.source, path: request.path, context: context, ignoreWhitespace: ignoreWS
+            )
             await MainActor.run {
                 guard self.repositoryRoot == root, self.inlineDiffRequest == request else { return }
                 self.inlineLoadedDiff = diff

@@ -13,16 +13,12 @@ struct DiffViewer: View {
     let request: DiffRequest
     var embedded: Bool = false
 
-    enum LayoutMode: String, CaseIterable {
-        case unified = "Unified"
-        case sideBySide = "Side by side"
-    }
-
-    @State private var layoutMode: LayoutMode = .unified
     @State private var showingFindBar = false
     @State private var searchQuery = ""
     @State private var filterMatchesOnly = false
     @State private var currentMatchIndex = 0
+    @State private var currentHunkIndex = 0
+    @State private var hunkJumpTrigger = 0
     @State private var spansByLineID: [Int: [HighlightSpan]] = [:]
     @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
     @State private var selectedLineIDs: Set<Int> = []
@@ -76,7 +72,7 @@ struct DiffViewer: View {
 
     private var matchingTargetIDs: [Int] {
         guard !trimmedQuery.isEmpty, let diff = activeDiff else { return [] }
-        if layoutMode == .unified {
+        if preferences.diffLayoutMode == .unified {
             return diff.hunks.flatMap(\.lines)
                 .filter { $0.text.localizedCaseInsensitiveContains(trimmedQuery) }
                 .map(\.id)
@@ -101,7 +97,10 @@ struct DiffViewer: View {
             content
         }
         .background(Theme.page)
-        .onChange(of: request) { selectedLineIDs.removeAll() }
+        .onChange(of: request) {
+            selectedLineIDs.removeAll()
+            currentHunkIndex = 0
+        }
         .onChange(of: session.navigation.focusLocalFindRequest) { _, newValue in
             guard newValue > 0 else { return }
             showingFindBar = true
@@ -142,6 +141,7 @@ struct DiffViewer: View {
 
     private var header: some View {
         @Bindable var inspector = inspector
+        @Bindable var preferences = preferences
         return VStack(alignment: .leading, spacing: Theme.Space.s) {
             HStack(spacing: Theme.Space.s) {
                 if embedded {
@@ -163,10 +163,44 @@ struct DiffViewer: View {
                     Text("+\(diff.additions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.good)
                     Text("−\(diff.deletions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.critical)
                 }
+                if let hunks = activeDiff?.hunks, hunks.count > 1 {
+                    HStack(spacing: 2) {
+                        Button {
+                            currentHunkIndex = (currentHunkIndex - 1 + hunks.count) % hunks.count
+                            hunkJumpTrigger += 1
+                        } label: {
+                            Image(systemName: "chevron.up").font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .help("Previous hunk (\(currentHunkIndex + 1)/\(hunks.count))")
+
+                        Button {
+                            currentHunkIndex = (currentHunkIndex + 1) % hunks.count
+                            hunkJumpTrigger += 1
+                        } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .help("Next hunk (\(currentHunkIndex + 1)/\(hunks.count))")
+                    }
+                }
                 SegmentPicker(
-                    options: LayoutMode.allCases.map { ($0, $0.rawValue) },
-                    selection: $layoutMode
+                    options: DiffLayoutMode.allCases.map { ($0, $0.rawValue) },
+                    selection: $preferences.diffLayoutMode
                 )
+                Button {
+                    preferences.diffIgnoreWhitespace.toggle()
+                } label: {
+                    Text("−w")
+                        .font(Theme.Text.mono)
+                        .foregroundStyle(preferences.diffIgnoreWhitespace ? Theme.accent : Theme.inkSoft)
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                        .strokeBorder(preferences.diffIgnoreWhitespace ? Theme.accent.opacity(0.6) : .clear, lineWidth: 1)
+                )
+                .help(preferences.diffIgnoreWhitespace ? "Showing diff ignoring whitespace (-w)" : "Ignore whitespace changes (-w)")
                 if preferences.advanced {
                     if staticRendering {
                         HStack(spacing: 4) {
@@ -400,6 +434,12 @@ struct DiffViewer: View {
                             proxy.scrollTo(targetIDs[currentMatchIndex], anchor: .center)
                         }
                     }
+                    .onChange(of: hunkJumpTrigger) {
+                        guard currentHunkIndex >= 0, currentHunkIndex < diff.hunks.count else { return }
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            proxy.scrollTo("hunk:\(diff.hunks[currentHunkIndex].id)", anchor: .top)
+                        }
+                    }
                 }
             }
         } else {
@@ -411,12 +451,13 @@ struct DiffViewer: View {
     private func hunkContent(_ hunk: DiffHunk, in diff: FileDiff) -> some View {
         let query = trimmedQuery
         let shouldFilter = filterMatchesOnly && !query.isEmpty
-        if layoutMode == .unified {
+        if preferences.diffLayoutMode == .unified {
             let visibleLines = shouldFilter
                 ? hunk.lines.filter { $0.text.localizedCaseInsensitiveContains(query) }
                 : hunk.lines
             if !visibleLines.isEmpty {
                 hunkHeader(hunk, in: diff)
+                    .id("hunk:\(hunk.id)")
                 ForEach(visibleLines) { line in
                     unifiedRow(line).id(line.id)
                 }
@@ -431,6 +472,7 @@ struct DiffViewer: View {
                 : paired
             if !visiblePairs.isEmpty {
                 hunkHeader(hunk, in: diff)
+                    .id("hunk:\(hunk.id)")
                 ForEach(visiblePairs) { pair in
                     sideBySideRow(pair)
                         .id(pair.id)
