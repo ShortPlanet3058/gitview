@@ -604,4 +604,15 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(split.bottomLines.map(\.oldNumber), [17, 18, 19])
         XCTAssertTrue(split.topLines.allSatisfy { $0.id < 0 })
     }
+
+    @MainActor
+    func testNavigationStorePreservesSelectedFileAcrossScreensAndClearsOnOpen() {
+        let nav = NavigationStore()
+        nav.selectedFilePath = "Sources/GitView/AppShell.swift"
+        nav.clearDetailSelections()
+        XCTAssertEqual(nav.selectedFilePath, "Sources/GitView/AppShell.swift")
+
+        nav.clearForOpen()
+        XCTAssertNil(nav.selectedFilePath)
+    }
 }

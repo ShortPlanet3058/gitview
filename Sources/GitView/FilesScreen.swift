@@ -9,7 +9,6 @@ struct FilesScreen: View {
     @Environment(AppPreferences.self) private var preferences
     @AppStorage("gitview.filesTreeWidth") private var filesTreeWidth: Double = 280
     @State private var expanded: Set<String> = [""]
-    @State private var selectedPath: String? = nil
     @State private var query = ""
 
     /// Every folder on the way to a path, so a preselected file is visible.
@@ -31,9 +30,9 @@ struct FilesScreen: View {
             let pending = session.navigation.pendingFileSelection.flatMap { wanted in
                 tree.node(at: wanted)?.path ?? tree.firstNode(matching: wanted)?.path
             }
-            let chosen = pending ?? selectedPath
+            let chosen = pending ?? session.navigation.selectedFilePath
             let selectedNode = chosen.flatMap { tree.node(at: $0) }
-            let openFolders = expanded.union(pending.map(Self.ancestors) ?? [])
+            let openFolders = expanded.union(chosen.map(Self.ancestors) ?? [])
             let visible = tree.visibleNodes(expanded: openFolders, filter: query)
             let isViewingFile = selectedNode.map { !$0.isDirectory } ?? false
             let clampedTreeWidth = min(max(filesTreeWidth, 220), 460)
@@ -72,7 +71,7 @@ struct FilesScreen: View {
                                             if expanded.contains(node.path) { expanded.remove(node.path) } else { expanded.insert(node.path) }
                                         }
                                         session.navigation.pendingFileSelection = nil
-                                        selectedPath = node.path
+                                        session.navigation.selectedFilePath = node.path
                                     }
                                     .contextMenu {
                                         if node.isDirectory {
@@ -125,15 +124,17 @@ struct FilesScreen: View {
             }
             .onAppear {
                 if let pending {
-                    selectedPath = pending
+                    session.navigation.selectedFilePath = pending
                     expanded.formUnion(Self.ancestors(of: pending))
                     session.navigation.pendingFileSelection = nil
+                } else if let existing = session.navigation.selectedFilePath {
+                    expanded.formUnion(Self.ancestors(of: existing))
                 }
             }
             .onChange(of: session.navigation.pendingFileSelection) { _, newValue in
                 guard let newValue,
                       let resolved = tree.node(at: newValue)?.path ?? tree.firstNode(matching: newValue)?.path else { return }
-                selectedPath = resolved
+                session.navigation.selectedFilePath = resolved
                 expanded.formUnion(Self.ancestors(of: resolved))
                 session.navigation.pendingFileSelection = nil
             }

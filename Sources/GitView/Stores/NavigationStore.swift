@@ -84,6 +84,7 @@ public final class NavigationStore {
     public var selectedCommitSHA: String?
     public var selectedPairID: String?
     public var selectedAuthor: String?
+    public var selectedFilePath: String?
 
     /// Pending selections supplied via CLI launch flags and applied once data loads.
     public var pendingSelection: String?
@@ -129,6 +130,7 @@ public final class NavigationStore {
 
     public func clearForOpen() {
         clearDetailSelections()
+        selectedFilePath = nil
         isCommandPalettePresented = false
         isShortcutsSheetPresented = false
         comparison = nil
