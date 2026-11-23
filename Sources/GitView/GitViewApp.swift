@@ -208,6 +208,12 @@ public struct GitViewCommands: Commands {
             .keyboardShortcut("f", modifiers: [.command, .shift])
             .disabled(!(session?.hasRepository ?? false))
 
+            Button("Go to Line…") {
+                session?.navigation.focusGoToLineRequest += 1
+            }
+            .keyboardShortcut("l")
+            .disabled(!(session?.hasRepository ?? false) || session?.navigation.screen != .files)
+
             Button("Clear Search") { session?.search.clear() }
                 .disabled(!(session?.search.isSearching ?? false))
         }

@@ -1175,6 +1175,7 @@ struct KeyboardShortcutsOverlay: View {
         ShortcutGroup(id: "search", title: "Search & Diffs", items: [
             ("⌘F", "Filter current list or find in diff"),
             ("⌘⇧F", "Find across entire repository"),
+            ("⌘L", "Go to line (in Files)"),
         ]),
         ShortcutGroup(id: "changes", title: "Changes Workspace", items: [
             ("↑ / ↓", "Move between changed files"),

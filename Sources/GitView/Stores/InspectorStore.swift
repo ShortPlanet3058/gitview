@@ -36,6 +36,7 @@ public final class InspectorStore {
     }
     public private(set) var loadedDiff: FileDiff?
     public private(set) var loadedImageDiff: ImageDiffData?
+    public private(set) var loadedDiffFileLines: [String]?
     public private(set) var diffInFlight = false
 
     public var inlineDiffRequest: DiffRequest? {
@@ -43,7 +44,11 @@ public final class InspectorStore {
     }
     public private(set) var inlineLoadedDiff: FileDiff?
     public private(set) var inlineLoadedImageDiff: ImageDiffData?
+    public private(set) var inlineLoadedDiffFileLines: [String]?
     public private(set) var inlineDiffInFlight = false
+
+    public private(set) var stashFilesByRef: [String: [FileDelta]] = [:]
+    public private(set) var loadingStashRefs: Set<String> = []
 
     public var diffContext: Int = 3 {
         didSet {
@@ -84,8 +89,10 @@ public final class InspectorStore {
         fileHistoryPath = nil
         loadedDiff = nil
         loadedImageDiff = nil
+        loadedDiffFileLines = nil
         inlineLoadedDiff = nil
         inlineLoadedImageDiff = nil
+        inlineLoadedDiffFileLines = nil
         diffInFlight = false
         inlineDiffInFlight = false
         fileHistory = []
@@ -95,6 +102,28 @@ public final class InspectorStore {
         loadingHistories = []
         commitDetails = [:]
         commitDetailsInFlight = []
+        stashFilesByRef = [:]
+        loadingStashRefs = []
+    }
+
+    public func invalidateStashes() {
+        stashFilesByRef.removeAll()
+        loadingStashRefs.removeAll()
+    }
+
+    public func ensureStashFiles(ref: String, force: Bool = false) {
+        guard let root = repositoryRoot,
+              !loadingStashRefs.contains(ref),
+              (force || stashFilesByRef[ref] == nil) else { return }
+        loadingStashRefs.insert(ref)
+        Task.detached(priority: .userInitiated) {
+            let files = try? GitRepository(url: root).stashFiles(ref: ref)
+            await MainActor.run {
+                guard self.repositoryRoot == root else { return }
+                if let files { self.stashFilesByRef[ref] = files }
+                self.loadingStashRefs.remove(ref)
+            }
+        }
     }
 
     public func showFileHistory(_ path: String) {
@@ -231,6 +260,7 @@ public final class InspectorStore {
         guard let root = repositoryRoot, let request = diffRequest else {
             loadedDiff = nil
             loadedImageDiff = nil
+            loadedDiffFileLines = nil
             diffInFlight = false
             return
         }
@@ -245,10 +275,14 @@ public final class InspectorStore {
             let imageDiff = diff?.isBinary == true
                 ? repo.imageDiff(request.source, path: request.path, oldPath: diff?.oldPath)
                 : nil
+            let fileLines = (diff != nil && diff?.isBinary == false && diff?.isDeleted == false && diff?.hunks.isEmpty == false)
+                ? repo.diffFileLines(request.source, path: request.path)
+                : nil
             await MainActor.run {
                 guard self.repositoryRoot == root, self.diffRequest == request else { return }
                 self.loadedDiff = diff
                 self.loadedImageDiff = imageDiff
+                self.loadedDiffFileLines = fileLines
                 self.diffInFlight = false
             }
         }
@@ -258,6 +292,7 @@ public final class InspectorStore {
         guard let root = repositoryRoot, let request = inlineDiffRequest else {
             inlineLoadedDiff = nil
             inlineLoadedImageDiff = nil
+            inlineLoadedDiffFileLines = nil
             inlineDiffInFlight = false
             return
         }
@@ -272,10 +307,14 @@ public final class InspectorStore {
             let imageDiff = diff?.isBinary == true
                 ? repo.imageDiff(request.source, path: request.path, oldPath: diff?.oldPath)
                 : nil
+            let fileLines = (diff != nil && diff?.isBinary == false && diff?.isDeleted == false && diff?.hunks.isEmpty == false)
+                ? repo.diffFileLines(request.source, path: request.path)
+                : nil
             await MainActor.run {
                 guard self.repositoryRoot == root, self.inlineDiffRequest == request else { return }
                 self.inlineLoadedDiff = diff
                 self.inlineLoadedImageDiff = imageDiff
+                self.inlineLoadedDiffFileLines = fileLines
                 self.inlineDiffInFlight = false
             }
         }

@@ -90,6 +90,7 @@ public final class NavigationStore {
     public var pendingPairSelection: String?
     public var pendingCommitSelection: String?
     public var pendingFileSelection: String?
+    public var pendingFileLine: Int?
     public var pendingAuthorSelection: String?
     public var pendingCompare: String?
     public var pendingSearch: String?
@@ -99,6 +100,7 @@ public final class NavigationStore {
 
     public var focusSearchRequest: Int = 0
     public var focusLocalFindRequest: Int = 0
+    public var focusGoToLineRequest: Int = 0
     public var isCommandPalettePresented: Bool = false
     public var isShortcutsSheetPresented: Bool = false
     public var isCloneSheetPresented: Bool = false
