@@ -138,7 +138,7 @@ public final class WorkspaceSession {
             case .identity:
                 self.rebuildCatchUp()
             case .environment:
-                break
+                self.navigation.ensureVisibleScreen(advanced: self.preferences.advanced)
             }
         }
     }
@@ -237,10 +237,10 @@ public final class WorkspaceSession {
         navigation.pendingThenShow = value("--then-show")
         navigation.pendingFileHistory = value("--file-history")
         navigation.pendingFileSelection = value("--select-file")
+        if let mode = value("--mode") { preferences.advanced = mode == "advanced" }
         if let name = value("--screen"), let screen = NavigationStore.Screen(rawValue: name) {
             navigation.screen = screen
         }
-        if let mode = value("--mode") { preferences.advanced = mode == "advanced" }
         if let view = value("--view") { risk.couplingViewMode = view == "graph" ? .graph : .list }
         DebugScreenshot.scheduleIfRequested(session: self)
         if let path = value("--repo").map({ ($0 as NSString).expandingTildeInPath }) {

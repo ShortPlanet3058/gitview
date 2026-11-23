@@ -83,9 +83,9 @@ public struct GitViewCommands: Commands {
 
             Divider()
 
-            let screens = session?.visibleScreens ?? NavigationStore.repositoryScreens
+            let screens = session?.visibleScreens ?? NavigationStore.standardScreens
             ForEach(Array(screens.prefix(9).enumerated()), id: \.element) { index, screen in
-                Button(screen.title) { session?.show(screen) }
+                Button(screen.displayTitle(advanced: preferences.advanced)) { session?.show(screen) }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
                     .disabled(!(session?.hasRepository ?? false))
             }

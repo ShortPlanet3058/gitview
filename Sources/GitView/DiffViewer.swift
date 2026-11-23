@@ -6,6 +6,7 @@ import GitViewParse
 /// A diff viewer supporting syntax highlighting, word-level inline emphasis, unified & side-by-side layouts, and find-in-diff.
 struct DiffViewer: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @Environment(InspectorStore.self) private var inspector
     @Environment(WorkingCopyStore.self) private var workingCopy
     let request: DiffRequest
@@ -31,6 +32,7 @@ struct DiffViewer: View {
     }
 
     private var supportsLineSelection: Bool {
+        guard preferences.advanced else { return false }
         if case .workingTree = request.source, !isUntrackedFile {
             return true
         }
@@ -142,13 +144,15 @@ struct DiffViewer: View {
                     options: LayoutMode.allCases.map { ($0, $0.rawValue) },
                     selection: $layoutMode
                 )
-                Picker("", selection: $inspector.diffContext) {
-                    Text("3 lines").tag(3)
-                    Text("10 lines").tag(10)
-                    Text("25 lines").tag(25)
+                if preferences.advanced {
+                    Picker("", selection: $inspector.diffContext) {
+                        Text("3 lines").tag(3)
+                        Text("10 lines").tag(10)
+                        Text("25 lines").tag(25)
+                    }
+                    .labelsHidden().frame(width: 96)
+                    .help("Lines of unchanged context shown around each change")
                 }
-                .labelsHidden().frame(width: 96)
-                .help("Lines of unchanged context shown around each change")
                 Button {
                     showingFindBar.toggle()
                     if showingFindBar {
@@ -162,8 +166,10 @@ struct DiffViewer: View {
                 }
                 .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 .help("Find in diff")
-                Button("File history") { inspector.showFileHistory(request.path) }
-                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                if preferences.advanced {
+                    Button("File history") { inspector.showFileHistory(request.path) }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
                 if isUntrackedFile {
                     Button("Stage file") {
                         workingCopy.stage([request.path])
@@ -381,15 +387,22 @@ struct DiffViewer: View {
     private func hunkHeader(_ hunk: DiffHunk, in diff: FileDiff) -> some View {
         let selectedInHunk = Set(hunk.lines.filter { $0.kind != .context && selectedLineIDs.contains($0.id) }.map(\.id))
         let noun = "\(selectedInHunk.count) line\(selectedInHunk.count == 1 ? "" : "s")"
+        let newCount = hunk.lines.count(where: { $0.kind != .deletion })
+        let lineEnd = hunk.newStart + max(newCount - 1, 0)
         return HStack(spacing: Theme.Space.s) {
-            Text("@@ −\(hunk.oldStart) +\(hunk.newStart) @@")
-                .font(Theme.Text.mono).foregroundStyle(Theme.accent)
+            if preferences.advanced {
+                Text("@@ −\(hunk.oldStart) +\(hunk.newStart) @@")
+                    .font(Theme.Text.mono).foregroundStyle(Theme.accent)
+            } else {
+                Text(newCount > 1 ? "Lines \(hunk.newStart)–\(lineEnd)" : "Line \(max(hunk.newStart, hunk.oldStart))")
+                    .font(Theme.Text.caption.weight(.medium)).foregroundStyle(Theme.accent)
+            }
             if !hunk.section.isEmpty {
                 Text(hunk.section).font(Theme.Text.mono).foregroundStyle(Theme.inkMuted)
                     .lineLimit(1).truncationMode(.tail)
             }
             Spacer()
-            if case .workingTree(let staged) = request.source, !isUntrackedFile {
+            if preferences.advanced, case .workingTree(let staged) = request.source, !isUntrackedFile {
                 if !selectedInHunk.isEmpty {
                     if staged {
                         Button("Unstage \(noun)") {

@@ -6,6 +6,7 @@ import GitViewGit
 /// that change the repository.
 struct ChangesScreen: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @Environment(WorkingCopyStore.self) private var workingCopy
     @State private var selectedEntryID: String?
 
@@ -18,19 +19,30 @@ struct ChangesScreen: View {
 
     private var state: WorkingState { session.analysis?.workingState ?? .clean }
 
+    private var standardTrackedFiles: [WorkingState.FileStatus] {
+        state.files.filter { !$0.isUntracked && !$0.isConflicted }
+    }
+
     private var orderedEntries: [SelectableEntry] {
         var entries: [SelectableEntry] = []
         entries.append(contentsOf: state.conflicted.map {
             SelectableEntry(id: "conflicted:\($0.path)", file: $0, staged: false, title: "Conflicted file")
         })
-        entries.append(contentsOf: state.staged.map {
-            SelectableEntry(id: "staged:\($0.path)", file: $0, staged: true, title: "Staged changes")
-        })
-        entries.append(contentsOf: state.unstaged.map {
-            SelectableEntry(id: "unstaged:\($0.path)", file: $0, staged: false, title: "Uncommitted changes")
-        })
+        if preferences.advanced {
+            entries.append(contentsOf: state.staged.map {
+                SelectableEntry(id: "staged:\($0.path)", file: $0, staged: true, title: "Staged changes")
+            })
+            entries.append(contentsOf: state.unstaged.map {
+                SelectableEntry(id: "unstaged:\($0.path)", file: $0, staged: false, title: "Uncommitted changes")
+            })
+        } else {
+            entries.append(contentsOf: standardTrackedFiles.map { file in
+                let stagedOnly = file.staged != .unchanged && file.unstaged == .unchanged
+                return SelectableEntry(id: "tracked:\(file.path)", file: file, staged: stagedOnly, title: "Modified file")
+            })
+        }
         entries.append(contentsOf: state.untracked.map {
-            SelectableEntry(id: "untracked:\($0.path)", file: $0, staged: false, title: "Untracked file")
+            SelectableEntry(id: "untracked:\($0.path)", file: $0, staged: false, title: preferences.advanced ? "Untracked file" : "New file")
         })
         return entries
     }
@@ -49,26 +61,49 @@ struct ChangesScreen: View {
             if let error = workingCopy.writeError { errorCard(error) }
             if let operation = state.operation { operationCard(operation) }
 
-            if state.isClean && !state.hasUnpushedCommits && state.stashes.isEmpty {
+            let isCleanForMode = preferences.advanced
+                ? (state.isClean && !state.hasUnpushedCommits && state.stashes.isEmpty)
+                : (state.isClean && !state.hasUnpushedCommits && state.behind == 0)
+
+            if isCleanForMode {
                 cleanCard
             } else {
+                if !preferences.advanced && state.isClean {
+                    cleanCard
+                }
                 if !state.conflicted.isEmpty {
                     conflictsSection(state.conflicted)
                 }
-                if !state.staged.isEmpty {
-                    fileSection("Staged", state.staged, tint: Theme.good, staged: true, sectionPrefix: "staged")
-                }
-                if !state.staged.isEmpty || !workingCopy.commitSubject.isEmpty { commitCard }
-                if !state.unstaged.isEmpty {
-                    fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false, sectionPrefix: "unstaged")
-                }
-                if !state.untracked.isEmpty {
-                    fileSection("Untracked", state.untracked, tint: Theme.inkMuted, staged: false, sectionPrefix: "untracked")
+                if preferences.advanced {
+                    if !state.staged.isEmpty {
+                        fileSection("Staged", state.staged, tint: Theme.good, staged: true, sectionPrefix: "staged")
+                    }
+                    if !state.staged.isEmpty || !workingCopy.commitSubject.isEmpty { commitCard }
+                    if !state.unstaged.isEmpty {
+                        fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false, sectionPrefix: "unstaged")
+                    }
+                    if !state.untracked.isEmpty {
+                        fileSection("Untracked", state.untracked, tint: Theme.inkMuted, staged: false, sectionPrefix: "untracked")
+                    }
+                } else {
+                    if !standardTrackedFiles.isEmpty {
+                        standardModifiedSection(standardTrackedFiles)
+                    }
+                    if !state.untracked.isEmpty {
+                        fileSection("New files", state.untracked, tint: Theme.inkMuted, staged: false, sectionPrefix: "untracked")
+                    }
+                    if !standardTrackedFiles.isEmpty || !state.staged.isEmpty || !workingCopy.commitSubject.isEmpty {
+                        commitCard
+                    }
                 }
             }
 
-            pushCard
-            stashCard
+            if preferences.advanced || (workingCopy.pushPlan.map { !$0.isEmpty } ?? false) || state.behind > 0 {
+                pushCard
+            }
+            if preferences.advanced {
+                stashCard
+            }
         }
         .focusable()
         .focusEffectDisabled()
@@ -95,8 +130,13 @@ struct ChangesScreen: View {
     private var subtitle: String {
         var parts: [String] = []
         if let branch = state.branch { parts.append("on \(branch)") }
-        if state.ahead > 0 { parts.append("\(state.ahead) to push") }
-        if state.behind > 0 { parts.append("\(state.behind) to pull") }
+        if preferences.advanced {
+            if state.ahead > 0 { parts.append("\(state.ahead) to push") }
+            if state.behind > 0 { parts.append("\(state.behind) to pull") }
+        } else {
+            if state.ahead > 0 { parts.append("\(state.ahead) ready to share") }
+            if state.behind > 0 { parts.append("\(state.behind) update\(state.behind == 1 ? "" : "s") available") }
+        }
         return parts.isEmpty ? "Your working copy" : parts.joined(separator: " · ")
     }
 
@@ -176,13 +216,89 @@ struct ChangesScreen: View {
             HStack(spacing: Theme.Space.m) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 20)).foregroundStyle(Theme.good)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Nothing to commit").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                    Text(preferences.advanced ? "Nothing to commit" : "Everything is up to date")
+                        .font(Theme.Text.heading).foregroundStyle(Theme.ink)
                     Text("Your working copy matches the last commit, and everything is pushed.")
                         .font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
                 }
                 Spacer()
             }
         }
+    }
+
+    private func standardModifiedSection(_ files: [WorkingState.FileStatus]) -> some View {
+        let allIncluded = files.allSatisfy { $0.staged != .unchanged && $0.unstaged == .unchanged }
+        return Card(padding: Theme.Space.s) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("MODIFIED FILES").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+                    Text("\(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+                    Spacer()
+                    Button(allIncluded ? "Unselect all" : "Include all") {
+                        let paths = files.map(\.path)
+                        allIncluded ? workingCopy.unstage(paths) : workingCopy.stage(paths)
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+                .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
+                HairlineDivider()
+                ForEach(files) { file in
+                    standardRow(file)
+                        .contextMenu { PathActions(path: file.path) }
+                    if file.id != files.last?.id { HairlineDivider() }
+                }
+            }
+        }
+    }
+
+    private func standardRow(_ file: WorkingState.FileStatus) -> some View {
+        let entryID = "tracked:\(file.path)"
+        let isSelected = selectedEntryID == entryID
+        let fullyIncluded = file.staged != .unchanged && file.unstaged == .unchanged
+        let partiallyIncluded = file.staged != .unchanged && file.unstaged != .unchanged
+        return HStack(spacing: Theme.Space.s) {
+            Button {
+                fullyIncluded ? workingCopy.unstage([file.path]) : workingCopy.stage([file.path])
+            } label: {
+                Image(systemName: fullyIncluded ? "checkmark.square.fill" : (partiallyIncluded ? "minus.square.fill" : "square"))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle((fullyIncluded || partiallyIncluded) ? Theme.accent : Theme.inkMuted)
+            }
+            .buttonStyle(.plain)
+            .help(fullyIncluded ? "Exclude from commit" : "Include all edits in commit")
+
+            Button {
+                selectedEntryID = entryID
+                session.inspector.showDiff(.workingTree(staged: fullyIncluded), path: file.path, title: "Modified file")
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(file.path).font(Theme.Text.body).foregroundStyle(Theme.ink)
+                        .lineLimit(1).truncationMode(.middle)
+                    if partiallyIncluded {
+                        Text("Has newer edits not yet included")
+                            .font(Theme.Text.caption).foregroundStyle(Theme.warning)
+                    } else if let original = file.originalPath {
+                        Text("renamed from \(original)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                            .lineLimit(1).truncationMode(.head)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                workingCopy.confirmDiscard(file)
+            } label: {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: 11)).foregroundStyle(Theme.critical)
+            }
+            .buttonStyle(.plain)
+            .help("Revert edits in this file")
+        }
+        .padding(.horizontal, Theme.Space.m).padding(.vertical, 7)
+        .background(isSelected ? Theme.accentWash : .clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .opacity(workingCopy.writeInFlight ? 0.5 : 1)
     }
 
     private func fileSection(_ title: String, _ files: [WorkingState.FileStatus],
@@ -238,7 +354,7 @@ struct ChangesScreen: View {
                 Button("Unstage") { workingCopy.unstage([file.path]) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
             } else {
-                Button("Stage") { workingCopy.stage([file.path]) }
+                Button(preferences.advanced ? "Stage" : "Include") { workingCopy.stage([file.path]) }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 Button {
                     file.isUntracked ? workingCopy.confirmDelete(file) : workingCopy.confirmDiscard(file)
@@ -270,10 +386,17 @@ struct ChangesScreen: View {
 
     private var commitCard: some View {
         @Bindable var workingCopy = workingCopy
+        let canCommit = !state.staged.isEmpty
+            && !workingCopy.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
+            && !workingCopy.writeInFlight
         return Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                CardHeader(title: "Commit", subtitle: "\(state.staged.count) staged")
-                TextField("Summary", text: $workingCopy.commitSubject).textFieldStyle(.roundedBorder)
+                CardHeader(
+                    title: preferences.advanced ? "Commit" : "Save changes",
+                    subtitle: preferences.advanced ? "\(state.staged.count) staged" : "\(state.staged.count) included"
+                )
+                TextField(preferences.advanced ? "Summary" : "What did you change?", text: $workingCopy.commitSubject)
+                    .textFieldStyle(.roundedBorder)
                 TextEditor(text: $workingCopy.commitBody)
                     .font(Theme.Text.body).frame(height: 70).scrollContentBackground(.hidden)
                     .padding(6)
@@ -282,21 +405,29 @@ struct ChangesScreen: View {
                         .strokeBorder(Theme.hairline))
                     .overlay(alignment: .topLeading) {
                         if workingCopy.commitBody.isEmpty {
-                            Text("Description (optional)").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                            Text(preferences.advanced ? "Description (optional)" : "Notes (optional)")
+                                .font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
                                 .padding(.horizontal, 10).padding(.vertical, 12).allowsHitTesting(false)
                         }
                     }
-                HStack {
+                HStack(spacing: Theme.Space.s) {
                     Text("Commits as \(session.analysis?.info.configuredUserNames.first ?? "your git identity")")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                     Spacer()
-                    Button("Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
-                        workingCopy.commitStaged()
+                    if !preferences.advanced, workingCopy.pushPlan != nil || session.analysis?.info.remoteURL != nil {
+                        Button("Commit") { workingCopy.commitStaged() }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(!canCommit)
+                        Button("Commit & Push") { workingCopy.commitAndPush() }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(!canCommit)
+                    } else {
+                        Button("Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
+                            workingCopy.commitStaged()
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(!canCommit)
                     }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(state.staged.isEmpty
-                              || workingCopy.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
-                              || workingCopy.writeInFlight)
                 }
             }
         }
@@ -305,11 +436,27 @@ struct ChangesScreen: View {
     private var pushCard: some View {
         Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                CardHeader(title: "Push",
+                CardHeader(title: preferences.advanced ? "Push" : "Share changes",
                            info: "Sends your commits to the remote, where other people will see them. "
                                + "GitView never force-pushes: if the remote has work you have not got, "
                                + "the answer is to pull, not to overwrite it.")
-                if let plan = workingCopy.pushPlan, !plan.isEmpty {
+                if !preferences.advanced {
+                    HStack {
+                        if let plan = workingCopy.pushPlan, !plan.isEmpty {
+                            Text("\(plan.commits.count) commit\(plan.commits.count == 1 ? "" : "s") ready to share.")
+                                .font(Theme.Text.body).foregroundStyle(Theme.ink)
+                        } else if state.behind > 0 {
+                            Text("\(state.behind) update\(state.behind == 1 ? "" : "s") waiting on the remote.")
+                                .font(Theme.Text.body).foregroundStyle(Theme.ink)
+                        } else {
+                            Text("All commits are shared.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
+                        }
+                        Spacer()
+                        Button("Sync") { workingCopy.sync() }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(workingCopy.writeInFlight)
+                    }
+                } else if let plan = workingCopy.pushPlan, !plan.isEmpty {
                     Text("\(plan.commits.count) commit\(plan.commits.count == 1 ? "" : "s") "
                          + "to \(plan.remote)/\(plan.branch)"
                          + (plan.hasUpstream ? "" : " — this will set the upstream"))
@@ -390,6 +537,7 @@ struct ChangesScreen: View {
 
 private struct ConflictFileRow: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @Environment(WorkingCopyStore.self) private var workingCopy
     let file: WorkingState.FileStatus
     let selected: Bool
@@ -421,25 +569,27 @@ private struct ConflictFileRow: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(expanded ? "Hide Sides" : "Inspect Sides") {
-                    expanded.toggle()
+                if preferences.advanced {
+                    Button(expanded ? "Hide Sides" : "Inspect Sides") {
+                        expanded.toggle()
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
-                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
 
                 if let url = fileURL {
-                    Button(versions?.firstConflictLine.map { "Open (L\($0))" } ?? "Open") {
+                    Button(versions?.firstConflictLine.map { "Open (L\($0))" } ?? "Open in Editor") {
                         openInEditor(url, line: versions?.firstConflictLine)
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
 
-                Button("Accept Ours") {
+                Button(preferences.advanced ? "Accept Ours" : "Keep mine") {
                     workingCopy.confirmResolveConflict(path: file.path, acceptOurs: true)
                 }
                 .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 .disabled(workingCopy.writeInFlight)
 
-                Button("Accept Theirs") {
+                Button(preferences.advanced ? "Accept Theirs" : "Use incoming") {
                     workingCopy.confirmResolveConflict(path: file.path, acceptOurs: false)
                 }
                 .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
@@ -452,7 +602,7 @@ private struct ConflictFileRow: View {
                 .disabled(workingCopy.writeInFlight)
             }
 
-            if expanded {
+            if preferences.advanced && expanded {
                 if loading && versions == nil {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)

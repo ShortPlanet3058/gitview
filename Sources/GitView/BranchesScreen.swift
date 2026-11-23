@@ -12,11 +12,20 @@ struct BranchesScreen: View {
 
     var body: some View {
         if let analysis = session.analysis {
-            let all = analysis.branches
-            let merged = all.filter { $0.isMerged }
-            let shown = all.filter { (showMerged || !$0.isMerged) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
+            let advanced = preferences.advanced
+            let pool = advanced ? analysis.branches : analysis.branches.filter { !$0.isRemote }
+            let merged = advanced ? pool.filter { $0.isMerged } : []
+            let shown = pool.filter {
+                (advanced ? (showMerged || !$0.isMerged) : true)
+                && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
+            }
             Page {
-                ScreenHeader(title: "Branches", subtitle: "Branches in this repository, newest activity first.")
+                ScreenHeader(
+                    title: "Branches",
+                    subtitle: advanced
+                        ? "Local and remote branches in this repository, newest activity first."
+                        : "Switch between branches or start a new branch."
+                )
                 HStack(spacing: Theme.Space.m) {
                     SearchField(text: $query, prompt: "Filter branches",
                                 focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 280)
@@ -28,17 +37,22 @@ struct BranchesScreen: View {
                     Button("New branch", action: createBranch)
                         .buttonStyle(SecondaryButtonStyle())
                         .disabled(newBranchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workingCopy.writeInFlight)
-                    Text("\(shown.count) of \(all.count)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    Text("\(shown.count) of \(pool.count)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
                 Card(padding: Theme.Space.s) {
                     VStack(spacing: 0) {
-                        TableHeading(columns: [("Name", nil, .leading), ("Last commit", 240, .leading), ("Behind / Ahead", 110, .trailing), ("Actions", 130, .trailing)])
+                        TableHeading(columns: [
+                            ("Name", nil, .leading),
+                            (advanced ? "Last commit" : "Latest update", 240, .leading),
+                            (advanced ? "Behind / Ahead" : "Status", 120, .trailing),
+                            ("Actions", 130, .trailing)
+                        ])
                         HairlineDivider()
                         ForEach(shown) { branch in
-                            BranchRow(branch: branch)
+                            BranchRow(branch: branch, advanced: advanced)
                             if branch.id != shown.last?.id { HairlineDivider() }
                         }
-                        if !merged.isEmpty {
+                        if advanced && !merged.isEmpty {
                             HairlineDivider()
                             Button {
                                 showMerged.toggle()
@@ -54,7 +68,7 @@ struct BranchesScreen: View {
                         }
                     }
                 }
-                if preferences.advanced {
+                if advanced {
                     Text("Behind / ahead are counted against the default branch (\(analysis.info.defaultBranch)). "
                          + "Remote-tracking branches without a local copy are marked “remote”.")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -74,9 +88,10 @@ struct BranchesScreen: View {
 struct BranchRow: View {
     @Environment(WorkingCopyStore.self) private var workingCopy
     let branch: BranchInfo
+    var advanced: Bool = true
 
     private var canDelete: Bool {
-        !branch.isRemote && !branch.isCurrent && !branch.isDefault && branch.isMerged
+        advanced && !branch.isRemote && !branch.isCurrent && !branch.isDefault && branch.isMerged
     }
 
     var body: some View {
@@ -86,9 +101,9 @@ struct BranchRow: View {
                 Text(branch.name).font(branch.isDefault ? Theme.Text.bodyBold : Theme.Text.body).foregroundStyle(Theme.ink)
                     .lineLimit(1).truncationMode(.middle)
                 if branch.isDefault { Chip(text: "Default", tint: Theme.accent) }
-                if branch.isCurrent && !branch.isDefault { Chip(text: "Current") }
-                if branch.isRemote { Chip(text: "remote") }
-                if branch.isMerged { Chip(text: "merged") }
+                if branch.isCurrent && !branch.isDefault { Chip(text: "Current", tint: Theme.good) }
+                if advanced && branch.isRemote { Chip(text: "remote") }
+                if advanced && branch.isMerged { Chip(text: "merged") }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
@@ -97,21 +112,8 @@ struct BranchRow: View {
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             .frame(width: 240, alignment: .leading)
-            Group {
-                if branch.isDefault {
-                    Text("—").foregroundStyle(Theme.inkMuted)
-                } else if let ahead = branch.ahead, let behind = branch.behind {
-                    HStack(spacing: 3) {
-                        Text("\(behind)").foregroundStyle(behind > 0 ? Theme.serious : Theme.inkMuted)
-                        Text("/").foregroundStyle(Theme.inkMuted)
-                        Text("\(ahead)").foregroundStyle(ahead > 0 ? Theme.good : Theme.inkMuted)
-                    }
-                } else {
-                    Text("·").foregroundStyle(Theme.inkMuted)
-                }
-            }
-            .font(Theme.Text.body.monospacedDigit())
-            .frame(width: 110, alignment: .trailing)
+            statusCell
+                .frame(width: 120, alignment: .trailing)
             HStack(spacing: Theme.Space.xs) {
                 if !branch.isCurrent {
                     Button(branch.isRemote ? "Track" : "Switch") {
@@ -144,5 +146,50 @@ struct BranchRow: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var statusCell: some View {
+        if advanced {
+            Group {
+                if branch.isDefault {
+                    Text("—").foregroundStyle(Theme.inkMuted)
+                } else if let ahead = branch.ahead, let behind = branch.behind {
+                    HStack(spacing: 3) {
+                        Text("\(behind)").foregroundStyle(behind > 0 ? Theme.serious : Theme.inkMuted)
+                        Text("/").foregroundStyle(Theme.inkMuted)
+                        Text("\(ahead)").foregroundStyle(ahead > 0 ? Theme.good : Theme.inkMuted)
+                    }
+                } else {
+                    Text("·").foregroundStyle(Theme.inkMuted)
+                }
+            }
+            .font(Theme.Text.body.monospacedDigit())
+        } else {
+            Text(plainStatus)
+                .font(Theme.Text.caption)
+                .foregroundStyle(plainStatusTint)
+        }
+    }
+
+    private var plainStatus: String {
+        if branch.isCurrent { return "Active" }
+        if branch.isDefault { return "Main branch" }
+        if let ahead = branch.ahead, let behind = branch.behind {
+            if ahead == 0 && behind == 0 { return "Up to date" }
+            if ahead > 0 && behind == 0 { return "\(ahead) ahead" }
+            if behind > 0 && ahead == 0 { return "\(behind) behind" }
+            return "\(ahead) ahead · \(behind) behind"
+        }
+        return "Local branch"
+    }
+
+    private var plainStatusTint: Color {
+        if branch.isCurrent { return Theme.good }
+        if let ahead = branch.ahead, let behind = branch.behind {
+            if behind > 0 { return Theme.serious }
+            if ahead > 0 { return Theme.accent }
+        }
+        return Theme.inkMuted
     }
 }

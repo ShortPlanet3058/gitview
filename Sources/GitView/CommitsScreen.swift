@@ -10,6 +10,7 @@ struct CommitRefBadge: Hashable {
 
 struct CommitsScreen: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @State private var query = ""
     @State private var range: TimeRange = .all
     @State private var author: String = ""
@@ -39,6 +40,7 @@ struct CommitsScreen: View {
         let range: TimeRange
         let author: String
         let limit: Int
+        let advanced: Bool
     }
 
     private struct CachedTimeline {
@@ -58,7 +60,8 @@ struct CommitsScreen: View {
         query: String,
         range: TimeRange,
         author: String,
-        limit: Int
+        limit: Int,
+        advanced: Bool
     ) -> TimelineCacheKey {
         TimelineCacheKey(
             headSHA: analysis?.commits.first?.sha,
@@ -69,7 +72,8 @@ struct CommitsScreen: View {
             query: query,
             range: range,
             author: author,
-            limit: limit
+            limit: limit,
+            advanced: advanced
         )
     }
 
@@ -83,21 +87,21 @@ struct CommitsScreen: View {
             if q.isEmpty { return true }
             return commit.subject.localizedCaseInsensitiveContains(q)
                 || commit.author.localizedCaseInsensitiveContains(q)
-                || commit.sha.hasPrefix(q.lowercased())
+                || (key.advanced && commit.sha.hasPrefix(q.lowercased()))
         }
         let visible = Array(filtered.prefix(key.limit))
         let grouped = groupByDay(visible)
         let isUnfiltered = q.isEmpty && key.author.isEmpty && key.range == .all
-        let graphBySHA = isUnfiltered ? CommitGraphLayout.build(commits: visible) : [:]
+        let graphBySHA = (key.advanced && isUnfiltered) ? CommitGraphLayout.build(commits: visible) : [:]
         let visibleMaxLanes = max(min(graphBySHA.values.map(\.laneCount).max() ?? 1, 8), 1)
-        let refsBySHA = refBadges(for: analysis)
+        let refsBySHA = key.advanced ? refBadges(for: analysis) : [:]
         return CachedTimeline(
             key: key,
             filteredCount: filtered.count,
             visibleSHAs: visible.map(\.sha),
             firstFilteredSHA: filtered.first?.sha,
             grouped: grouped,
-            isUnfiltered: isUnfiltered,
+            isUnfiltered: isUnfiltered && key.advanced,
             graphBySHA: graphBySHA,
             visibleMaxLanes: visibleMaxLanes,
             refsBySHA: refsBySHA
@@ -124,20 +128,28 @@ struct CommitsScreen: View {
     }
 
     var body: some View {
+        let advanced = preferences.advanced
         let key = Self.makeCacheKey(
             analysis: session.analysis,
             query: query,
             range: range,
             author: author,
-            limit: limit
+            limit: limit,
+            advanced: advanced
         )
         let timeline = (cachedTimeline?.key == key ? cachedTimeline : nil)
             ?? Self.buildTimeline(analysis: session.analysis, key: key)
 
         Page {
-            ScreenHeader(title: "Commits", subtitle: "Browse the project history and branch topology.")
+            ScreenHeader(
+                title: advanced ? "Commits" : "History",
+                subtitle: advanced
+                    ? "Browse the project history and branch topology."
+                    : "A timeline of changes saved to this repository."
+            )
             HStack(spacing: Theme.Space.m) {
-                SearchField(text: $query, prompt: "Search commits, authors, or shas",
+                SearchField(text: $query,
+                            prompt: advanced ? "Search commits, authors, or shas" : "Search changes or people",
                             focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 340)
                 Picker("", selection: $range) { ForEach(TimeRange.allCases) { Text($0.rawValue).tag($0) } }
                     .labelsHidden().frame(width: 140)
@@ -147,7 +159,8 @@ struct CommitsScreen: View {
                 }
                 .labelsHidden().frame(width: 180)
                 Spacer()
-                Text("\(timeline.filteredCount.formatted()) commits").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                Text("\(timeline.filteredCount.formatted()) \(advanced ? "commits" : "saved changes")")
+                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             Card(padding: Theme.Space.s) {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -162,7 +175,8 @@ struct CommitsScreen: View {
                                     selected: session.navigation.selectedCommitSHA == commit.sha,
                                     graphRow: timeline.isUnfiltered ? timeline.graphBySHA[commit.sha] : nil,
                                     laneSlots: timeline.visibleMaxLanes,
-                                    refs: timeline.refsBySHA[commit.sha] ?? []
+                                    refs: timeline.refsBySHA[commit.sha] ?? [],
+                                    showSHA: advanced
                                 )
                             }
                             .buttonStyle(.plain)
@@ -239,6 +253,7 @@ struct CommitRowView: View {
     var graphRow: CommitGraphRow? = nil
     var laneSlots: Int = 1
     var refs: [CommitRefBadge] = []
+    var showSHA = true
     @State private var hovering = false
 
     var body: some View {
@@ -268,7 +283,9 @@ struct CommitRowView: View {
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
                 Spacer()
-                ShaChip(sha: commit.sha)
+                if showSHA {
+                    ShaChip(sha: commit.sha)
+                }
             }
             .padding(.vertical, 8)
         }

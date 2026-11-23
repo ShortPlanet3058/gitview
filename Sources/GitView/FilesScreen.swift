@@ -6,6 +6,7 @@ import GitViewParse
 /// Tracked-file tree with interactive code viewer, line-by-line blame gutter, and file overview.
 struct FilesScreen: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @State private var expanded: Set<String> = [""]
     @State private var selectedPath: String? = nil
     @State private var query = ""
@@ -37,7 +38,12 @@ struct FilesScreen: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
-                    ScreenHeader(title: "Files", subtitle: "Explore the repository structure, syntax-highlighted code, and line blame.")
+                    ScreenHeader(
+                        title: "Files",
+                        subtitle: preferences.advanced
+                            ? "Explore the repository structure, syntax-highlighted code, and line blame."
+                            : "Browse folders and source files in this repository."
+                    )
                     HStack {
                         SearchField(text: $query, prompt: "Filter files",
                                     focusTrigger: isViewingFile ? 0 : session.navigation.focusLocalFindRequest)
@@ -54,7 +60,12 @@ struct FilesScreen: View {
                         ScrollColumn {
                             LazyVStack(spacing: 0) {
                                 ForEach(visible) { node in
-                                    FileTreeRow(node: node, expanded: openFolders.contains(node.path), selected: chosen == node.path) {
+                                    FileTreeRow(
+                                        node: node,
+                                        expanded: openFolders.contains(node.path),
+                                        selected: chosen == node.path,
+                                        showHotspots: preferences.advanced
+                                    ) {
                                         if node.isDirectory {
                                             if expanded.contains(node.path) { expanded.remove(node.path) } else { expanded.insert(node.path) }
                                         }
@@ -123,6 +134,7 @@ private struct FileContentWorkspace: View {
     }
 
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @Environment(InspectorStore.self) private var inspector
     let node: FileTree.Node
     let root: URL
@@ -174,11 +186,14 @@ private struct FileContentWorkspace: View {
             await loadCodeContent()
         }
         .task(id: blameTaskKey) {
-            guard mode == .blame else { return }
+            guard preferences.advanced && mode == .blame else { return }
             inspector.loadBlame(for: activeBlamePath, revision: activeBlameRevision)
         }
         .task(id: activeBlame) {
             await highlightActiveBlame()
+        }
+        .onChange(of: preferences.advanced) { _, isAdvanced in
+            if !isAdvanced && mode == .blame { mode = .code }
         }
     }
 
@@ -199,8 +214,9 @@ private struct FileContentWorkspace: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer()
+            let availableModes: [Mode] = preferences.advanced ? Mode.allCases : [.code, .overview]
             SegmentPicker(
-                options: Mode.allCases.map { ($0, $0.rawValue) },
+                options: availableModes.map { ($0, $0.rawValue) },
                 selection: $mode
             )
             Button("History") { inspector.showFileHistory(node.path) }
@@ -539,6 +555,7 @@ struct FileTreeRow: View {
     let node: FileTree.Node
     let expanded: Bool
     let selected: Bool
+    var showHotspots: Bool = true
     let action: () -> Void
     @State private var hovering = false
 
@@ -551,7 +568,7 @@ struct FileTreeRow: View {
                 Image(systemName: node.isDirectory ? "folder.fill" : "doc.text")
                     .font(.system(size: 12)).foregroundStyle(node.isDirectory ? Theme.accent : Theme.inkMuted)
                 Text(node.name).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
-                if node.hotspots > 0 {
+                if showHotspots && node.hotspots > 0 {
                     HStack(spacing: 3) {
                         Image(systemName: "flame.fill").font(.system(size: 9))
                         Text("\(node.hotspots)").font(.system(size: 10, weight: .semibold))
@@ -578,6 +595,7 @@ struct FileTreeRow: View {
 
 struct FileInfoCard: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     let node: FileTree.Node
     let root: URL
 
@@ -635,31 +653,33 @@ struct FileInfoCard: View {
                         directory: node.isDirectory ? ownership.ownership(ofDirectory: node.path) : nil)
                 }
 
-                let rows = hotspotRows
-                if !rows.isEmpty {
-                    HairlineDivider()
-                    HStack {
-                        Text(node.isDirectory ? "Needs attention inside" : "Functions").font(Theme.Text.heading).foregroundStyle(Theme.ink)
-                        Spacer()
-                        Text("\(rows.count)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                    }
-                    VStack(spacing: 4) {
-                        ForEach(rows.prefix(6)) { row in
-                            Button { session.navigation.selectedUnitID = row.id } label: {
-                                HStack(spacing: Theme.Space.s) {
-                                    RiskBadge(level: row.level, compact: true)
-                                    Text(row.name.split(separator: ".").suffix(2).joined(separator: "."))
-                                        .font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
-                                    Spacer()
-                                    Text("cx \(row.complexity)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
-                                }
-                                .padding(.vertical, 3)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                if preferences.advanced {
+                    let rows = hotspotRows
+                    if !rows.isEmpty {
+                        HairlineDivider()
+                        HStack {
+                            Text(node.isDirectory ? "Needs attention inside" : "Functions").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                            Spacer()
+                            Text("\(rows.count)").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         }
-                        if rows.count > 6 {
-                            Text("and \(rows.count - 6) more…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        VStack(spacing: 4) {
+                            ForEach(rows.prefix(6)) { row in
+                                Button { session.navigation.selectedUnitID = row.id } label: {
+                                    HStack(spacing: Theme.Space.s) {
+                                        RiskBadge(level: row.level, compact: true)
+                                        Text(row.name.split(separator: ".").suffix(2).joined(separator: "."))
+                                            .font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+                                        Spacer()
+                                        Text("cx \(row.complexity)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.inkMuted)
+                                    }
+                                    .padding(.vertical, 3)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            if rows.count > 6 {
+                                Text("and \(rows.count - 6) more…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                            }
                         }
                     }
                 }

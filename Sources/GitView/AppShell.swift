@@ -6,6 +6,7 @@ import GitViewGit
 struct AppShell: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(AppPreferences.self) private var preferences
     @AppStorage("gitview.sidebarWidth") private var sidebarWidth: Double = 216
     @AppStorage("gitview.detailWidth") private var detailWidth: Double = 420
 
@@ -113,9 +114,9 @@ struct AppShell: View {
         if session.navigation.screen == .contributors && session.navigation.selectedAuthor != nil { return true }
         switch session.navigation.screen {
         case .coupling:
-            return session.selectedPair != nil || (session.selectedUnit != nil && session.selectedRow != nil)
+            return preferences.advanced && (session.selectedPair != nil || (session.selectedUnit != nil && session.selectedRow != nil))
         case .overview, .hotspots, .files:
-            return session.selectedUnit != nil && session.selectedRow != nil
+            return preferences.advanced && session.selectedUnit != nil && session.selectedRow != nil
         default:
             return false
         }
@@ -313,6 +314,7 @@ struct RepositoryPicker: View {
 /// The contents of the repository pop-up, drawn with the app's own components.
 struct RepositoryMenu: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     let analysis: RepositoryAnalysis
     let dismiss: () -> Void
 
@@ -329,7 +331,7 @@ struct RepositoryMenu: View {
                 detail: analysis.root.deletingLastPathComponent().path,
                 checked: true) {}
 
-            if analysis.info.worktrees.count > 1 {
+            if preferences.advanced && analysis.info.worktrees.count > 1 {
                 heading("WORKTREES")
                 let currentPath = analysis.root.standardizedFileURL.path
                 ForEach(analysis.info.worktrees) { worktree in
@@ -439,6 +441,7 @@ struct MenuRow<Content: View>: View {
 struct TopBar: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(AppPreferences.self) private var preferences
 
     var body: some View {
         HStack(spacing: Theme.Space.m) {
@@ -449,21 +452,45 @@ struct TopBar: View {
                     || workingCopy.pushPlan != nil
                     || analysis.branches.contains(where: \.isRemote)
                 if hasRemote {
-                    Button { workingCopy.fetch() } label: {
-                        Label("Fetch", systemImage: "arrow.down.circle")
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .fixedSize()
-                    .disabled(workingCopy.writeInFlight)
-                    .help("Fetch all remotes and prune deleted branches")
-                    if analysis.workingState.behind > 0 {
-                        Button { workingCopy.pull() } label: {
-                            Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
+                    if preferences.advanced {
+                        Button { workingCopy.fetch() } label: {
+                            Label("Fetch", systemImage: "arrow.down.circle")
                         }
-                        .buttonStyle(PrimaryButtonStyle())
+                        .buttonStyle(SecondaryButtonStyle())
                         .fixedSize()
                         .disabled(workingCopy.writeInFlight)
-                        .help("Fast-forward pull from upstream (git pull --ff-only)")
+                        .help("Fetch all remotes and prune deleted branches")
+                        if analysis.workingState.behind > 0 {
+                            Button { workingCopy.pull() } label: {
+                                Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .fixedSize()
+                            .disabled(workingCopy.writeInFlight)
+                            .help("Fast-forward pull from upstream (git pull --ff-only)")
+                        }
+                    } else {
+                        let syncPending = analysis.workingState.ahead > 0 || analysis.workingState.behind > 0
+                        let syncTitle = syncPending
+                            ? "Sync (\(analysis.workingState.ahead + analysis.workingState.behind))"
+                            : "Sync"
+                        if syncPending {
+                            Button { workingCopy.sync() } label: {
+                                Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .fixedSize()
+                            .disabled(workingCopy.writeInFlight)
+                            .help("Fetch updates, fast-forward pull, and push local commits")
+                        } else {
+                            Button { workingCopy.sync() } label: {
+                                Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .fixedSize()
+                            .disabled(workingCopy.writeInFlight)
+                            .help("Fetch updates, fast-forward pull, and push local commits")
+                        }
                     }
                 }
             } else {
@@ -519,6 +546,7 @@ struct TopBar: View {
 
 struct BranchPicker: View {
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(AppPreferences.self) private var preferences
     let analysis: RepositoryAnalysis
     @State private var showingPopover = false
     @State private var hovering = false
@@ -533,7 +561,7 @@ struct BranchPicker: View {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
                 Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
                     .lineLimit(1).truncationMode(.middle)
-                if state.behind > 0 || state.ahead > 0 {
+                if preferences.advanced && (state.behind > 0 || state.ahead > 0) {
                     HStack(spacing: 4) {
                         if state.behind > 0 {
                             Text("↓\(state.behind)").foregroundStyle(Theme.warning)
@@ -566,9 +594,10 @@ struct BranchPicker: View {
     }
 
     private var filteredBranches: [BranchInfo] {
+        let pool = preferences.advanced ? analysis.branches : analysis.branches.filter { !$0.isRemote }
         let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return analysis.branches }
-        return analysis.branches.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        guard !trimmed.isEmpty else { return pool }
+        return pool.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
     private var popoverContent: some View {
@@ -693,9 +722,6 @@ struct SidebarView: View {
     @Environment(AppPreferences.self) private var preferences
     @Environment(\.openSettings) private var openSettings
 
-    private var repositoryScreens: [NavigationStore.Screen] { NavigationStore.repositoryScreens }
-    private var analysisScreens: [NavigationStore.Screen] { session.analysisScreens }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
@@ -715,11 +741,16 @@ struct SidebarView: View {
                 .padding(.bottom, Theme.Space.l)
 
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(repositoryScreens, id: \.self, content: navButton)
-                Text("ANALYSIS")
-                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
-                    .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.l).padding(.bottom, 4)
-                ForEach(analysisScreens, id: \.self, content: navButton)
+                if preferences.advanced {
+                    sidebarHeading("WORKSPACE", topPadding: 0)
+                    ForEach(NavigationStore.workspaceScreens, id: \.self, content: navButton)
+                    sidebarHeading("HISTORY", topPadding: Theme.Space.l)
+                    ForEach(NavigationStore.historyScreens, id: \.self, content: navButton)
+                    sidebarHeading("ANALYSIS", topPadding: Theme.Space.l)
+                    ForEach(NavigationStore.analysisOnlyScreens, id: \.self, content: navButton)
+                } else {
+                    ForEach(NavigationStore.standardScreens, id: \.self, content: navButton)
+                }
             }
             .padding(.horizontal, Theme.Space.s)
             .disabled(session.analysis == nil)
@@ -730,7 +761,7 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HairlineDivider().padding(.bottom, Theme.Space.s)
                 NavButton(title: "Settings", systemImage: "gearshape", selected: false) { openSettings() }
-                Text(preferences.advanced ? "Advanced · in-depth analysis" : "Standard · essential information")
+                Text(preferences.advanced ? "Advanced · full git & telemetry" : "Standard · everyday git")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                     .padding(.horizontal, Theme.Space.m).padding(.top, 4)
             }
@@ -740,8 +771,18 @@ struct SidebarView: View {
         .background(Theme.sidebar)
     }
 
+    private func sidebarHeading(_ text: String, topPadding: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+            .padding(.horizontal, Theme.Space.m).padding(.top, topPadding).padding(.bottom, 4)
+    }
+
     private func navButton(_ screen: NavigationStore.Screen) -> some View {
-        NavButton(title: screen.title, systemImage: screen.symbol, selected: session.navigation.screen == screen) {
+        NavButton(
+            title: screen.displayTitle(advanced: preferences.advanced),
+            systemImage: screen.symbol,
+            selected: session.navigation.screen == screen
+        ) {
             session.show(screen)
         }
     }
@@ -859,6 +900,13 @@ struct WelcomeScreen: View {
                     .buttonStyle(PrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
                 Text("or drop a project folder here").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                ModeSwitch()
+                Text(session.preferences.advanced
+                     ? "Advanced: full git staging, blame time-travel, graph, and hotspots."
+                     : "Standard: clean everyday workflow for commits, branches, and files.")
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.inkMuted)
+                    .multilineTextAlignment(.center)
                 let recent = RecentRepositories.all()
                 if !recent.isEmpty {
                     HairlineDivider().padding(.vertical, Theme.Space.xs)

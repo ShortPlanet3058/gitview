@@ -6,6 +6,7 @@ import GitViewGit
 /// thing GitView knows and a commit viewer normally cannot tell you.
 struct CommitDetailPanel: View {
     @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
     @Environment(RiskStore.self) private var risk
     @Environment(InspectorStore.self) private var inspector
     let commit: Commit
@@ -29,7 +30,9 @@ struct CommitDetailPanel: View {
                     if let body = detail?.body, !body.isEmpty {
                         bodyCard(body)
                     }
-                    functionsCard
+                    if preferences.advanced {
+                        functionsCard
+                    }
                     filesCard
                 }
                 .padding(Theme.Space.l)
@@ -44,7 +47,13 @@ struct CommitDetailPanel: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             HStack {
-                ShaChip(sha: commit.sha)
+                if preferences.advanced {
+                    ShaChip(sha: commit.sha)
+                } else {
+                    Text("Saved snapshot")
+                        .font(Theme.Text.caption.weight(.semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                }
                 Spacer()
                 Button { session.navigation.selectedCommitSHA = nil } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
@@ -61,7 +70,7 @@ struct CommitDetailPanel: View {
                     HStack(spacing: Theme.Space.xs) {
                         Text(commit.author).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
                         let email = detail?.authorEmail ?? commit.email
-                        if !email.isEmpty {
+                        if preferences.advanced && !email.isEmpty {
                             Text("<\(email)>").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                                 .textSelection(.enabled)
                         }
@@ -70,7 +79,7 @@ struct CommitDetailPanel: View {
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
             }
-            if let parents = detail?.parents, !parents.isEmpty {
+            if preferences.advanced, let parents = detail?.parents, !parents.isEmpty {
                 HStack(spacing: Theme.Space.xs) {
                     Text(parents.count == 1 ? "Parent" : "Parents")
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -88,17 +97,21 @@ struct CommitDetailPanel: View {
                     }
                 }
             }
-            HStack(spacing: Theme.Space.s) {
-                Button("Copy SHA") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(commit.sha, forType: .string)
-                }
-                .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
-                if let web = session.analysis?.info.remoteWebURL {
-                    Button("View on \(web.host ?? "remote")") {
-                        NSWorkspace.shared.open(web.appendingPathComponent("commit").appendingPathComponent(commit.sha))
+            if preferences.advanced || session.analysis?.info.remoteWebURL != nil {
+                HStack(spacing: Theme.Space.s) {
+                    if preferences.advanced {
+                        Button("Copy SHA") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(commit.sha, forType: .string)
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                     }
-                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    if let web = session.analysis?.info.remoteWebURL {
+                        Button("View on \(web.host ?? "remote")") {
+                            NSWorkspace.shared.open(web.appendingPathComponent("commit").appendingPathComponent(commit.sha))
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    }
                 }
             }
         }
