@@ -223,6 +223,13 @@ public final class AppPreferences {
         }
     }
 
+    public var wrapCodeLines: Bool {
+        didSet {
+            defaults.set(wrapCodeLines, forKey: "wrapCodeLines")
+            notify(.environment)
+        }
+    }
+
     public var autoFetchInterval: AutoFetchInterval {
         didSet {
             defaults.set(autoFetchInterval.rawValue, forKey: "autoFetchInterval")
@@ -256,6 +263,7 @@ public final class AppPreferences {
             .flatMap(AppearanceMode.init(rawValue:)) ?? .system
         let storedFontSize = defaults.object(forKey: "codeFontSize") as? Double ?? Self.defaultCodeFontSize
         self.codeFontSize = min(max(storedFontSize, Self.codeFontSizeRange.lowerBound), Self.codeFontSizeRange.upperBound)
+        self.wrapCodeLines = defaults.object(forKey: "wrapCodeLines") as? Bool ?? true
         let storedAutoFetch = defaults.object(forKey: "autoFetchInterval") as? Int ?? 0
         self.autoFetchInterval = AutoFetchInterval(rawValue: storedAutoFetch) ?? .off
     }

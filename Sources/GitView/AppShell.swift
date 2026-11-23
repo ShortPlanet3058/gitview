@@ -389,28 +389,51 @@ struct RepositoryPicker: View {
 struct RepositoryMenu: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
+    @Environment(\.openWindow) private var openWindow
     let analysis: RepositoryAnalysis
     let dismiss: () -> Void
 
-    private var others: [URL] {
-        RecentRepositories.all().filter {
-            $0.standardizedFileURL != analysis.root.standardizedFileURL
-        }
+    @State private var pinRevision = 0
+    @State private var quickStatuses: [String: RepositoryQuickStatus] = [:]
+
+    private var currentPath: String {
+        analysis.root.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func isSameRepo(_ url: URL) -> Bool {
+        url.resolvingSymlinksInPath().standardizedFileURL.path == currentPath
+    }
+
+    private var repoSections: (pinned: [URL], recent: [URL]) {
+        _ = pinRevision
+        let all = RecentRepositories.ordered()
+        return (
+            all.pinned.filter { !isSameRepo($0) },
+            Array(all.recent.filter { !isSameRepo($0) }.prefix(6))
+        )
     }
 
     var body: some View {
+        let sections = repoSections
         VStack(alignment: .leading, spacing: 0) {
             heading("OPEN")
             row(name: analysis.root.lastPathComponent,
                 detail: analysis.root.deletingLastPathComponent().path,
-                checked: true) {}
+                checked: true,
+                showPinButton: true,
+                isPinned: RecentRepositories.isPinned(analysis.root),
+                status: quickStatuses[analysis.root.standardizedFileURL.path],
+                onTogglePin: {
+                    RecentRepositories.togglePin(analysis.root)
+                    pinRevision += 1
+                }) {}
 
             if preferences.advanced && analysis.info.worktrees.count > 1 {
                 heading("WORKTREES")
-                let currentPath = analysis.root.standardizedFileURL.path
+                let activeWTPath = analysis.root.standardizedFileURL.path
                 ForEach(analysis.info.worktrees) { worktree in
                     let url = URL(fileURLWithPath: worktree.path)
-                    let isActive = url.standardizedFileURL.path == currentPath
+                    let isActive = url.standardizedFileURL.path == activeWTPath
                     let branchLabel = worktree.branch ?? "detached (\(String(worktree.headSHA.prefix(7))))"
                     row(name: url.lastPathComponent,
                         detail: "\(branchLabel) · \(worktree.path)",
@@ -421,17 +444,17 @@ struct RepositoryMenu: View {
                 }
             }
 
-            if !others.isEmpty {
+            if !sections.pinned.isEmpty {
+                heading("PINNED")
+                ForEach(sections.pinned, id: \.path) { url in
+                    repoEntryRow(url, isPinned: true)
+                }
+            }
+
+            if !sections.recent.isEmpty {
                 heading("RECENT")
-                // Capped: this is a switcher, not a file browser. Everything ever opened is
-                // in File ▸ Open Recent.
-                ForEach(others.prefix(6), id: \.path) { url in
-                    row(name: url.lastPathComponent,
-                        detail: url.deletingLastPathComponent().path,
-                        checked: false) {
-                        dismiss()
-                        session.open(url: url)
-                    }
+                ForEach(sections.recent, id: \.path) { url in
+                    repoEntryRow(url, isPinned: false)
                 }
             }
 
@@ -442,7 +465,7 @@ struct RepositoryMenu: View {
                 chooseRepository(into: session)
             }
             if preferences.advanced {
-                action("Manage Remotes & Worktrees…", "externaldrive.connected.to.line.below") {
+                action("Manage Remotes, Worktrees & Submodules…", "externaldrive.connected.to.line.below") {
                     dismiss()
                     session.navigation.isManageRepoSheetPresented = true
                 }
@@ -452,8 +475,43 @@ struct RepositoryMenu: View {
             action("Copy Path", "doc.on.clipboard") { dismiss(); copyToPasteboard(analysis.root.path) }
         }
         .padding(Theme.Space.s)
-        .frame(width: 320)
+        .frame(width: 340)
         .background(Theme.surface)
+        .task(id: pinRevision) {
+            let targets = [analysis.root] + sections.pinned + sections.recent
+            quickStatuses = await fetchQuickStatuses(for: targets)
+        }
+    }
+
+    private func repoEntryRow(_ url: URL, isPinned: Bool) -> some View {
+        row(name: url.lastPathComponent,
+            detail: url.deletingLastPathComponent().path,
+            checked: false,
+            showPinButton: true,
+            isPinned: isPinned,
+            status: quickStatuses[url.standardizedFileURL.path],
+            onTogglePin: {
+                RecentRepositories.togglePin(url)
+                pinRevision += 1
+            }) {
+            dismiss()
+            session.open(url: url)
+        }
+        .contextMenu {
+            Button("Open in New Tab") {
+                ExternalOpenRouter.shared.enqueueNewWindow(url)
+                dismiss()
+                openWorkspaceTab(openWindow: openWindow)
+            }
+            Button(isPinned ? "Unpin Repository" : "Pin Repository") {
+                RecentRepositories.togglePin(url)
+                pinRevision += 1
+            }
+            Button("Reveal in Finder") {
+                dismiss()
+                revealInFinder(url)
+            }
+        }
     }
 
     private func heading(_ text: String) -> some View {
@@ -466,20 +524,40 @@ struct RepositoryMenu: View {
             .padding(.bottom, 2)
     }
 
-    private func row(name: String, detail: String, checked: Bool,
-                     action: @escaping () -> Void) -> some View {
+    private func row(
+        name: String,
+        detail: String,
+        checked: Bool,
+        showPinButton: Bool = false,
+        isPinned: Bool = false,
+        status: RepositoryQuickStatus? = nil,
+        onTogglePin: (() -> Void)? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         MenuRow(action: action) {
             HStack(spacing: Theme.Space.s) {
                 Image(systemName: checked ? "checkmark.circle.fill" : "folder.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(checked ? Theme.accent : Theme.inkMuted)
                     .frame(width: 14)
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(name).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
                     Text(detail).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         .lineLimit(1).truncationMode(.head)
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
+                if let status {
+                    RepoQuickStatusPills(status: status)
+                }
+                if showPinButton, let onTogglePin {
+                    Button(action: onTogglePin) {
+                        Image(systemName: isPinned ? "star.fill" : "star")
+                            .font(.system(size: 10))
+                            .foregroundStyle(isPinned ? Theme.warning : Theme.inkMuted.opacity(0.65))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isPinned ? "Unpin repository" : "Pin repository")
+                }
             }
         }
     }
@@ -1060,11 +1138,78 @@ struct Page<Content: View>: View {
 
 // MARK: - Welcome / loading / failed
 
-struct WelcomeScreen: View {
-    @Environment(WorkspaceSession.self) private var session
-    @State private var targeted = false
+struct RepoQuickStatusPills: View {
+    let status: RepositoryQuickStatus
 
     var body: some View {
+        HStack(spacing: 4) {
+            if let branch = status.branch, !branch.isEmpty {
+                Text(branch)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.inkSoft)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Theme.wash, in: Capsule())
+            }
+            if status.dirtyCount > 0 {
+                Text("\(status.dirtyCount)")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.warning)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Theme.warning.opacity(0.14), in: Capsule())
+                    .help("\(status.dirtyCount) uncommitted change\(status.dirtyCount == 1 ? "" : "s")")
+            }
+            if status.ahead > 0 {
+                Text("↑\(status.ahead)")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.good)
+            }
+            if status.behind > 0 {
+                Text("↓\(status.behind)")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.serious)
+            }
+        }
+    }
+}
+
+private func fetchQuickStatuses(for urls: [URL]) async -> [String: RepositoryQuickStatus] {
+    var unique: [URL] = []
+    var seen: Set<String> = []
+    for url in urls {
+        let key = url.standardizedFileURL.path
+        if seen.insert(key).inserted {
+            unique.append(url)
+        }
+    }
+    return await Task.detached(priority: .utility) {
+        var result: [String: RepositoryQuickStatus] = [:]
+        for url in unique {
+            if let status = GitRepository(url: url).quickStatus() {
+                result[url.standardizedFileURL.path] = status
+            }
+        }
+        return result
+    }.value
+}
+
+struct WelcomeScreen: View {
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(\.openWindow) private var openWindow
+    @State private var targeted = false
+    @State private var pinRevision = 0
+    @State private var quickStatuses: [String: RepositoryQuickStatus] = [:]
+
+    private var repoSections: (pinned: [URL], recent: [URL]) {
+        _ = pinRevision
+        let ordered = RecentRepositories.ordered()
+        return (ordered.pinned, Array(ordered.recent.prefix(6)))
+    }
+
+    var body: some View {
+        let sections = repoSections
         VStack(spacing: Theme.Space.xl) {
             Spacer()
             Image(systemName: "arrow.triangle.branch")
@@ -1100,31 +1245,27 @@ struct WelcomeScreen: View {
                     .font(Theme.Text.caption)
                     .foregroundStyle(Theme.inkMuted)
                     .multilineTextAlignment(.center)
-                let recent = RecentRepositories.all()
-                if !recent.isEmpty {
+                if !sections.pinned.isEmpty {
+                    HairlineDivider().padding(.vertical, Theme.Space.xs)
+                    Text("PINNED").font(Theme.Text.caption.weight(.semibold)).foregroundStyle(Theme.inkMuted)
+                    VStack(spacing: 2) {
+                        ForEach(sections.pinned, id: \.path) { url in
+                            welcomeRepoRow(url, isPinned: true)
+                        }
+                    }
+                }
+                if !sections.recent.isEmpty {
                     HairlineDivider().padding(.vertical, Theme.Space.xs)
                     Text("RECENT").font(Theme.Text.caption.weight(.semibold)).foregroundStyle(Theme.inkMuted)
                     VStack(spacing: 2) {
-                        ForEach(recent.prefix(5), id: \.path) { url in
-                            Button { session.open(url: url) } label: {
-                                HStack(spacing: Theme.Space.s) {
-                                    Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
-                                    Text(url.lastPathComponent).font(Theme.Text.body).foregroundStyle(Theme.ink)
-                                    Spacer()
-                                    Text(url.deletingLastPathComponent().lastPathComponent + "/")
-                                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                                        .lineLimit(1).truncationMode(.head)
-                                }
-                                .padding(.horizontal, Theme.Space.s).padding(.vertical, 6)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                        ForEach(sections.recent, id: \.path) { url in
+                            welcomeRepoRow(url, isPinned: false)
                         }
                     }
                 }
             }
             .padding(Theme.Space.xxl)
-            .frame(maxWidth: 480)
+            .frame(maxWidth: 520)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                     .strokeBorder(targeted ? Theme.accent : Theme.hairline,
@@ -1144,6 +1285,52 @@ struct WelcomeScreen: View {
                 .padding(.bottom, Theme.Space.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: pinRevision) {
+            quickStatuses = await fetchQuickStatuses(for: sections.pinned + sections.recent)
+        }
+    }
+
+    private func welcomeRepoRow(_ url: URL, isPinned: Bool) -> some View {
+        HStack(spacing: Theme.Space.s) {
+            Button { session.open(url: url) } label: {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+                    Text(url.lastPathComponent).font(Theme.Text.body).foregroundStyle(Theme.ink)
+                    if let status = quickStatuses[url.standardizedFileURL.path] {
+                        RepoQuickStatusPills(status: status)
+                    }
+                    Spacer()
+                    Text(url.deletingLastPathComponent().lastPathComponent + "/")
+                        .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1).truncationMode(.head)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                RecentRepositories.togglePin(url)
+                pinRevision += 1
+            } label: {
+                Image(systemName: isPinned ? "star.fill" : "star")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isPinned ? Theme.warning : Theme.inkMuted.opacity(0.65))
+            }
+            .buttonStyle(.plain)
+            .help(isPinned ? "Unpin repository" : "Pin repository")
+        }
+        .padding(.horizontal, Theme.Space.s).padding(.vertical, 6)
+        .contextMenu {
+            Button("Open in New Tab") {
+                ExternalOpenRouter.shared.enqueueNewWindow(url)
+                openWorkspaceTab(openWindow: openWindow)
+            }
+            Button(isPinned ? "Unpin Repository" : "Pin Repository") {
+                RecentRepositories.togglePin(url)
+                pinRevision += 1
+            }
+            Button("Reveal in Finder") { revealInFinder(url) }
+        }
     }
 }
 
@@ -1225,6 +1412,7 @@ struct KeyboardShortcutsOverlay: View {
             ("⌘F", "Filter current list or find in diff"),
             ("⌘⇧F", "Find across entire repository"),
             ("⌘L", "Go to line (in Files)"),
+            ("[ / ]", "Jump to previous / next diff hunk"),
         ]),
         ShortcutGroup(id: "changes", title: "Changes Workspace", items: [
             ("↑ / ↓", "Move between changed files"),
@@ -1233,6 +1421,7 @@ struct KeyboardShortcutsOverlay: View {
             ("⌘⏎", "Commit included changes"),
         ]),
         ShortcutGroup(id: "app", title: "Application", items: [
+            ("⌘T", "Open new repository tab"),
             ("⌘=", "Larger code & diff font"),
             ("⌘−", "Smaller code & diff font"),
             ("⌘0", "Reset code & diff font"),

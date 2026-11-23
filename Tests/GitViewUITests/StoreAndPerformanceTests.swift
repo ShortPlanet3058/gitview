@@ -663,4 +663,66 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertFalse(store.commandLog.isEmpty)
         XCTAssertFalse(store.hasRecentFailure)
     }
+
+    @MainActor
+    func testWrapCodeLinesPreferenceDiffRangeSelectorAndCLILauncher() throws {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        XCTAssertTrue(prefs.wrapCodeLines)
+        prefs.wrapCodeLines = false
+        let reloaded = AppPreferences(defaults: defaults)
+        XCTAssertFalse(reloaded.wrapCodeLines)
+
+        let ids = [10, 11, 12, 13, 14]
+        let single = DiffLineRangeSelector.toggledSelection(
+            current: [],
+            lastClickedID: nil,
+            clickedID: 11,
+            selectableIDsInHunk: ids,
+            shiftPressed: false
+        )
+        XCTAssertEqual(single, [11])
+
+        let forwardRange = DiffLineRangeSelector.toggledSelection(
+            current: single,
+            lastClickedID: 11,
+            clickedID: 13,
+            selectableIDsInHunk: ids,
+            shiftPressed: true
+        )
+        XCTAssertEqual(forwardRange, [11, 12, 13])
+
+        let backwardRange = DiffLineRangeSelector.toggledSelection(
+            current: [13],
+            lastClickedID: 13,
+            clickedID: 10,
+            selectableIDsInHunk: ids,
+            shiftPressed: true
+        )
+        XCTAssertEqual(backwardRange, [10, 11, 12, 13])
+
+        // CLILauncher install / detect / uninstall safety in an isolated temporary directory
+        let binDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-bin-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: binDir) }
+
+        let installed = try CLILauncher.install(into: binDir, appPath: "/Applications/GitView.app")
+        XCTAssertEqual(installed.lastPathComponent, "gitview")
+        XCTAssertEqual(CLILauncher.installedPath(searchDirectories: [binDir])?.standardizedFileURL,
+                       installed.standardizedFileURL)
+        let content = try String(contentsOf: installed, encoding: .utf8)
+        XCTAssertTrue(content.contains(CLILauncher.marker))
+        XCTAssertTrue(content.contains("/Applications/GitView.app"))
+
+        try CLILauncher.uninstall(from: installed)
+        XCTAssertNil(CLILauncher.installedPath(searchDirectories: [binDir]))
+
+        let foreign = binDir.appendingPathComponent("gitview")
+        try "#!/bin/sh\necho foreign\n".write(to: foreign, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try CLILauncher.uninstall(from: foreign))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
+    }
 }

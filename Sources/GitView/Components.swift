@@ -518,6 +518,7 @@ extension EnvironmentValues {
 /// Vertical ScrollView that degrades to a fixed stack under static rendering.
 struct ScrollColumn<Content: View>: View {
     @Environment(\.staticRendering) private var staticRendering
+    var axes: Axis.Set = .vertical
     var showsIndicators = true
     @ViewBuilder let content: Content
     var body: some View {
@@ -530,8 +531,12 @@ struct ScrollColumn<Content: View>: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
         } else {
-            ScrollView(showsIndicators: showsIndicators) {
-                content.frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(axes, showsIndicators: showsIndicators) {
+                if axes.contains(.horizontal) {
+                    content.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                } else {
+                    content.frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }

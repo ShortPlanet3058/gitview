@@ -6,6 +6,8 @@ import GitViewCore
 public struct SettingsView: View {
     @Bindable private var preferences: AppPreferences
     @State private var cacheBytes: Int64 = AnalysisCache.sizeOnDisk()
+    @State private var cliPath: URL? = CLILauncher.installedPath()
+    @State private var cliStatusMessage: String?
 
     public init(preferences: AppPreferences) {
         self.preferences = preferences
@@ -151,6 +153,49 @@ public struct SettingsView: View {
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
+
+                        HairlineDivider()
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: Theme.Space.s) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Command-Line Tool (gitview)")
+                                        .font(Theme.Text.body)
+                                        .foregroundStyle(Theme.ink)
+                                    Text(cliPath.map { "Installed at \($0.path)" } ?? "Not installed")
+                                        .font(Theme.Text.caption)
+                                        .foregroundStyle(Theme.inkMuted)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                Button(cliPath == nil ? "Install" : "Reinstall") {
+                                    installCLILauncher()
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .controlSize(.small)
+                                if cliPath != nil {
+                                    Button("Remove") {
+                                        removeCLILauncher()
+                                    }
+                                    .buttonStyle(SecondaryButtonStyle())
+                                    .controlSize(.small)
+                                }
+                            }
+                            if let cliStatusMessage {
+                                Text(cliStatusMessage)
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkSoft)
+                            } else if let cliPath, cliPath.path.contains(".local/bin") {
+                                Text("Run gitview . from Terminal (ensure ~/.local/bin is in your PATH).")
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkMuted)
+                            } else {
+                                Text("Launch GitView from Terminal using: gitview .")
+                                    .font(Theme.Text.caption)
+                                    .foregroundStyle(Theme.inkMuted)
+                            }
+                        }
                     }
                 }
 
@@ -214,7 +259,31 @@ public struct SettingsView: View {
         }
         .frame(width: 560, height: 640)
         .background(Theme.page)
-        .onAppear { cacheBytes = AnalysisCache.sizeOnDisk() }
+        .onAppear {
+            cacheBytes = AnalysisCache.sizeOnDisk()
+            cliPath = CLILauncher.installedPath()
+        }
+    }
+
+    private func installCLILauncher() {
+        do {
+            let installed = try CLILauncher.install()
+            cliPath = installed
+            cliStatusMessage = "Installed gitview command to \(installed.path)"
+        } catch {
+            cliStatusMessage = "Could not install: \(error.localizedDescription)"
+        }
+    }
+
+    private func removeCLILauncher() {
+        guard let cliPath else { return }
+        do {
+            try CLILauncher.uninstall(from: cliPath)
+            self.cliPath = CLILauncher.installedPath()
+            cliStatusMessage = "Removed gitview launcher"
+        } catch {
+            cliStatusMessage = "Could not remove: \(error.localizedDescription)"
+        }
     }
 
     private var halfLifeCaption: String {

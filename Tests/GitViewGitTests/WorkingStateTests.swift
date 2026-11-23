@@ -121,4 +121,31 @@ final class WorkingStateParserTests: XCTestCase {
     func testGarbageDoesNotCrash() {
         XCTAssertNoThrow(WorkingStateParser.parse(porcelain: "nonsense\0\01 bad\0", stashList: "x", operation: nil))
     }
+
+    func testRepositoryQuickStatusReadsBranchAndDirtyCount() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("gitview-quickstatus-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: root)
+        try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: root)
+        try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: root)
+        try "initial\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try GitProcess.capture(arguments: ["add", "tracked.txt"], in: root)
+        try GitProcess.capture(arguments: ["commit", "-qm", "init"], in: root)
+
+        let repo = GitRepository(url: root)
+        let clean = try XCTUnwrap(repo.quickStatus())
+        XCTAssertEqual(clean.branch, "main")
+        XCTAssertEqual(clean.dirtyCount, 0)
+        XCTAssertEqual(clean.ahead, 0)
+        XCTAssertEqual(clean.behind, 0)
+
+        try "changed\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try "untracked\n".write(to: root.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        let dirty = try XCTUnwrap(repo.quickStatus())
+        XCTAssertEqual(dirty.branch, "main")
+        XCTAssertEqual(dirty.dirtyCount, 2)
+    }
 }
