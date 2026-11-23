@@ -7,6 +7,7 @@ import GitViewParse
 struct FilesScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
+    @AppStorage("gitview.filesTreeWidth") private var filesTreeWidth: Double = 280
     @State private var expanded: Set<String> = [""]
     @State private var selectedPath: String? = nil
     @State private var query = ""
@@ -30,11 +31,12 @@ struct FilesScreen: View {
             let pending = session.navigation.pendingFileSelection.flatMap { wanted in
                 tree.node(at: wanted)?.path ?? tree.firstNode(matching: wanted)?.path
             }
-            let chosen = selectedPath ?? pending
+            let chosen = pending ?? selectedPath
             let selectedNode = chosen.flatMap { tree.node(at: $0) }
             let openFolders = expanded.union(pending.map(Self.ancestors) ?? [])
             let visible = tree.visibleNodes(expanded: openFolders, filter: query)
             let isViewingFile = selectedNode.map { !$0.isDirectory } ?? false
+            let clampedTreeWidth = min(max(filesTreeWidth, 220), 460)
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
@@ -55,7 +57,7 @@ struct FilesScreen: View {
                 }
                 .padding(.horizontal, Theme.Space.xl).padding(.top, Theme.Space.xl).padding(.bottom, Theme.Space.l)
 
-                HStack(alignment: .top, spacing: Theme.Space.l) {
+                HStack(alignment: .top, spacing: isViewingFile ? Theme.Space.xs : Theme.Space.l) {
                     Card(padding: Theme.Space.s) {
                         ScrollColumn {
                             LazyVStack(spacing: 0) {
@@ -69,6 +71,7 @@ struct FilesScreen: View {
                                         if node.isDirectory {
                                             if expanded.contains(node.path) { expanded.remove(node.path) } else { expanded.insert(node.path) }
                                         }
+                                        session.navigation.pendingFileSelection = nil
                                         selectedPath = node.path
                                     }
                                     .contextMenu {
@@ -85,8 +88,12 @@ struct FilesScreen: View {
                             }
                         }
                     }
-                    .frame(width: isViewingFile ? 280 : nil)
-                    .frame(maxWidth: isViewingFile ? 280 : .infinity)
+                    .frame(width: isViewingFile ? clampedTreeWidth : nil)
+                    .frame(maxWidth: isViewingFile ? clampedTreeWidth : .infinity)
+
+                    if isViewingFile {
+                        VerticalPaneResizer(width: $filesTreeWidth, range: 220...460, invertDrag: false)
+                    }
 
                     if let fileNode = selectedNode, !fileNode.isDirectory {
                         FileContentWorkspace(
@@ -116,12 +123,27 @@ struct FilesScreen: View {
                 }
                 .padding(.horizontal, Theme.Space.xl).padding(.bottom, Theme.Space.xl)
             }
+            .onAppear {
+                if let pending {
+                    selectedPath = pending
+                    expanded.formUnion(Self.ancestors(of: pending))
+                    session.navigation.pendingFileSelection = nil
+                }
+            }
+            .onChange(of: session.navigation.pendingFileSelection) { _, newValue in
+                guard let newValue,
+                      let resolved = tree.node(at: newValue)?.path ?? tree.firstNode(matching: newValue)?.path else { return }
+                selectedPath = resolved
+                expanded.formUnion(Self.ancestors(of: resolved))
+                session.navigation.pendingFileSelection = nil
+            }
         }
     }
 }
 
 private struct FileContentWorkspace: View {
     enum Mode: String, CaseIterable {
+        case preview = "Preview"
         case code = "Code"
         case blame = "Blame"
         case overview = "Overview"
@@ -136,6 +158,7 @@ private struct FileContentWorkspace: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
     @Environment(InspectorStore.self) private var inspector
+    @Environment(\.staticRendering) private var staticRendering
     let node: FileTree.Node
     let root: URL
     let inventory: FileInventory
@@ -146,6 +169,7 @@ private struct FileContentWorkspace: View {
     @State private var filterMatchesOnly = false
     @State private var codeLines: [String] = []
     @State private var codeSpans: [[HighlightSpan]] = []
+    @State private var imageData: Data?
     @State private var isBinaryFile = false
     @State private var isTruncatedFile = false
     @State private var fileLoading = false
@@ -153,6 +177,34 @@ private struct FileContentWorkspace: View {
 
     @State private var blameStack: [(path: String, revision: String)] = []
     @State private var blameSpans: [[HighlightSpan]] = []
+
+    @State private var highlightedLine: Int?
+    @State private var scrollTargetLine: Int?
+    @State private var scrollTrigger = 0
+    @State private var showingGoToLine = false
+    @State private var goToLineText = ""
+
+    private var fileExtension: String {
+        URL(fileURLWithPath: node.path).pathExtension.lowercased()
+    }
+
+    private var isMarkdownFile: Bool {
+        fileExtension == "md" || fileExtension == "markdown"
+    }
+
+    private var isImageFile: Bool {
+        GitRepository.supportedImageExtensions.contains(fileExtension) || fileExtension == "svg"
+    }
+
+    private var hasRenderableImage: Bool {
+        imageData.flatMap(NSImage.init(data:)) != nil
+    }
+
+    private var fileUnits: [CodeUnit] {
+        (session.analysis?.allUnits ?? [])
+            .filter { $0.filePath == node.path }
+            .sorted { $0.lineRange.lowerBound < $1.lineRange.lowerBound }
+    }
 
     private var activeBlamePath: String { blameStack.last?.path ?? node.path }
     private var activeBlameRevision: String? { blameStack.last?.revision }
@@ -170,7 +222,7 @@ private struct FileContentWorkspace: View {
         Card(padding: 0) {
             VStack(spacing: 0) {
                 header
-                if mode == .code || mode == .blame {
+                if (mode == .code || mode == .blame) && !hasRenderableImage {
                     HairlineDivider()
                     searchStrip
                 }
@@ -195,10 +247,30 @@ private struct FileContentWorkspace: View {
         .onChange(of: preferences.advanced) { _, isAdvanced in
             if !isAdvanced && mode == .blame { mode = .code }
         }
+        .onChange(of: session.navigation.pendingFileLine) { _, newValue in
+            guard let newValue, !fileLoading, !codeLines.isEmpty else { return }
+            jumpToLine(newValue)
+            session.navigation.pendingFileLine = nil
+        }
+        .onChange(of: session.navigation.focusGoToLineRequest) { _, newValue in
+            guard newValue > 0, !hasRenderableImage, !isBinaryFile else { return }
+            goToLineText = highlightedLine.map(String.init) ?? ""
+            showingGoToLine = true
+        }
     }
 
     private var blameTaskKey: String {
         "\(mode == .blame ? "B" : "C"):\(activeBlameRevision ?? "WORKTREE"):\(activeBlamePath)"
+    }
+
+    private func jumpToLine(_ line: Int) {
+        let clamped = max(1, min(line, max(codeLines.count, activeBlame?.lines.count ?? line)))
+        if mode == .overview || mode == .preview {
+            mode = .code
+        }
+        highlightedLine = clamped
+        scrollTargetLine = clamped
+        scrollTrigger += 1
     }
 
     private var header: some View {
@@ -214,7 +286,14 @@ private struct FileContentWorkspace: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer()
-            let availableModes: [Mode] = preferences.advanced ? Mode.allCases : [.code, .overview]
+            let availableModes: [Mode] = {
+                var items: [Mode] = []
+                if isMarkdownFile && !isBinaryFile { items.append(.preview) }
+                items.append(.code)
+                if preferences.advanced && !hasRenderableImage { items.append(.blame) }
+                items.append(.overview)
+                return items
+            }()
             SegmentPicker(
                 options: availableModes.map { ($0, $0.rawValue) },
                 selection: $mode
@@ -236,10 +315,11 @@ private struct FileContentWorkspace: View {
             }
             return activeBlame?.lines.count(where: { $0.text.localizedCaseInsensitiveContains(query) }) ?? 0
         }()
+        let units = fileUnits
         return HStack(spacing: Theme.Space.s) {
             SearchField(text: $codeSearchQuery, prompt: "Find in file…",
                         focusTrigger: session.navigation.focusLocalFindRequest)
-                .frame(maxWidth: 260)
+                .frame(maxWidth: 240)
             if !query.isEmpty {
                 Text("\(matchesCount) line\(matchesCount == 1 ? "" : "s")")
                     .font(Theme.Text.caption.monospacedDigit())
@@ -250,6 +330,51 @@ private struct FileContentWorkspace: View {
                     .foregroundStyle(Theme.inkSoft)
             }
             Spacer()
+            if !units.isEmpty {
+                if staticRendering {
+                    HStack(spacing: 4) {
+                        Image(systemName: "curlybraces")
+                            .font(.system(size: 10))
+                        Text("Symbols (\(units.count))")
+                            .font(Theme.Text.caption)
+                    }
+                    .foregroundStyle(Theme.inkSoft)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+                } else {
+                    Menu {
+                        ForEach(units) { unit in
+                            Button("\(unit.name)  :\(unit.lineRange.lowerBound)") {
+                                jumpToLine(unit.lineRange.lowerBound)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "curlybraces")
+                                .font(.system(size: 10))
+                            Text("Symbols (\(units.count))")
+                                .font(Theme.Text.caption)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+                    .help("Jump to a function or symbol in this file")
+                }
+            }
+            Button {
+                goToLineText = highlightedLine.map(String.init) ?? ""
+                showingGoToLine = true
+            } label: {
+                Label("Line", systemImage: "arrow.down.to.line")
+            }
+            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+            .help("Go to line (⌘L)")
+            .popover(isPresented: $showingGoToLine, arrowEdge: .bottom) {
+                goToLinePopover
+            }
             if mode == .blame, let blame = activeBlame {
                 Text("\(blame.totalLines.formatted()) lines · \(blame.authors.count) author\(blame.authors.count == 1 ? "" : "s")")
                     .font(Theme.Text.caption.monospacedDigit())
@@ -258,6 +383,39 @@ private struct FileContentWorkspace: View {
         }
         .padding(.horizontal, Theme.Space.l).padding(.vertical, Theme.Space.s)
         .background(Theme.wash)
+    }
+
+    private var goToLinePopover: some View {
+        let maxLine = max(codeLines.count, activeBlame?.lines.count ?? 1)
+        let parsed = Int(goToLineText.trimmingCharacters(in: .whitespacesAndNewlines))
+        let isValid = parsed.map { $0 >= 1 && $0 <= maxLine } ?? false
+        return VStack(alignment: .leading, spacing: Theme.Space.s) {
+            Text("Go to Line (1–\(maxLine))")
+                .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            TextField("Line number", text: $goToLineText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    if let parsed, isValid {
+                        showingGoToLine = false
+                        jumpToLine(parsed)
+                    }
+                }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingGoToLine = false }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                Button("Go") {
+                    if let parsed, isValid {
+                        showingGoToLine = false
+                        jumpToLine(parsed)
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                .disabled(!isValid)
+            }
+        }
+        .padding(Theme.Space.m)
+        .frame(width: 240)
     }
 
     private var blameBreadcrumb: some View {
@@ -285,6 +443,8 @@ private struct FileContentWorkspace: View {
     @ViewBuilder
     private var workspaceBody: some View {
         switch mode {
+        case .preview:
+            MarkdownDocumentView(source: codeLines.joined(separator: "\n"))
         case .code:
             codeView
         case .blame:
@@ -303,8 +463,10 @@ private struct FileContentWorkspace: View {
 
     @ViewBuilder
     private var codeView: some View {
-        if fileLoading && codeLines.isEmpty {
+        if fileLoading && codeLines.isEmpty && imageData == nil {
             centeredProgress("Reading \(node.name)…")
+        } else if let imageData, let nsImage = NSImage(data: imageData) {
+            imagePreviewView(nsImage: nsImage, data: imageData)
         } else if isBinaryFile {
             centeredMessage("Binary file", "No text preview available.")
         } else if let fileReadError {
@@ -317,38 +479,91 @@ private struct FileContentWorkspace: View {
                 : indexed
             let lineNumWidth = max(48, CGFloat(preferences.codeFontSize) * 4.3)
             let codeFont = Theme.Text.monoFont(size: preferences.codeFontSize)
-            ScrollColumn {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows, id: \.lineNumber) { row in
-                        HStack(alignment: .top, spacing: 0) {
-                            Text("\(row.lineNumber)")
+            ScrollViewReader { proxy in
+                ScrollColumn {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(rows, id: \.lineNumber) { row in
+                            let isHighlighted = highlightedLine == row.lineNumber
+                            HStack(alignment: .top, spacing: 0) {
+                                Text("\(row.lineNumber)")
+                                    .font(codeFont)
+                                    .foregroundStyle(isHighlighted ? Theme.accent : Theme.inkMuted)
+                                    .frame(width: lineNumWidth, alignment: .trailing)
+                                    .padding(.trailing, Theme.Space.m)
+                                Text(Theme.Syntax.attributedLine(
+                                    row.text,
+                                    spans: row.spans,
+                                    baseForeground: Theme.ink,
+                                    searchQuery: query
+                                ))
                                 .font(codeFont)
-                                .foregroundStyle(Theme.inkMuted)
-                                .frame(width: lineNumWidth, alignment: .trailing)
-                                .padding(.trailing, Theme.Space.m)
-                            Text(Theme.Syntax.attributedLine(
-                                row.text,
-                                spans: row.spans,
-                                baseForeground: Theme.ink,
-                                searchQuery: query
-                            ))
-                            .font(codeFont)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, Theme.Space.m)
-                        .padding(.vertical, 1)
-                        .contextMenu {
-                            Button("Open in Editor at Line \(row.lineNumber)") {
-                                openInEditor(root.appendingPathComponent(node.path), line: row.lineNumber)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                Spacer(minLength: 0)
                             }
-                            Button("Copy Line") { copyToPasteboard(row.text) }
+                            .padding(.horizontal, Theme.Space.m)
+                            .padding(.vertical, 1)
+                            .background(isHighlighted ? Theme.accentWash : .clear)
+                            .overlay(alignment: .leading) {
+                                if isHighlighted {
+                                    Rectangle().fill(Theme.accent).frame(width: 3)
+                                }
+                            }
+                            .id("code:\(row.lineNumber)")
+                            .contextMenu {
+                                Button("Open in Editor at Line \(row.lineNumber)") {
+                                    openInEditor(root.appendingPathComponent(node.path), line: row.lineNumber)
+                                }
+                                Button("Copy Line") { copyToPasteboard(row.text) }
+                            }
+                        }
+                    }
+                    .padding(.vertical, Theme.Space.s)
+                }
+                .onAppear {
+                    if let target = scrollTargetLine {
+                        proxy.scrollTo("code:\(target)", anchor: .center)
+                    }
+                }
+                .onChange(of: scrollTrigger) {
+                    if let target = scrollTargetLine {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            proxy.scrollTo("code:\(target)", anchor: .center)
                         }
                     }
                 }
-                .padding(.vertical, Theme.Space.s)
             }
+        }
+    }
+
+    private func imagePreviewView(nsImage: NSImage, data: Data) -> some View {
+        let dims: (width: Int, height: Int) = {
+            if let rep = NSBitmapImageRep(data: data), rep.pixelsWide > 0, rep.pixelsHigh > 0 {
+                return (rep.pixelsWide, rep.pixelsHigh)
+            }
+            return (max(Int(nsImage.size.width), 0), max(Int(nsImage.size.height), 0))
+        }()
+        return ScrollColumn {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                HStack {
+                    Text("\(dims.width) × \(dims.height) px · \(Int64(data.count).byteString)")
+                        .font(Theme.Text.caption.monospacedDigit())
+                        .foregroundStyle(Theme.inkMuted)
+                    Spacer()
+                }
+                ZStack {
+                    CheckerboardBackdrop()
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(Theme.Space.l)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 340, maxHeight: 520)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+            }
+            .padding(Theme.Space.l)
         }
     }
 
@@ -368,13 +583,23 @@ private struct FileContentWorkspace: View {
                 let rows = (filterMatchesOnly && !query.isEmpty)
                     ? builtRows.filter { $0.line.text.localizedCaseInsensitiveContains(query) }
                     : builtRows
-                ScrollColumn {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(rows) { entry in
-                            blameLineRow(entry, blame: blame, query: query)
+                ScrollViewReader { proxy in
+                    ScrollColumn {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(rows) { entry in
+                                blameLineRow(entry, blame: blame, query: query)
+                                    .id("blame:\(entry.line.lineNumber)")
+                            }
+                        }
+                        .padding(.vertical, Theme.Space.xs)
+                    }
+                    .onChange(of: scrollTrigger) {
+                        if let target = scrollTargetLine {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                proxy.scrollTo("blame:\(target)", anchor: .center)
+                            }
                         }
                     }
-                    .padding(.vertical, Theme.Space.xs)
                 }
             }
         } else {
@@ -512,17 +737,29 @@ private struct FileContentWorkspace: View {
     private func loadCodeContent() async {
         fileLoading = true
         fileReadError = nil
+        imageData = nil
         let targetPath = node.path
         let repoRoot = root
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<(lines: [String], spans: [[HighlightSpan]], isBinary: Bool, truncated: Bool), Error> in
+        let shouldTryImage = isImageFile
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<(lines: [String], spans: [[HighlightSpan]], imageData: Data?, isBinary: Bool, truncated: Bool), Error> in
+            if shouldTryImage {
+                let url = repoRoot.appendingPathComponent(targetPath)
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                   let size = (attrs[.size] as? NSNumber)?.intValue,
+                   size > 0, size <= 25_000_000,
+                   let data = try? Data(contentsOf: url),
+                   NSImage(data: data) != nil {
+                    return .success(([], [], data, false, false))
+                }
+            }
             do {
                 let loaded = try GitRepository(url: repoRoot).fileContent(path: targetPath)
                 guard !loaded.isBinary else {
-                    return .success(([], [], true, false))
+                    return .success(([], [], nil, true, false))
                 }
                 let lines = loaded.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
                 let spans = SyntaxHighlighter.highlightLines(source: loaded.text, filePath: targetPath)
-                return .success((lines, spans, false, loaded.truncated))
+                return .success((lines, spans, nil, false, loaded.truncated))
             } catch {
                 return .failure(error)
             }
@@ -530,10 +767,15 @@ private struct FileContentWorkspace: View {
         guard !Task.isCancelled else { return }
         switch result {
         case .success(let value):
+            imageData = value.imageData
             codeLines = value.lines
             codeSpans = value.spans
             isBinaryFile = value.isBinary
             isTruncatedFile = value.truncated
+            if let pendingLine = session.navigation.pendingFileLine, !value.lines.isEmpty {
+                jumpToLine(pendingLine)
+                session.navigation.pendingFileLine = nil
+            }
         case .failure(let error):
             fileReadError = "\(error)"
         }
@@ -698,5 +940,239 @@ struct FileInfoCard: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct MarkdownDocumentView: View {
+    enum Block: Identifiable {
+        case heading(id: Int, level: Int, text: String)
+        case paragraph(id: Int, text: String)
+        case codeBlock(id: Int, language: String, code: String)
+        case listItem(id: Int, bullet: String, text: String)
+        case blockquote(id: Int, text: String)
+        case divider(id: Int)
+
+        var id: Int {
+            switch self {
+            case .heading(let id, _, _),
+                 .paragraph(let id, _),
+                 .codeBlock(let id, _, _),
+                 .listItem(let id, _, _),
+                 .blockquote(let id, _),
+                 .divider(let id):
+                return id
+            }
+        }
+    }
+
+    @Environment(AppPreferences.self) private var preferences
+    let source: String
+
+    private var blocks: [Block] { Self.parse(source) }
+
+    var body: some View {
+        ScrollColumn {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                ForEach(blocks) { block in
+                    blockView(block)
+                }
+            }
+            .padding(Theme.Space.xl)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: Block) -> some View {
+        switch block {
+        case .heading(_, let level, let text):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(inlineMarkdown(text))
+                    .font(headingFont(level: level))
+                    .foregroundStyle(Theme.ink)
+                    .textSelection(.enabled)
+                if level <= 2 {
+                    HairlineDivider()
+                }
+            }
+            .padding(.top, level == 1 ? 4 : 8)
+
+        case .paragraph(_, let text):
+            Text(inlineMarkdown(text))
+                .font(Theme.Text.body)
+                .foregroundStyle(Theme.inkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+        case .codeBlock(_, let language, let code):
+            VStack(alignment: .leading, spacing: 4) {
+                if !language.isEmpty {
+                    Text(language)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                }
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(code.isEmpty ? " " : code)
+                        .font(Theme.Text.monoFont(size: preferences.codeFontSize))
+                        .foregroundStyle(Theme.ink)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(Theme.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+
+        case .listItem(_, let bullet, let text):
+            HStack(alignment: .top, spacing: Theme.Space.s) {
+                Text(bullet)
+                    .font(Theme.Text.bodyBold)
+                    .foregroundStyle(Theme.accent)
+                    .frame(minWidth: 16, alignment: .trailing)
+                Text(inlineMarkdown(text))
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .padding(.leading, 4)
+
+        case .blockquote(_, let text):
+            HStack(alignment: .top, spacing: Theme.Space.m) {
+                Rectangle().fill(Theme.accent.opacity(0.6)).frame(width: 3)
+                Text(inlineMarkdown(text))
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, Theme.Space.s)
+            .background(Theme.wash.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+
+        case .divider:
+            HairlineDivider()
+                .padding(.vertical, Theme.Space.xs)
+        }
+    }
+
+    private func headingFont(level: Int) -> Font {
+        switch level {
+        case 1: return .system(size: 22, weight: .bold)
+        case 2: return .system(size: 18, weight: .semibold)
+        case 3: return .system(size: 15, weight: .semibold)
+        default: return .system(size: 13, weight: .semibold)
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+    }
+
+    private static func parse(_ source: String) -> [Block] {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var blocks: [Block] = []
+        var nextID = 0
+        func makeID() -> Int { defer { nextID += 1 }; return nextID }
+
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.isEmpty {
+                i += 1
+                continue
+            }
+
+            if trimmed.hasPrefix("```") {
+                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var codeLines: [String] = []
+                i += 1
+                while i < lines.count {
+                    let current = lines[i]
+                    if current.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                        i += 1
+                        break
+                    }
+                    codeLines.append(current)
+                    i += 1
+                }
+                blocks.append(.codeBlock(id: makeID(), language: language, code: codeLines.joined(separator: "\n")))
+                continue
+            }
+
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                blocks.append(.divider(id: makeID()))
+                i += 1
+                continue
+            }
+
+            if trimmed.hasPrefix("#") {
+                let hashes = trimmed.prefix(while: { $0 == "#" }).count
+                if hashes >= 1, hashes <= 6, trimmed.dropFirst(hashes).first == " " {
+                    let text = String(trimmed.dropFirst(hashes + 1)).trimmingCharacters(in: .whitespaces)
+                    blocks.append(.heading(id: makeID(), level: hashes, text: text))
+                    i += 1
+                    continue
+                }
+            }
+
+            if trimmed.hasPrefix(">") {
+                var quoteLines: [String] = []
+                while i < lines.count {
+                    let qt = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard qt.hasPrefix(">") else { break }
+                    let content = qt.dropFirst().trimmingCharacters(in: .whitespaces)
+                    quoteLines.append(content)
+                    i += 1
+                }
+                blocks.append(.blockquote(id: makeID(), text: quoteLines.joined(separator: " ")))
+                continue
+            }
+
+            if let listMatch = parseListItem(trimmed) {
+                blocks.append(.listItem(id: makeID(), bullet: listMatch.bullet, text: listMatch.body))
+                i += 1
+                continue
+            }
+
+            var paragraphLines: [String] = []
+            while i < lines.count {
+                let pTrim = lines[i].trimmingCharacters(in: .whitespaces)
+                if pTrim.isEmpty || pTrim.hasPrefix("```") || pTrim.hasPrefix("#") || pTrim.hasPrefix(">")
+                    || pTrim == "---" || pTrim == "***" || pTrim == "___" || parseListItem(pTrim) != nil {
+                    break
+                }
+                paragraphLines.append(pTrim)
+                i += 1
+            }
+            if !paragraphLines.isEmpty {
+                blocks.append(.paragraph(id: makeID(), text: paragraphLines.joined(separator: " ")))
+            } else {
+                i += 1
+            }
+        }
+        return blocks
+    }
+
+    private static func parseListItem(_ trimmed: String) -> (bullet: String, body: String)? {
+        for prefix in ["- ", "* ", "+ "] where trimmed.hasPrefix(prefix) {
+            return ("•", String(trimmed.dropFirst(2)))
+        }
+        if let dot = trimmed.firstIndex(of: ".") {
+            let numPart = trimmed[..<dot]
+            let restStart = trimmed.index(after: dot)
+            if !numPart.isEmpty, numPart.allSatisfy(\.isNumber),
+               restStart < trimmed.endIndex, trimmed[restStart] == " " {
+                let bodyStart = trimmed.index(after: restStart)
+                return ("\(numPart).", String(trimmed[bodyStart...]))
+            }
+        }
+        return nil
     }
 }

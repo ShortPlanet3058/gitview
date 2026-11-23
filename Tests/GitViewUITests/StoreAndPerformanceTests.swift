@@ -542,4 +542,66 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(store.codeMatches.map(\.path), ["Marker.swift"])
         XCTAssertEqual(store.historyMatches.map(\.subject), ["Add marker"])
     }
+
+    func testDiffGapCalculatorComputesLeadingMiddleTrailingGapsAndSplitsCleanly() {
+        let h1 = DiffHunk(
+            oldStart: 10,
+            newStart: 10,
+            section: "func one()",
+            lines: [
+                DiffLine(id: 1, kind: .deletion, oldNumber: 10, newNumber: nil, text: "old10", missingTrailingNewline: false),
+                DiffLine(id: 2, kind: .addition, oldNumber: nil, newNumber: 10, text: "new10", missingTrailingNewline: false),
+                DiffLine(id: 3, kind: .addition, oldNumber: nil, newNumber: 11, text: "added11", missingTrailingNewline: false),
+            ]
+        )
+        let h2 = DiffHunk(
+            oldStart: 20,
+            newStart: 21,
+            section: "func two()",
+            lines: [
+                DiffLine(id: 4, kind: .context, oldNumber: 20, newNumber: 21, text: "line 21", missingTrailingNewline: false),
+                DiffLine(id: 5, kind: .deletion, oldNumber: 21, newNumber: nil, text: "old21", missingTrailingNewline: false),
+                DiffLine(id: 6, kind: .addition, oldNumber: nil, newNumber: 22, text: "new22", missingTrailingNewline: false),
+            ]
+        )
+        let diff = FileDiff(
+            path: "Sample.swift",
+            oldPath: "Sample.swift",
+            hunks: [h1, h2],
+            isBinary: false,
+            isNew: false,
+            isDeleted: false,
+            truncated: false
+        )
+        let fileLines = (1...30).map { "line \($0)" }
+        let gaps = DiffGapCalculator.gaps(for: diff, totalNewLines: fileLines.count)
+
+        XCTAssertEqual(gaps.count, 3)
+        // Leading gap: new lines 1...9, oldOffset 0.
+        XCTAssertEqual(gaps[0].index, 0)
+        XCTAssertEqual(gaps[0].newLineRange, 1...9)
+        XCTAssertEqual(gaps[0].oldOffset, 0)
+
+        // Middle gap: new lines 12...20 (old 11...19 -> offset -1).
+        XCTAssertEqual(gaps[1].index, 1)
+        XCTAssertEqual(gaps[1].newLineRange, 12...20)
+        XCTAssertEqual(gaps[1].oldOffset, -1)
+
+        // Trailing gap: new lines 23...30 (old 22...29 -> offset -1).
+        XCTAssertEqual(gaps[2].index, 2)
+        XCTAssertEqual(gaps[2].newLineRange, 23...30)
+        XCTAssertEqual(gaps[2].oldOffset, -1)
+
+        let split = DiffGapCalculator.split(
+            gap: gaps[1],
+            expansion: GapExpansion(top: 2, bottom: 3, showAll: false),
+            fileLines: fileLines
+        )
+        XCTAssertEqual(split.topLines.map(\.newNumber), [12, 13])
+        XCTAssertEqual(split.topLines.map(\.oldNumber), [11, 12])
+        XCTAssertEqual(split.remainingCount, 4)
+        XCTAssertEqual(split.bottomLines.map(\.newNumber), [18, 19, 20])
+        XCTAssertEqual(split.bottomLines.map(\.oldNumber), [17, 18, 19])
+        XCTAssertTrue(split.topLines.allSatisfy { $0.id < 0 })
+    }
 }

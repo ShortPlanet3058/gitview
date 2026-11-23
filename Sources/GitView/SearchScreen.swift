@@ -181,6 +181,11 @@ struct SearchScreen: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        Button("View in Files") {
+                            session.show(.files)
+                            session.navigation.pendingFileSelection = unit.filePath
+                            session.navigation.pendingFileLine = unit.lineRange.lowerBound
+                        }
                         if let url = session.analysis?.root.appendingPathComponent(unit.filePath),
                            FileManager.default.fileExists(atPath: url.path) {
                             Button("Open in Editor at Line \(unit.lineRange.lowerBound)") {
@@ -232,6 +237,7 @@ struct SearchScreen: View {
                         Button {
                             session.show(.files)
                             session.navigation.pendingFileSelection = match.path
+                            session.navigation.pendingFileLine = match.line
                         } label: {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("\(match.path):\(match.line)")

@@ -612,4 +612,21 @@ final class GitWriterTests: XCTestCase {
         let clonedFile = try String(contentsOf: clonedURL.appendingPathComponent("hello.txt"), encoding: .utf8)
         XCTAssertEqual(clonedFile, "hello\n")
     }
+
+    func testAppendToGitignoreCreatesAndDeduplicatesAndDiscardAllChanges() throws {
+        try repository.appendToGitignore(patterns: ["*.log", ".DS_Store"])
+        try repository.appendToGitignore(patterns: ["*.log", "build/"])
+
+        let contents = try XCTUnwrap(read(".gitignore"))
+        XCTAssertEqual(contents, "*.log\n.DS_Store\nbuild/\n")
+
+        try write("tracked.txt", "modified tracked\n")
+        try write("other.txt", "modified other\n")
+        try write("untracked-keep.txt", "keep\n")
+        try repository.discardAllChanges()
+
+        XCTAssertEqual(read("tracked.txt"), "original\n")
+        XCTAssertEqual(read("other.txt"), "other\n")
+        XCTAssertEqual(read("untracked-keep.txt"), "keep\n")
+    }
 }

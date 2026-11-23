@@ -21,12 +21,18 @@ struct DiffViewer: View {
     @State private var currentHunkIndex = 0
     @State private var hunkJumpTrigger = 0
     @State private var spansByLineID: [Int: [HighlightSpan]] = [:]
+    @State private var fileSpansByLineNumber: [[HighlightSpan]] = []
     @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
     @State private var selectedLineIDs: Set<Int> = []
+    @State private var expandedGaps: [Int: GapExpansion] = [:]
     @FocusState private var findFieldFocused: Bool
 
     private var activeDiff: FileDiff? {
         embedded ? inspector.inlineLoadedDiff : inspector.loadedDiff
+    }
+
+    private var activeFileLines: [String]? {
+        embedded ? inspector.inlineLoadedDiffFileLines : inspector.loadedDiffFileLines
     }
 
     private var activeImageDiff: ImageDiffData? {
@@ -104,7 +110,11 @@ struct DiffViewer: View {
         .background(Theme.page)
         .onChange(of: request) {
             selectedLineIDs.removeAll()
+            expandedGaps.removeAll()
             currentHunkIndex = 0
+        }
+        .onChange(of: activeDiff) {
+            expandedGaps.removeAll()
         }
         .onChange(of: session.navigation.focusLocalFindRequest) { _, newValue in
             guard newValue > 0 else { return }
@@ -124,11 +134,13 @@ struct DiffViewer: View {
     private func computeHighlightsAndInlineDiffs() async {
         guard let diff = activeDiff, !diff.isBinary, !diff.isEmpty else {
             spansByLineID = [:]
+            fileSpansByLineNumber = []
             inlineRangesByLineID = [:]
             return
         }
         let path = diff.path
         let hunks = diff.hunks
+        let fileLines = activeFileLines
         let inputs = hunks.flatMap(\.lines).map { line in
             DiffHighlightLineInput(
                 id: line.id,
@@ -137,13 +149,19 @@ struct DiffViewer: View {
                 includesInNew: line.kind != .deletion
             )
         }
-        let (spans, inline) = await Task.detached(priority: .userInitiated) {
+        let (spans, fileSpans, inline) = await Task.detached(priority: .userInitiated) {
             let computedSpans = SyntaxHighlighter.highlightDiffLines(inputs, filePath: path)
+            let computedFileSpans: [[HighlightSpan]] = if let fileLines, !fileLines.isEmpty {
+                SyntaxHighlighter.highlightLines(source: fileLines.joined(separator: "\n"), filePath: path)
+            } else {
+                []
+            }
             let computedInline = DiffPresentation.computeInlineDiffRanges(in: hunks)
-            return (computedSpans, computedInline)
+            return (computedSpans, computedFileSpans, computedInline)
         }.value
         guard !Task.isCancelled, activeDiff == diff else { return }
         spansByLineID = spans
+        fileSpansByLineNumber = fileSpans
         inlineRangesByLineID = inline
     }
 
@@ -427,11 +445,27 @@ struct DiffViewer: View {
                 message("No changes here", "This file is listed but its contents are identical — usually a "
                                          + "mode change, or a rename with no edits.")
             } else {
+                let fileLines = activeFileLines
+                let gapsByIndex: [Int: DiffGap] = {
+                    guard let fileLines else { return [:] }
+                    let gaps = DiffGapCalculator.gaps(for: diff, totalNewLines: fileLines.count)
+                    return Dictionary(uniqueKeysWithValues: gaps.map { ($0.index, $0) })
+                }()
+                let shouldHideGaps = filterMatchesOnly && !trimmedQuery.isEmpty
                 ScrollViewReader { proxy in
                     ScrollColumn {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(diff.hunks) { hunk in
+                            if !shouldHideGaps, let fileLines, let leadingGap = gapsByIndex[0] {
+                                gapSection(leadingGap, fileLines: fileLines, isLeading: true, isTrailing: false)
+                            }
+                            ForEach(Array(diff.hunks.enumerated()), id: \.element.id) { index, hunk in
+                                if index > 0, !shouldHideGaps, let fileLines, let middleGap = gapsByIndex[index] {
+                                    gapSection(middleGap, fileLines: fileLines, isLeading: false, isTrailing: false)
+                                }
                                 hunkContent(hunk, in: diff)
+                            }
+                            if !shouldHideGaps, let fileLines, let trailingGap = gapsByIndex[diff.hunks.count] {
+                                gapSection(trailingGap, fileLines: fileLines, isLeading: false, isTrailing: true)
                             }
                             if diff.truncated {
                                 Text("Diff truncated — this file changed by more lines than are useful to read here.")
@@ -502,6 +536,86 @@ struct DiffViewer: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func gapSection(_ gap: DiffGap, fileLines: [String], isLeading: Bool, isTrailing: Bool) -> some View {
+        let expansion = expandedGaps[gap.index] ?? GapExpansion()
+        let split = DiffGapCalculator.split(gap: gap, expansion: expansion, fileLines: fileLines)
+
+        contextLinesBlock(split.topLines)
+        if split.remainingCount > 0 {
+            gapControlBar(gap: gap, remainingCount: split.remainingCount, isLeading: isLeading, isTrailing: isTrailing)
+        }
+        contextLinesBlock(split.bottomLines)
+    }
+
+    @ViewBuilder
+    private func contextLinesBlock(_ lines: [DiffLine]) -> some View {
+        if !lines.isEmpty {
+            if preferences.diffLayoutMode == .unified {
+                ForEach(lines) { line in
+                    unifiedRow(line).id(line.id)
+                }
+            } else {
+                ForEach(lines) { line in
+                    sideBySideRow(DiffPresentation.SideBySidePair(id: line.id, left: line, right: line))
+                        .id(line.id)
+                }
+            }
+        }
+    }
+
+    private func gapControlBar(gap: DiffGap, remainingCount: Int, isLeading: Bool, isTrailing: Bool) -> some View {
+        HStack(spacing: Theme.Space.s) {
+            if remainingCount <= 20 {
+                Button {
+                    var next = expandedGaps[gap.index] ?? GapExpansion()
+                    next.showAll = true
+                    expandedGaps[gap.index] = next
+                } label: {
+                    Label("Show \(remainingCount) hidden line\(remainingCount == 1 ? "" : "s")",
+                          systemImage: "arrow.up.and.down.text.horizontal")
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+            } else {
+                if !isLeading {
+                    Button {
+                        var next = expandedGaps[gap.index] ?? GapExpansion()
+                        next.top += 20
+                        expandedGaps[gap.index] = next
+                    } label: {
+                        Label("20 below", systemImage: "arrow.down")
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                }
+                if !isTrailing {
+                    Button {
+                        var next = expandedGaps[gap.index] ?? GapExpansion()
+                        next.bottom += 20
+                        expandedGaps[gap.index] = next
+                    } label: {
+                        Label("20 above", systemImage: "arrow.up")
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                }
+                Button("Show all (\(remainingCount))") {
+                    var next = expandedGaps[gap.index] ?? GapExpansion()
+                    next.showAll = true
+                    expandedGaps[gap.index] = next
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+            }
+            Text("\(remainingCount) hidden unchanged line\(remainingCount == 1 ? "" : "s")")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.inkMuted)
+            Spacer()
+        }
+        .padding(.horizontal, Theme.Space.xl)
+        .padding(.vertical, 4)
+        .background(Theme.wash.opacity(0.65))
+        .overlay(alignment: .top) { HairlineDivider() }
+        .overlay(alignment: .bottom) { HairlineDivider() }
     }
 
     private func hunkHeader(_ hunk: DiffHunk, in diff: FileDiff) -> some View {
@@ -594,9 +708,15 @@ struct DiffViewer: View {
     // MARK: - Line rendering
 
     private func renderedLineText(_ line: DiffLine) -> AttributedString {
-        Theme.Syntax.attributedLine(
+        let spans: [HighlightSpan]
+        if line.id < 0, let newNum = line.newNumber, newNum >= 1, newNum <= fileSpansByLineNumber.count {
+            spans = fileSpansByLineNumber[newNum - 1]
+        } else {
+            spans = spansByLineID[line.id] ?? []
+        }
+        return Theme.Syntax.attributedLine(
             line.text,
-            spans: spansByLineID[line.id] ?? [],
+            spans: spans,
             baseForeground: line.kind == .context ? Theme.inkSoft : Theme.ink,
             emphasisUTF16Ranges: inlineRangesByLineID[line.id] ?? [],
             emphasisBackground: emphasisBackground(for: line.kind),
@@ -994,7 +1114,134 @@ private struct ImageDiffView: View {
     }
 }
 
-private struct CheckerboardBackdrop: View {
+struct DiffGap: Equatable, Identifiable {
+    var id: Int { index }
+    let index: Int
+    /// 1-based inclusive line numbers in the new file represented by this gap.
+    let newLineRange: ClosedRange<Int>
+    /// `oldLine = newLine + oldOffset`, nil when viewing a newly created file.
+    let oldOffset: Int?
+
+    var count: Int { newLineRange.count }
+}
+
+struct GapExpansion: Equatable {
+    var top: Int = 0
+    var bottom: Int = 0
+    var showAll: Bool = false
+}
+
+enum DiffGapCalculator {
+    static func gaps(for diff: FileDiff, totalNewLines: Int) -> [DiffGap] {
+        guard !diff.hunks.isEmpty, totalNewLines > 0, !diff.isDeleted else { return [] }
+        let sorted = diff.hunks.sorted { $0.newStart < $1.newStart }
+        var result: [DiffGap] = []
+
+        let first = sorted[0]
+        if first.newStart > 1 {
+            let upper = min(first.newStart - 1, totalNewLines)
+            if upper >= 1 {
+                result.append(DiffGap(
+                    index: 0,
+                    newLineRange: 1...upper,
+                    oldOffset: diff.isNew ? nil : (first.oldStart - first.newStart)
+                ))
+            }
+        }
+
+        for idx in 1..<sorted.count {
+            let prev = sorted[idx - 1]
+            let next = sorted[idx]
+            let prevNewCount = prev.lines.count(where: { $0.kind != .deletion })
+            let gapStart = prev.newStart + prevNewCount
+            let gapEnd = min(next.newStart - 1, totalNewLines)
+            if gapStart <= gapEnd {
+                result.append(DiffGap(
+                    index: idx,
+                    newLineRange: gapStart...gapEnd,
+                    oldOffset: diff.isNew ? nil : (next.oldStart - next.newStart)
+                ))
+            }
+        }
+
+        if let last = sorted.last {
+            let lastOldCount = last.lines.count(where: { $0.kind != .addition })
+            let lastNewCount = last.lines.count(where: { $0.kind != .deletion })
+            let trailingStart = max(1, last.newStart + lastNewCount)
+            if trailingStart <= totalNewLines {
+                let offset: Int? = diff.isNew ? nil : ((last.oldStart + lastOldCount) - (last.newStart + lastNewCount))
+                result.append(DiffGap(
+                    index: sorted.count,
+                    newLineRange: trailingStart...totalNewLines,
+                    oldOffset: offset
+                ))
+            }
+        }
+
+        return result
+    }
+
+    static func split(
+        gap: DiffGap,
+        expansion: GapExpansion,
+        fileLines: [String]
+    ) -> (topLines: [DiffLine], remainingCount: Int, remainingRange: ClosedRange<Int>?, bottomLines: [DiffLine]) {
+        guard gap.newLineRange.lowerBound >= 1,
+              gap.newLineRange.upperBound <= fileLines.count else {
+            return ([], 0, nil, [])
+        }
+
+        if expansion.showAll || expansion.top + expansion.bottom >= gap.count {
+            let allLines = gap.newLineRange.map {
+                makeContextLine(gapIndex: gap.index, newLine: $0, oldOffset: gap.oldOffset, fileLines: fileLines)
+            }
+            return (allLines, 0, nil, [])
+        }
+
+        let topCount = max(0, min(expansion.top, gap.count))
+        let bottomCount = max(0, min(expansion.bottom, gap.count - topCount))
+        let remaining = gap.count - topCount - bottomCount
+
+        var topLines: [DiffLine] = []
+        if topCount > 0 {
+            let upper = gap.newLineRange.lowerBound + topCount - 1
+            topLines = (gap.newLineRange.lowerBound...upper).map {
+                makeContextLine(gapIndex: gap.index, newLine: $0, oldOffset: gap.oldOffset, fileLines: fileLines)
+            }
+        }
+
+        var bottomLines: [DiffLine] = []
+        if bottomCount > 0 {
+            let lower = gap.newLineRange.upperBound - bottomCount + 1
+            bottomLines = (lower...gap.newLineRange.upperBound).map {
+                makeContextLine(gapIndex: gap.index, newLine: $0, oldOffset: gap.oldOffset, fileLines: fileLines)
+            }
+        }
+
+        let remStart = gap.newLineRange.lowerBound + topCount
+        let remEnd = gap.newLineRange.upperBound - bottomCount
+        let remRange = remaining > 0 ? remStart...remEnd : nil
+        return (topLines, remaining, remRange, bottomLines)
+    }
+
+    private static func makeContextLine(
+        gapIndex: Int,
+        newLine: Int,
+        oldOffset: Int?,
+        fileLines: [String]
+    ) -> DiffLine {
+        DiffLine(
+            id: -(gapIndex * 1_000_000 + newLine),
+            kind: .context,
+            oldNumber: oldOffset.map { $0 + newLine },
+            newNumber: newLine,
+            text: fileLines[newLine - 1],
+            missingTrailingNewline: false
+        )
+    }
+}
+
+struct CheckerboardBackdrop: View {
     var body: some View {
         Canvas { context, size in
             let tile: CGFloat = 12

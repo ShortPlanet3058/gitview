@@ -297,4 +297,46 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(committed.oldData, v1Bytes)
         XCTAssertEqual(committed.newData, v2Bytes)
     }
+
+    func testStashFilesDiffAndDiffFileLines() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-stash-diff-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Test User"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "test@example.com"], in: tempRoot)
+
+        let originalLines = (1...12).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        try originalLines.write(to: tempRoot.appendingPathComponent("code.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "code.txt"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "initial"], in: tempRoot)
+
+        let editedLines = (1...12).map { $0 == 6 ? "line 6 EDITED" : "line \($0)" }.joined(separator: "\n") + "\n"
+        try editedLines.write(to: tempRoot.appendingPathComponent("code.txt"), atomically: true, encoding: .utf8)
+        try "brand new\n".write(to: tempRoot.appendingPathComponent("extra.txt"), atomically: true, encoding: .utf8)
+
+        let repo = GitRepository(url: tempRoot)
+        try repo.stashPush(message: "wip preview", includeUntracked: true)
+
+        let deltas = try repo.stashFiles(ref: "stash@{0}")
+        XCTAssertEqual(Set(deltas.map(\.path)), ["code.txt", "extra.txt"])
+
+        let stashedCodeDiff = try repo.diff(.stash(ref: "stash@{0}"), path: "code.txt", context: 1)
+        XCTAssertFalse(stashedCodeDiff.isEmpty)
+        XCTAssertEqual(stashedCodeDiff.additions, 1)
+        XCTAssertEqual(stashedCodeDiff.deletions, 1)
+
+        let stashedUntrackedDiff = try repo.diff(.stash(ref: "stash@{0}"), path: "extra.txt", context: 1)
+        XCTAssertTrue(stashedUntrackedDiff.isNew)
+        XCTAssertEqual(stashedUntrackedDiff.additions, 1)
+
+        let stashedFileLines = try XCTUnwrap(repo.diffFileLines(.stash(ref: "stash@{0}"), path: "code.txt"))
+        XCTAssertEqual(stashedFileLines.count, 12)
+        XCTAssertEqual(stashedFileLines[5], "line 6 EDITED")
+
+        let stashedExtraLines = try XCTUnwrap(repo.diffFileLines(.stash(ref: "stash@{0}"), path: "extra.txt"))
+        XCTAssertEqual(stashedExtraLines, ["brand new"])
+    }
 }

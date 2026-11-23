@@ -178,6 +178,41 @@ extension GitRepository {
         try write(["stash", "drop", ref])
     }
 
+    /// Discards all unstaged edits across tracked working-tree files (`git restore --worktree -- .`).
+    public func discardAllChanges() throws {
+        try write(["restore", "--worktree", "--", "."])
+    }
+
+    /// Appends unique patterns to the repository's `.gitignore` file.
+    public func appendToGitignore(patterns: [String]) throws {
+        let root = try validate()
+        let cleaned = patterns
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return }
+
+        let gitignoreURL = root.appendingPathComponent(".gitignore")
+        let existingText = (try? String(contentsOf: gitignoreURL, encoding: .utf8)) ?? ""
+        var existingLines = Set(
+            existingText
+                .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+        )
+        var additions: [String] = []
+        for pattern in cleaned where !existingLines.contains(pattern) {
+            existingLines.insert(pattern)
+            additions.append(pattern)
+        }
+        guard !additions.isEmpty else { return }
+
+        var updated = existingText
+        if !updated.isEmpty && !updated.hasSuffix("\n") {
+            updated += "\n"
+        }
+        updated += additions.joined(separator: "\n") + "\n"
+        try updated.write(to: gitignoreURL, atomically: true, encoding: .utf8)
+    }
+
     // MARK: - Outward facing
 
     /// What a push would send, so the user can be shown it before agreeing.

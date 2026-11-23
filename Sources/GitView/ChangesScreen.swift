@@ -46,13 +46,22 @@ struct WorkingCopyChangeEntry: Identifiable, Hashable {
 
 /// Split Changes workspace: left list + commit dock paired with a live embedded diff pane on the right.
 struct ChangesScreen: View {
+    private struct StashFileSelection: Hashable {
+        let ref: String
+        let message: String
+        let path: String
+    }
+
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
     @Environment(WorkingCopyStore.self) private var workingCopy
     @Environment(\.staticRendering) private var staticRendering
     @AppStorage("gitview.changesPaneWidth") private var changesPaneWidth: Double = 364
+    @AppStorage("gitview.changesTreeView") private var showTreeView = false
     @State private var selectedEntryID: String?
     @State private var stashesExpanded = false
+    @State private var expandedStashRef: String?
+    @State private var selectedStashFile: StashFileSelection?
     @State private var fileFilter = ""
     @State private var filterFieldFocused = false
     @FocusState private var commitInputFocused: Bool
@@ -80,7 +89,9 @@ struct ChangesScreen: View {
 
     var body: some View {
         let entries = orderedEntries
-        let activeEntry = entries.first(where: { $0.id == selectedEntryID }) ?? entries.first
+        let activeEntry = selectedStashFile == nil
+            ? (entries.first(where: { $0.id == selectedEntryID }) ?? entries.first)
+            : nil
         let clampedLeft = min(max(changesPaneWidth, 280), 520)
 
         HStack(spacing: 0) {
@@ -90,7 +101,7 @@ struct ChangesScreen: View {
 
             VerticalPaneResizer(width: $changesPaneWidth, range: 280...520, invertDrag: false)
 
-            rightPane(activeEntry: activeEntry)
+            rightPane(activeEntry: activeEntry, stashSelection: selectedStashFile)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.page)
         }
@@ -98,32 +109,56 @@ struct ChangesScreen: View {
             syncSelectionAndInlineDiff(entries: entries)
         }
         .onChange(of: state) {
+            if let stashSelection = selectedStashFile,
+               !state.stashes.contains(where: { $0.ref == stashSelection.ref }) {
+                selectedStashFile = nil
+            }
             syncSelectionAndInlineDiff(entries: entries, reloadCurrent: true)
         }
+        .onChange(of: state.stashes) {
+            session.inspector.invalidateStashes()
+            if let expandedStashRef, state.stashes.contains(where: { $0.ref == expandedStashRef }) {
+                session.inspector.ensureStashFiles(ref: expandedStashRef, force: true)
+            } else {
+                expandedStashRef = nil
+            }
+        }
         .onChange(of: workingCopy.worktreeTick) {
-            if let activeEntry, case .workingTree(staged: false) = activeEntry.diffRequest.source {
+            if selectedStashFile == nil,
+               let activeEntry,
+               case .workingTree(staged: false) = activeEntry.diffRequest.source {
                 session.inspector.reloadInlineDiff()
             }
         }
         .onChange(of: preferences.advanced) {
+            if !preferences.advanced {
+                selectedStashFile = nil
+            }
             syncSelectionAndInlineDiff(entries: entries)
         }
         .onChange(of: fileFilter) {
+            selectedStashFile = nil
             syncSelectionAndInlineDiff(entries: entries)
         }
         .onChange(of: selectedEntryID) {
+            selectedStashFile = nil
+            syncSelectionAndInlineDiff(entries: entries)
+        }
+        .onChange(of: selectedStashFile) {
             syncSelectionAndInlineDiff(entries: entries)
         }
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.downArrow) {
             guard !commitInputFocused, !filterFieldFocused else { return .ignored }
+            selectedStashFile = nil
             selectedEntryID = NavigationStore.stepSelection(
                 in: entries.map(\.id), current: activeEntry?.id, delta: 1)
             return .handled
         }
         .onKeyPress(.upArrow) {
             guard !commitInputFocused, !filterFieldFocused else { return .ignored }
+            selectedStashFile = nil
             selectedEntryID = NavigationStore.stepSelection(
                 in: entries.map(\.id), current: activeEntry?.id, delta: -1)
             return .handled
@@ -143,6 +178,7 @@ struct ChangesScreen: View {
         .onKeyPress(.return) {
             guard !commitInputFocused, !filterFieldFocused,
                   let chosen = activeEntry else { return .ignored }
+            selectedStashFile = nil
             selectedEntryID = chosen.id
             session.inspector.showDiff(.workingTree(staged: chosen.staged), path: chosen.file.path, title: chosen.title)
             return .handled
@@ -150,6 +186,20 @@ struct ChangesScreen: View {
     }
 
     private func syncSelectionAndInlineDiff(entries: [WorkingCopyChangeEntry], reloadCurrent: Bool = false) {
+        if let stashSelection = selectedStashFile,
+           state.stashes.contains(where: { $0.ref == stashSelection.ref }) {
+            let req = DiffRequest(
+                source: .stash(ref: stashSelection.ref),
+                path: stashSelection.path,
+                title: "Stash · \(stashSelection.message)"
+            )
+            if session.inspector.inlineDiffRequest != req {
+                session.inspector.showInlineDiff(req.source, path: req.path, title: req.title)
+            } else if reloadCurrent {
+                session.inspector.reloadInlineDiff()
+            }
+            return
+        }
         let current = entries.first(where: { $0.id == selectedEntryID }) ?? entries.first
         if let current {
             if selectedEntryID != current.id {
@@ -196,12 +246,24 @@ struct ChangesScreen: View {
             HairlineDivider()
 
             if !state.isClean {
-                SearchField(
-                    text: $fileFilter,
-                    prompt: "Filter changed files…",
-                    focusTrigger: session.navigation.focusLocalFindRequest,
-                    onFocusChange: { filterFieldFocused = $0 }
-                )
+                HStack(spacing: Theme.Space.xs) {
+                    SearchField(
+                        text: $fileFilter,
+                        prompt: "Filter changed files…",
+                        focusTrigger: session.navigation.focusLocalFindRequest,
+                        onFocusChange: { filterFieldFocused = $0 }
+                    )
+                    Button {
+                        showTreeView.toggle()
+                    } label: {
+                        Image(systemName: showTreeView ? "list.bullet.indent" : "list.bullet")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(showTreeView ? Theme.accent : Theme.inkSoft)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.small)
+                    .help(showTreeView ? "Show flat file list" : "Group changed files by folder")
+                }
                 .padding(.horizontal, Theme.Space.m)
                 .padding(.top, Theme.Space.s)
             }
@@ -298,8 +360,16 @@ struct ChangesScreen: View {
     // MARK: - Right Pane (Live Diff or Clean Empty State)
 
     @ViewBuilder
-    private func rightPane(activeEntry: WorkingCopyChangeEntry?) -> some View {
-        if let activeEntry {
+    private func rightPane(activeEntry: WorkingCopyChangeEntry?, stashSelection: StashFileSelection?) -> some View {
+        if let stashSelection {
+            let req = DiffRequest(
+                source: .stash(ref: stashSelection.ref),
+                path: stashSelection.path,
+                title: "Stash · \(stashSelection.message)"
+            )
+            DiffViewer(request: req, embedded: true)
+                .id(req)
+        } else if let activeEntry {
             DiffViewer(request: activeEntry.diffRequest, embedded: true)
                 .id(activeEntry.diffRequest)
         } else {
@@ -488,14 +558,87 @@ struct ChangesScreen: View {
         }
     }
 
+    private func groupedFiles(_ files: [WorkingState.FileStatus]) -> [(folder: String, files: [WorkingState.FileStatus])] {
+        var byFolder: [String: [WorkingState.FileStatus]] = [:]
+        for file in files {
+            let folder = (file.path as NSString).deletingLastPathComponent
+            byFolder[folder, default: []].append(file)
+        }
+        return byFolder
+            .map { (folder: $0.key, files: $0.value) }
+            .sorted { lhs, rhs in
+                if lhs.folder.isEmpty != rhs.folder.isEmpty { return lhs.folder.isEmpty }
+                return lhs.folder < rhs.folder
+            }
+    }
+
+    private func folderHeading(_ folder: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.accent.opacity(0.85))
+            Text(folder)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Theme.inkSoft)
+                .lineLimit(1)
+                .truncationMode(.head)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.Space.s)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private func changesContextMenu(for file: WorkingState.FileStatus, staged: Bool) -> some View {
+        PathActions(path: file.path)
+        if !staged && !file.isUntracked && !file.isConflicted {
+            Divider()
+            Button("Stash This File") {
+                workingCopy.stashSelected(paths: [file.path])
+            }
+            .disabled(workingCopy.writeInFlight)
+        }
+        if file.isUntracked {
+            let ext = URL(fileURLWithPath: file.path).pathExtension
+            let folder = (file.path as NSString).deletingLastPathComponent
+            Divider()
+            Button("Add to .gitignore") {
+                workingCopy.addToGitignore([file.path])
+            }
+            .disabled(workingCopy.writeInFlight)
+            if !ext.isEmpty {
+                Button("Ignore all *.\(ext) files") {
+                    workingCopy.addToGitignore(["*.\(ext)"])
+                }
+                .disabled(workingCopy.writeInFlight)
+            }
+            if !folder.isEmpty {
+                Button("Ignore folder \(folder)/") {
+                    workingCopy.addToGitignore(["\(folder)/"])
+                }
+                .disabled(workingCopy.writeInFlight)
+            }
+        }
+    }
+
     private func standardModifiedSection(_ files: [WorkingState.FileStatus], activeID: String?) -> some View {
         let allIncluded = files.allSatisfy { $0.staged != .unchanged && $0.unstaged == .unchanged }
+        let unstagedCount = files.count(where: { $0.unstaged != .unchanged })
         return Card(padding: Theme.Space.s) {
             VStack(spacing: 0) {
                 HStack {
                     Text("MODIFIED FILES").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                     Text("\(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                     Spacer()
+                    if unstagedCount > 1 {
+                        Button("Discard all") {
+                            workingCopy.confirmDiscardAllUnstaged(count: unstagedCount)
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                        .disabled(workingCopy.writeInFlight)
+                        .help("Discard all unstaged modifications")
+                    }
                     Button(allIncluded ? "Unselect all" : "Include all") {
                         let paths = files.map(\.path)
                         allIncluded ? workingCopy.unstage(paths) : workingCopy.stage(paths)
@@ -504,16 +647,31 @@ struct ChangesScreen: View {
                 }
                 .padding(.horizontal, Theme.Space.s).padding(.vertical, 6)
                 HairlineDivider()
-                ForEach(files) { file in
-                    standardRow(file, activeID: activeID)
-                        .contextMenu { PathActions(path: file.path) }
-                    if file.id != files.last?.id { HairlineDivider() }
+                if showTreeView {
+                    let groups = groupedFiles(files)
+                    ForEach(Array(groups.enumerated()), id: \.element.folder) { gIdx, group in
+                        if !group.folder.isEmpty {
+                            if gIdx > 0 { HairlineDivider() }
+                            folderHeading(group.folder)
+                        }
+                        ForEach(group.files) { file in
+                            standardRow(file, activeID: activeID, compactFolder: !group.folder.isEmpty)
+                                .padding(.leading, group.folder.isEmpty ? 0 : 12)
+                                .contextMenu { changesContextMenu(for: file, staged: false) }
+                        }
+                    }
+                } else {
+                    ForEach(files) { file in
+                        standardRow(file, activeID: activeID)
+                            .contextMenu { changesContextMenu(for: file, staged: false) }
+                        if file.id != files.last?.id { HairlineDivider() }
+                    }
                 }
             }
         }
     }
 
-    private func standardRow(_ file: WorkingState.FileStatus, activeID: String?) -> some View {
+    private func standardRow(_ file: WorkingState.FileStatus, activeID: String?, compactFolder: Bool = false) -> some View {
         let entryID = "tracked:\(file.path)"
         let isSelected = activeID == entryID
         let fullyIncluded = file.staged != .unchanged && file.unstaged == .unchanged
@@ -533,6 +691,7 @@ struct ChangesScreen: View {
             .help(fullyIncluded ? "Exclude from commit" : "Include all edits in commit")
 
             Button {
+                selectedStashFile = nil
                 selectedEntryID = entryID
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
@@ -540,7 +699,7 @@ struct ChangesScreen: View {
                         .foregroundStyle(Theme.ink).lineLimit(1)
                     if partiallyIncluded {
                         Text("Newer edits not included").font(.system(size: 10)).foregroundStyle(Theme.warning)
-                    } else if !folderPath.isEmpty {
+                    } else if !compactFolder && !folderPath.isEmpty {
                         Text(folderPath).font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
                             .lineLimit(1).truncationMode(.head)
                     }
@@ -566,12 +725,21 @@ struct ChangesScreen: View {
 
     private func fileSection(_ title: String, _ files: [WorkingState.FileStatus],
                              tint: Color, staged: Bool, sectionPrefix: String, activeID: String?) -> some View {
-        Card(padding: Theme.Space.s) {
+        let isTrackedUnstaged = !staged && sectionPrefix == "unstaged"
+        return Card(padding: Theme.Space.s) {
             VStack(spacing: 0) {
                 HStack {
                     Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                     Text("\(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                     Spacer()
+                    if isTrackedUnstaged && files.count > 1 {
+                        Button("Discard all") {
+                            workingCopy.confirmDiscardAllUnstaged(count: files.count)
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                        .disabled(workingCopy.writeInFlight)
+                        .help("Discard all unstaged modifications")
+                    }
                     Button(staged ? "Unstage all" : (preferences.advanced ? "Stage all" : "Include all")) {
                         staged ? workingCopy.unstage(files.map(\.path)) : workingCopy.stage(files.map(\.path))
                     }
@@ -579,24 +747,42 @@ struct ChangesScreen: View {
                 }
                 .padding(.horizontal, Theme.Space.s).padding(.vertical, 6)
                 HairlineDivider()
-                ForEach(files) { file in
-                    let entryID = "\(sectionPrefix):\(file.path)"
-                    row(file, tint: tint, staged: staged, entryID: entryID, isSelected: activeID == entryID)
-                        .contextMenu { PathActions(path: file.path) }
-                    if file.id != files.last?.id { HairlineDivider() }
+                if showTreeView {
+                    let groups = groupedFiles(files)
+                    ForEach(Array(groups.enumerated()), id: \.element.folder) { gIdx, group in
+                        if !group.folder.isEmpty {
+                            if gIdx > 0 { HairlineDivider() }
+                            folderHeading(group.folder)
+                        }
+                        ForEach(group.files) { file in
+                            let entryID = "\(sectionPrefix):\(file.path)"
+                            row(file, tint: tint, staged: staged, entryID: entryID,
+                                isSelected: activeID == entryID, compactFolder: !group.folder.isEmpty)
+                                .padding(.leading, group.folder.isEmpty ? 0 : 12)
+                                .contextMenu { changesContextMenu(for: file, staged: staged) }
+                        }
+                    }
+                } else {
+                    ForEach(files) { file in
+                        let entryID = "\(sectionPrefix):\(file.path)"
+                        row(file, tint: tint, staged: staged, entryID: entryID, isSelected: activeID == entryID)
+                            .contextMenu { changesContextMenu(for: file, staged: staged) }
+                        if file.id != files.last?.id { HairlineDivider() }
+                    }
                 }
             }
         }
     }
 
     private func row(_ file: WorkingState.FileStatus, tint: Color, staged: Bool,
-                     entryID: String, isSelected: Bool) -> some View {
+                     entryID: String, isSelected: Bool, compactFolder: Bool = false) -> some View {
         let fileName = (file.path as NSString).lastPathComponent
         let folderPath = (file.path as NSString).deletingLastPathComponent
         return HStack(spacing: Theme.Space.s) {
             Text(marker(file, staged: staged))
                 .font(Theme.Text.mono).foregroundStyle(tint).frame(width: 14)
             Button {
+                selectedStashFile = nil
                 selectedEntryID = entryID
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
@@ -605,7 +791,7 @@ struct ChangesScreen: View {
                     if let original = file.originalPath {
                         Text("from \(original)").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
                             .lineLimit(1).truncationMode(.head)
-                    } else if !folderPath.isEmpty {
+                    } else if !compactFolder && !folderPath.isEmpty {
                         Text(folderPath).font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
                             .lineLimit(1).truncationMode(.head)
                     }
@@ -883,19 +1069,124 @@ struct ChangesScreen: View {
                         .padding(.horizontal, Theme.Space.s)
                     }
                     ForEach(state.stashes) { stash in
-                        HStack(spacing: Theme.Space.xs) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(stash.message).font(Theme.Text.caption).foregroundStyle(Theme.ink).lineLimit(1)
-                                Text(RiskExplanation.relative(stash.date, now: Date()))
-                                    .font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                        let isExpanded = expandedStashRef == stash.ref
+                        let stashFiles = session.inspector.stashFilesByRef[stash.ref]
+                        let isLoadingFiles = session.inspector.loadingStashRefs.contains(stash.ref)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: Theme.Space.xs) {
+                                Button {
+                                    if isExpanded {
+                                        expandedStashRef = nil
+                                    } else {
+                                        expandedStashRef = stash.ref
+                                        session.inspector.ensureStashFiles(ref: stash.ref)
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(Theme.inkMuted)
+                                            .frame(width: 10)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(stash.message).font(Theme.Text.caption).foregroundStyle(Theme.ink).lineLimit(1)
+                                            Text(RiskExplanation.relative(stash.date, now: Date()))
+                                                .font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Button("Apply") { workingCopy.applyStash(stash.ref, removing: false) }
+                                    .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                                    .disabled(workingCopy.writeInFlight)
+                                    .help("Apply stash without removing it")
+                                Button("Pop") { workingCopy.applyStash(stash.ref, removing: true) }
+                                    .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                                    .disabled(workingCopy.writeInFlight)
+                                    .help("Apply stash and remove it from list")
+                                Button { workingCopy.confirmDropStash(stash) } label: {
+                                    Image(systemName: "trash").font(.system(size: 10)).foregroundStyle(Theme.critical)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(workingCopy.writeInFlight)
+                                .help("Drop stash")
                             }
-                            Spacer()
-                            Button("Pop") { workingCopy.applyStash(stash.ref, removing: true) }
-                                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
-                            Button { workingCopy.confirmDropStash(stash) } label: {
-                                Image(systemName: "trash").font(.system(size: 10)).foregroundStyle(Theme.critical)
+                            .contextMenu {
+                                Button("Inspect Stash Contents") {
+                                    expandedStashRef = stash.ref
+                                    session.inspector.ensureStashFiles(ref: stash.ref)
+                                }
+                                Button("Apply Stash (Keep)") { workingCopy.applyStash(stash.ref, removing: false) }
+                                    .disabled(workingCopy.writeInFlight)
+                                Button("Pop Stash") { workingCopy.applyStash(stash.ref, removing: true) }
+                                    .disabled(workingCopy.writeInFlight)
+                                Divider()
+                                Button("Drop Stash…", role: .destructive) { workingCopy.confirmDropStash(stash) }
                             }
-                            .buttonStyle(.plain)
+
+                            if isExpanded {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if isLoadingFiles && stashFiles == nil {
+                                        HStack(spacing: 6) {
+                                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                                            Text("Reading stashed files…")
+                                                .font(.system(size: 10))
+                                                .foregroundStyle(Theme.inkMuted)
+                                        }
+                                        .padding(.vertical, 3)
+                                    } else if let stashFiles, !stashFiles.isEmpty {
+                                        ForEach(stashFiles) { delta in
+                                            let isStashFileSelected = selectedStashFile?.ref == stash.ref && selectedStashFile?.path == delta.path
+                                            Button {
+                                                selectedStashFile = StashFileSelection(
+                                                    ref: stash.ref,
+                                                    message: stash.message,
+                                                    path: delta.path
+                                                )
+                                            } label: {
+                                                HStack(spacing: Theme.Space.xs) {
+                                                    Image(systemName: "doc.text")
+                                                        .font(.system(size: 10))
+                                                        .foregroundStyle(Theme.inkMuted)
+                                                    Text((delta.path as NSString).lastPathComponent)
+                                                        .font(.system(size: 11, weight: isStashFileSelected ? .semibold : .regular))
+                                                        .foregroundStyle(Theme.ink)
+                                                        .lineLimit(1)
+                                                    Spacer(minLength: 4)
+                                                    if delta.isBinary {
+                                                        Text("bin").font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                                                    } else {
+                                                        if delta.insertions > 0 {
+                                                            Text("+\(delta.insertions)")
+                                                                .font(.system(size: 10).monospacedDigit())
+                                                                .foregroundStyle(Theme.good)
+                                                        }
+                                                        if delta.deletions > 0 {
+                                                            Text("−\(delta.deletions)")
+                                                                .font(.system(size: 10).monospacedDigit())
+                                                                .foregroundStyle(Theme.critical)
+                                                        }
+                                                    }
+                                                }
+                                                .padding(.horizontal, 6).padding(.vertical, 4)
+                                                .background(
+                                                    isStashFileSelected ? Theme.accentWash : .clear,
+                                                    in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                                                )
+                                                .contentShape(Rectangle())
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    } else {
+                                        Text("No file differences reported.")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Theme.inkMuted)
+                                            .padding(.vertical, 2)
+                                    }
+                                }
+                                .padding(.leading, 16)
+                            }
                         }
                         .padding(.horizontal, Theme.Space.s).padding(.vertical, 2)
                     }

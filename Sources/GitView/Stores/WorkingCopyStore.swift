@@ -229,6 +229,36 @@ public final class WorkingCopyStore {
         perform("stash apply") { try $0.stashApply(ref, removing: removing) }
     }
 
+    public func stashSelected(paths: [String], includeUntracked: Bool = false, message: String = "") {
+        let cleaned = paths.filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return }
+        let label = message.isEmpty ? "Set aside \((cleaned.first! as NSString).lastPathComponent)" : message
+        perform("stash file") {
+            try $0.stashPush(message: label, includeUntracked: includeUntracked, paths: cleaned)
+        }
+    }
+
+    public func addToGitignore(_ patterns: [String]) {
+        perform("update .gitignore") { try $0.appendToGitignore(patterns: patterns) }
+    }
+
+    public func confirmDiscardAllUnstaged(count: Int) {
+        confirmation = DestructiveConfirmation(
+            title: "Discard all \(count) modified file\(count == 1 ? "" : "s")?",
+            message: "All unstaged modifications across tracked files in your working copy will be reverted permanently. Staged and untracked files are kept untouched.",
+            confirmLabel: "Discard All",
+            alternativeLabel: "Stash All Instead",
+            perform: { [weak self] in
+                self?.perform("discard all") { try $0.discardAllChanges() }
+            },
+            alternative: { [weak self] in
+                self?.perform("stash all") {
+                    try $0.stashPush(message: "Set aside working changes", includeUntracked: false)
+                }
+            }
+        )
+    }
+
     public func push() {
         guard let plan = pushPlan else { return }
         perform("push", refsOnly: true) {

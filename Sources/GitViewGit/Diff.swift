@@ -14,6 +14,15 @@ public struct DiffLine: Hashable, Sendable, Identifiable {
     public let text: String
     /// git's "\ No newline at end of file" applies to the line above it.
     public let missingTrailingNewline: Bool
+
+    public init(id: Int, kind: Kind, oldNumber: Int?, newNumber: Int?, text: String, missingTrailingNewline: Bool) {
+        self.id = id
+        self.kind = kind
+        self.oldNumber = oldNumber
+        self.newNumber = newNumber
+        self.text = text
+        self.missingTrailingNewline = missingTrailingNewline
+    }
 }
 
 public struct DiffHunk: Hashable, Sendable, Identifiable {
@@ -301,6 +310,7 @@ public enum DiffSource: Hashable, Sendable {
     case commit(sha: String)
     case workingTree(staged: Bool)
     case range(from: String, to: String)
+    case stash(ref: String)
 }
 
 /// Old and new image bytes for visual comparison of modified binary image assets.
@@ -370,35 +380,125 @@ extension GitRepository {
         case .range(let from, let to):
             oldData = readGitObjectData("\(from):\(sourcePath)")
             newData = readGitObjectData("\(to):\(path)")
+        case .stash(let ref):
+            oldData = readGitObjectData("\(ref)^1:\(sourcePath)")
+            newData = readGitObjectData("\(ref):\(path)") ?? readGitObjectData("\(ref)^3:\(path)")
         }
 
         guard oldData != nil || newData != nil else { return nil }
         return ImageDiffData(path: path, oldData: oldData, newData: newData)
     }
+
+    /// Lists changed files inside a stash entry, sorted by churn descending.
+    public func stashFiles(ref: String) throws -> [FileDelta] {
+        let root = try validate()
+        let output: String
+        do {
+            output = try GitProcess.capture(
+                arguments: ["stash", "show", "--include-untracked", "--numstat", "-z", ref],
+                in: root
+            )
+        } catch {
+            output = try GitProcess.capture(
+                arguments: ["stash", "show", "--numstat", "-z", ref],
+                in: root
+            )
+        }
+        return DiffStatParser.parseNumstat(output)
+    }
+
+    /// Reads the new-side text lines for a diff source so unchanged gaps between hunks can be expanded inline.
+    public func diffFileLines(_ source: DiffSource, path: String, maxBytes: Int = 512_000) -> [String]? {
+        guard let root = try? validate() else { return nil }
+
+        func decodeLines(from data: Data) -> [String]? {
+            guard !data.isEmpty, data.count <= maxBytes, !data.prefix(8192).contains(0) else {
+                return nil
+            }
+            let text = String(decoding: data, as: UTF8.self)
+            var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            if text.hasSuffix("\n"), lines.last?.isEmpty == true {
+                lines.removeLast()
+            }
+            return lines
+        }
+
+        func readWorktreeLines(_ relativePath: String) -> [String]? {
+            let fileURL = root.appendingPathComponent(relativePath)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir),
+                  !isDir.boolValue,
+                  let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                  let size = (attrs[.size] as? NSNumber)?.intValue,
+                  size > 0, size <= maxBytes,
+                  let data = try? Data(contentsOf: fileURL) else {
+                return nil
+            }
+            return decodeLines(from: data)
+        }
+
+        func readObjectLines(_ spec: String) -> [String]? {
+            guard let data = try? GitProcess.captureData(arguments: ["show", spec], in: root) else {
+                return nil
+            }
+            return decodeLines(from: data)
+        }
+
+        switch source {
+        case .workingTree(staged: false):
+            return readWorktreeLines(path)
+        case .workingTree(staged: true):
+            return readObjectLines(":0:\(path)")
+        case .commit(let sha):
+            return readObjectLines("\(sha):\(path)")
+        case .range(_, let to):
+            return readObjectLines("\(to):\(path)")
+        case .stash(let ref):
+            return readObjectLines("\(ref):\(path)") ?? readObjectLines("\(ref)^3:\(path)")
+        }
+    }
+
     public func diff(_ source: DiffSource, path: String, context: Int = 3,
                      ignoreWhitespace: Bool = false, maxLines: Int = 3000) throws -> FileDiff {
         let root = try validate()
-        var arguments: [String]
+        let output: String
         switch source {
         case .commit(let sha):
             // `--format=` suppresses the commit message, leaving only the patch.
-            arguments = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
-                         "--find-renames", "--unified=\(context)"]
+            var arguments = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
+                             "--find-renames", "--unified=\(context)"]
             if ignoreWhitespace { arguments.append("-w") }
-            arguments.append(sha)
+            arguments += [sha, "--", path]
+            output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""
         case .workingTree(let staged):
-            arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
-                         "--find-renames", "--unified=\(context)"]
+            var arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                             "--find-renames", "--unified=\(context)"]
             if ignoreWhitespace { arguments.append("-w") }
             if staged { arguments.append("--cached") }
+            arguments += ["--", path]
+            output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""
         case .range(let from, let to):
-            arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
-                         "--find-renames", "--unified=\(context)"]
+            var arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                             "--find-renames", "--unified=\(context)"]
             if ignoreWhitespace { arguments.append("-w") }
-            arguments.append("\(from)..\(to)")
+            arguments += ["\(from)..\(to)", "--", path]
+            output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""
+        case .stash(let ref):
+            var trackedArgs = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                               "--find-renames", "--unified=\(context)"]
+            if ignoreWhitespace { trackedArgs.append("-w") }
+            trackedArgs += ["\(ref)^1", ref, "--", path]
+            let trackedOutput = (try? GitProcess.capture(arguments: trackedArgs, in: root)) ?? ""
+            if !trackedOutput.isEmpty {
+                output = trackedOutput
+            } else {
+                var untrackedArgs = ["show", "--format=", "--root", "-p", "--no-color",
+                                     "--no-ext-diff", "--no-textconv", "--unified=\(context)"]
+                if ignoreWhitespace { untrackedArgs.append("-w") }
+                untrackedArgs += ["\(ref)^3", "--", path]
+                output = (try? GitProcess.capture(arguments: untrackedArgs, in: root)) ?? ""
+            }
         }
-        arguments += ["--", path]
-        let output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""
         if output.isEmpty, case .workingTree(staged: false) = source {
             if let untracked = untrackedDiff(in: root, path: path, maxLines: maxLines) {
                 return untracked
