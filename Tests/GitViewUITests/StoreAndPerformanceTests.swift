@@ -372,4 +372,26 @@ final class StoreAndPerformanceTests: XCTestCase {
         prefs.advanced = false
         XCTAssertEqual(session.navigation.screen, .overview)
     }
+
+    @MainActor
+    func testInspectorStoreInlineDiffAndExpandWorkflow() {
+        let store = InspectorStore()
+        XCTAssertNil(store.inlineDiffRequest)
+        XCTAssertNil(store.diffRequest)
+
+        store.showInlineDiff(.workingTree(staged: false), path: "Sources/A.swift", title: "Modified file")
+        XCTAssertEqual(store.inlineDiffRequest?.path, "Sources/A.swift")
+        XCTAssertNil(store.diffRequest)
+
+        store.expandInlineDiff()
+        XCTAssertEqual(store.diffRequest, store.inlineDiffRequest)
+
+        store.clearInlineDiff()
+        XCTAssertNil(store.inlineDiffRequest)
+        XCTAssertEqual(store.diffRequest?.path, "Sources/A.swift")
+
+        store.resetForOpen()
+        XCTAssertNil(store.diffRequest)
+        XCTAssertNil(store.inlineDiffRequest)
+    }
 }

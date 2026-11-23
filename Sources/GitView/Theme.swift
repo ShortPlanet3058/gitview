@@ -7,13 +7,15 @@ import GitViewParse
 /// Status colours are a fixed palette and are always paired with an icon and a label.
 enum Theme {
     // Surfaces
-    static let page      = Color.adaptive(light: 0xF4F6FA, dark: 0x0B0F17)
-    static let sidebar   = Color.adaptive(light: 0xEDF0F5, dark: 0x0E131B)
-    static let surface   = Color.adaptive(light: 0xFFFFFF, dark: 0x121824)
-    static let raised    = Color.adaptive(light: 0xFFFFFF, dark: 0x182030)
-    static let hairline  = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.09)
-    static let gridline  = Color.adaptive(light: 0xE2E8F0, dark: 0x1F2937)
-    static let wash      = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.05)
+    static let page           = Color.adaptive(light: 0xF6F8FB, dark: 0x0A0D14)
+    static let sidebar        = Color.adaptive(light: 0xEEF1F6, dark: 0x0D1119)
+    static let surface        = Color.adaptive(light: 0xFFFFFF, dark: 0x131823)
+    static let raised         = Color.adaptive(light: 0xFFFFFF, dark: 0x1A2130)
+    static let hairline       = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.068)
+    static let innerHighlight = Color.adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, alpha: 0.045)
+    static let cardShadow     = Color.adaptive(light: 0x0F172A, dark: 0x000000, alpha: 0.06)
+    static let gridline       = Color.adaptive(light: 0xE2E8F0, dark: 0x1F2937)
+    static let wash           = Color.adaptive(light: 0x0F172A, dark: 0xFFFFFF, alpha: 0.05)
 
     // Ink
     static let ink       = Color.adaptive(light: 0x0F172A, dark: 0xE8ECF3)
@@ -64,8 +66,8 @@ enum Theme {
     }
 
     enum Radius {
-        static let card: CGFloat = 12
-        static let control: CGFloat = 8
+        static let card: CGFloat = 14
+        static let control: CGFloat = 9
         static let chip: CGFloat = 6
     }
 
@@ -85,7 +87,7 @@ enum Theme {
         static let body     = Font.system(size: 13)
         static let bodyBold = Font.system(size: 13, weight: .semibold)
         static let caption  = Font.system(size: 11)
-        static let hero     = Font.system(size: 24, weight: .semibold)
+        static let hero     = Font.system(size: 26, weight: .semibold)
         static let mono     = Font.system(size: 11, design: .monospaced)
     }
 

@@ -218,10 +218,7 @@ struct DashTile<Content: View>: View {
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .background(hovering && destination != nil ? Theme.raised : Theme.surface,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-            .strokeBorder(hovering && destination != nil ? Theme.accent.opacity(0.45) : Theme.hairline))
+        .cardSurface(hovered: hovering && destination != nil)
         .contentShape(Rectangle())
         .onTapGesture { if let destination { session.show(destination) } }
         .onHover { hovering = $0 }
@@ -404,7 +401,7 @@ struct NumberTile: View {
                 .background(Theme.tint(tint).opacity(0.14),
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
-                Text(value).font(Theme.Text.hero).foregroundStyle(Theme.ink)
+                Text(value).font(Theme.Text.hero.monospacedDigit()).foregroundStyle(Theme.ink)
                     .lineLimit(1).minimumScaleFactor(0.6)
                 Text(label).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft).lineLimit(1)
                 if let detail {
@@ -416,10 +413,7 @@ struct NumberTile: View {
         .padding(.horizontal, Theme.Space.m)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .clipped()
-        .background(hovering ? Theme.raised : Theme.surface,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-            .strokeBorder(hovering ? Theme.accent.opacity(0.45) : Theme.hairline))
+        .cardSurface(hovered: hovering)
         .contentShape(Rectangle())
         .onTapGesture { session.show(destination) }
         .onHover { hovering = $0 }
@@ -472,10 +466,7 @@ struct LanguageStrip: View {
         .padding(.horizontal, Theme.Space.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .clipped()
-        .background(hovering ? Theme.raised : Theme.surface,
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-            .strokeBorder(hovering ? Theme.accent.opacity(0.45) : Theme.hairline))
+        .cardSurface(hovered: hovering)
         .contentShape(Rectangle())
         .onTapGesture { session.show(.files) }
         .onHover { hovering = $0 }

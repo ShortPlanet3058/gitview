@@ -36,8 +36,18 @@ public final class InspectorStore {
     }
     public private(set) var loadedDiff: FileDiff?
     public private(set) var diffInFlight = false
+
+    public var inlineDiffRequest: DiffRequest? {
+        didSet { loadInlineDiff() }
+    }
+    public private(set) var inlineLoadedDiff: FileDiff?
+    public private(set) var inlineDiffInFlight = false
+
     public var diffContext: Int = 3 {
-        didSet { loadDiff() }
+        didSet {
+            loadDiff()
+            loadInlineDiff()
+        }
     }
 
     public private(set) var blame: [String: BlameOwnership] = [:]
@@ -60,8 +70,12 @@ public final class InspectorStore {
     public func resetForOpen() {
         repositoryRoot = nil
         diffRequest = nil
+        inlineDiffRequest = nil
         fileHistoryPath = nil
         loadedDiff = nil
+        inlineLoadedDiff = nil
+        diffInFlight = false
+        inlineDiffInFlight = false
         fileHistory = []
         blame = [:]
         blameInFlight = []
@@ -86,6 +100,28 @@ public final class InspectorStore {
 
     public func reloadDiff() {
         loadDiff()
+    }
+
+    public func showInlineDiff(_ source: DiffSource, path: String, title: String) {
+        let next = DiffRequest(source: source, path: path, title: title)
+        if inlineDiffRequest != next {
+            inlineDiffRequest = next
+        } else if inlineLoadedDiff == nil && !inlineDiffInFlight {
+            loadInlineDiff()
+        }
+    }
+
+    public func reloadInlineDiff() {
+        loadInlineDiff()
+    }
+
+    public func clearInlineDiff() {
+        inlineDiffRequest = nil
+    }
+
+    public func expandInlineDiff() {
+        guard let inlineDiffRequest else { return }
+        diffRequest = inlineDiffRequest
     }
 
     public func ensureCommitDetail(sha: String) {
@@ -193,6 +229,24 @@ public final class InspectorStore {
                 guard self.repositoryRoot == root, self.diffRequest == request else { return }
                 self.loadedDiff = diff
                 self.diffInFlight = false
+            }
+        }
+    }
+
+    private func loadInlineDiff() {
+        guard let root = repositoryRoot, let request = inlineDiffRequest else {
+            inlineLoadedDiff = nil
+            inlineDiffInFlight = false
+            return
+        }
+        inlineDiffInFlight = true
+        let context = diffContext
+        Task.detached(priority: .userInitiated) {
+            let diff = try? GitRepository(url: root).diff(request.source, path: request.path, context: context)
+            await MainActor.run {
+                guard self.repositoryRoot == root, self.inlineDiffRequest == request else { return }
+                self.inlineLoadedDiff = diff
+                self.inlineDiffInFlight = false
             }
         }
     }

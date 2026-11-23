@@ -11,6 +11,7 @@ struct CommitRefBadge: Hashable {
 struct CommitsScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
+    @Environment(\.staticRendering) private var staticRendering
     @State private var query = ""
     @State private var range: TimeRange = .all
     @State private var author: String = ""
@@ -151,13 +152,18 @@ struct CommitsScreen: View {
                 SearchField(text: $query,
                             prompt: advanced ? "Search commits, authors, or shas" : "Search changes or people",
                             focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 340)
-                Picker("", selection: $range) { ForEach(TimeRange.allCases) { Text($0.rawValue).tag($0) } }
-                    .labelsHidden().frame(width: 140)
-                Picker("", selection: $author) {
-                    Text("All authors").tag("")
-                    ForEach(session.contributors.prefix(30)) { Text($0.name).tag($0.name) }
+                if staticRendering {
+                    staticFilterPill(range.rawValue, width: 130)
+                    staticFilterPill(author.isEmpty ? "All authors" : author, width: 150)
+                } else {
+                    Picker("", selection: $range) { ForEach(TimeRange.allCases) { Text($0.rawValue).tag($0) } }
+                        .labelsHidden().frame(width: 140)
+                    Picker("", selection: $author) {
+                        Text("All authors").tag("")
+                        ForEach(session.contributors.prefix(30)) { Text($0.name).tag($0.name) }
+                    }
+                    .labelsHidden().frame(width: 180)
                 }
-                .labelsHidden().frame(width: 180)
                 Spacer()
                 Text("\(timeline.filteredCount.formatted()) \(advanced ? "commits" : "saved changes")")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
@@ -220,6 +226,18 @@ struct CommitsScreen: View {
             }
             return .ignored
         }
+    }
+
+    private func staticFilterPill(_ title: String, width: CGFloat) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(Theme.Text.body).foregroundStyle(Theme.ink).lineLimit(1)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .frame(width: width)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
     }
 
     struct DayGroup { let day: Date; let commits: [Commit] }

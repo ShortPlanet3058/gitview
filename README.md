@@ -66,22 +66,19 @@ a few minutes.
 
 | | |
 |---|---|
-| **Overview** | The whole repository on one screen. Every tile opens the tab behind it. |
-| **Changes** | Your working copy: inspect and resolve merge conflicts, safely abort interrupted operations, stage/unstage/discard by file, hunk, or individual diff line, commit, stash, push. |
-| **Commits** | Swimlane branch topology, inline branch/tag badges, filterable history, commit-to-commit compare, full commit body, and parents. |
-| **Branches** | Switch, track remote branches across remotes, create new branches, delete merged branches, and switch linked worktrees. |
-| **Releases** | Create, push, and delete tags, track unreleased commits, and compare any two refs or commits with inline word diffs. |
-| **Contributors** | Who works here, on what, and when they were last seen. |
-| **Files** | The tree with size, language breakdown, syntax-highlighted code viewer, interactive historical line blame gutter, and direct editor line jumping. |
-| **Activity** | Commits over time, and the files that change most. |
-| **Hotspots** | Functions ranked by risk, with syntax-highlighted source excerpts and reasoning shown. |
-| **Change together** | Interactive coupling graph with directory cluster hulls, draggable/pinnable nodes, and shared-commit edge inspection. |
+| **Overview** | Plain-language everyday summary (**Standard**) or full project telemetry, health checks, hotspots, and weekly sparklines (**Advanced**). |
+| **Changes** | Split workspace pairing the file list & commit dock with a live side-by-side/unified diff viewer right in view — simple include/exclude checkboxes & one-click Sync in Standard, or full staged/unstaged/untracked sections, stashes, and hunk/line staging in Advanced. |
+| **History / Commits** | Clean chronological history (**Standard**) or interactive swimlane branch topology, inline branch/tag badges, commit-to-commit comparison, and parent navigation (**Advanced**). |
+| **Branches** | Switch or create local branches cleanly (**Standard**), or inspect remote-tracking branches, ahead/behind divergence, linked worktrees, and merged branch cleanup (**Advanced**). |
+| **Releases** *(Advanced)* | Create, push, and delete tags, track unreleased commits, and compare any two refs or commits with inline word diffs. |
+| **People / Contributors** | See everyone who contributes (**Standard**), plus ownership concentration insights and CSV export (**Advanced**). |
+| **Files** | Interactive file tree, syntax-highlighted code viewer, and in Advanced mode line-by-line historical blame & function risk badges. |
+| **Activity** *(Advanced)* | Commits over time and the files that change most. |
+| **Hotspots** *(Advanced)* | Functions ranked by complexity and recent change frequency, with syntax-highlighted source excerpts. |
+| **Change together** *(Advanced)* | Interactive coupling graph with directory cluster hulls, draggable/pinnable nodes, and shared-commit edge inspection. |
+| **Statistics** *(Advanced)* | Transparent breakdown of health checks, risk weighting, and hunk attribution coverage. |
 
-Use **Command Palette (`⌘K`)** to jump across screens, files, branches, commits, hotspots, or repository actions; press **`⌘F`** for contextual local find inside the active screen or diff and **`⌘⇧F`** for repository-wide search. Everything has two levels: **Standard** explains itself in plain language, **Advanced**
-(⌘⇧D) adds every metric, the model parameters and a Statistics tab showing exactly how the
-analysis was produced — including where it is imprecise. Open Settings (`⌘,`) to configure
-your preferred external editor (VS Code, Cursor, Zed, Sublime Text, Xcode), terminal app,
-and author identity.
+Use **Command Palette (`⌘K`)** to jump across screens, files, branches, or actions; press **`⌘F`** for contextual local find inside the active screen or diff and **`⌘⇧F`** for repository-wide search. **Standard mode** is built for everyday Git workflows without technical jargon, while **Advanced mode** (`⌘⇧D` or the sidebar toggle) unlocks Git staging power tools, historical blame, swimlane topology, and code telemetry. Open Settings (`⌘,`) to choose your experience mode, external editor (VS Code, Cursor, Zed, Sublime Text, Xcode), terminal app, and author identity.
 
 ## How it works
 

@@ -3,37 +3,62 @@ import GitViewCore
 import GitViewGit
 
 struct GlobalSearchField: View {
+    @Environment(AppPreferences.self) private var preferences
     @Environment(SearchStore.self) private var search
     @Environment(NavigationStore.self) private var navigation
     @Environment(\.staticRendering) private var staticRendering
     @FocusState private var focused: Bool
 
+    private var prompt: String {
+        preferences.advanced
+            ? "Search commits, files, functions…"
+            : "Search history, files, branches…"
+    }
+
     var body: some View {
         @Bindable var search = search
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.inkMuted)
             if staticRendering {
-                Text(search.globalSearch.isEmpty ? "Search commits, files, functions…" : search.globalSearch)
+                Text(search.globalSearch.isEmpty ? prompt : search.globalSearch)
                     .font(Theme.Text.body)
                     .foregroundStyle(search.globalSearch.isEmpty ? Theme.inkMuted : Theme.ink)
                     .lineLimit(1)
-                    .frame(minWidth: 160, idealWidth: 210, maxWidth: 240, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                TextField("Search commits, files, functions…", text: $search.globalSearch)
-                    .textFieldStyle(.plain).font(Theme.Text.body).focused($focused)
-                    .frame(minWidth: 160, idealWidth: 210, maxWidth: 240)
+                TextField(prompt, text: $search.globalSearch)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Text.body)
+                    .focused($focused)
+                    .frame(maxWidth: .infinity)
             }
             if search.isSearching {
                 Button { search.clear() } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.inkMuted)
                 }
                 .buttonStyle(.plain)
             } else {
-                Text("⌘⇧F").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.inkMuted)
+                Button {
+                    navigation.isCommandPalettePresented.toggle()
+                } label: {
+                    Text("⌘K")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.inkMuted)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("Open Command Palette (⌘K)")
             }
         }
+        .frame(minWidth: 220, maxWidth: 360)
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .background(Theme.surface.opacity(0.9), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
             .strokeBorder(focused ? Theme.accent.opacity(0.6) : Theme.hairline))
         .onChange(of: navigation.focusSearchRequest) { focused = true }
