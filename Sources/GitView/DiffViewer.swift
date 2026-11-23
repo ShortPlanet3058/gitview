@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import GitViewCore
 import GitViewGit
 import GitViewParse
@@ -26,6 +27,10 @@ struct DiffViewer: View {
 
     private var activeDiff: FileDiff? {
         embedded ? inspector.inlineLoadedDiff : inspector.loadedDiff
+    }
+
+    private var activeImageDiff: ImageDiffData? {
+        embedded ? inspector.inlineLoadedImageDiff : inspector.loadedImageDiff
     }
 
     private var activeDiffInFlight: Bool {
@@ -408,7 +413,11 @@ struct DiffViewer: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let diff = activeDiff {
             if diff.isBinary {
-                message("Binary file", "Its contents changed, but there are no text lines to show.")
+                if let imageDiff = activeImageDiff, ImageDiffView.canDisplay(imageDiff) {
+                    ImageDiffView(imageDiff: imageDiff)
+                } else {
+                    message("Binary file", "Its contents changed, but there are no text lines to show.")
+                }
             } else if diff.isEmpty {
                 message("No changes here", "This file is listed but its contents are identical — usually a "
                                          + "mode change, or a rename with no edits.")
@@ -807,5 +816,200 @@ enum DiffPresentation {
             }
         }
         return result
+    }
+}
+
+private struct ImageDiffView: View {
+    enum Mode: String, CaseIterable, Identifiable {
+        case sideBySide = "Side by side"
+        case swipe = "Swipe"
+        case onionSkin = "Onion skin"
+        var id: String { rawValue }
+    }
+
+    let imageDiff: ImageDiffData
+    @State private var mode: Mode = .sideBySide
+    @State private var splitRatio: Double = 0.5
+    @State private var onionOpacity: Double = 0.5
+
+    static func canDisplay(_ data: ImageDiffData) -> Bool {
+        let oldOK = data.oldData.flatMap(NSImage.init(data:)) != nil
+        let newOK = data.newData.flatMap(NSImage.init(data:)) != nil
+        return oldOK || newOK
+    }
+
+    private var oldImage: NSImage? { imageDiff.oldData.flatMap(NSImage.init(data:)) }
+    private var newImage: NSImage? { imageDiff.newData.flatMap(NSImage.init(data:)) }
+
+    var body: some View {
+        ScrollColumn {
+            VStack(alignment: .leading, spacing: Theme.Space.l) {
+                HStack(spacing: Theme.Space.m) {
+                    if oldImage != nil && newImage != nil {
+                        SegmentPicker(
+                            options: Mode.allCases.map { ($0, $0.rawValue) },
+                            selection: $mode
+                        )
+                    }
+                    Spacer()
+                    if let oldBytes = imageDiff.oldData?.count, let newBytes = imageDiff.newData?.count {
+                        let delta = newBytes - oldBytes
+                        let prefix = delta >= 0 ? "+" : "−"
+                        Text("\(Int64(oldBytes).byteString) → \(Int64(newBytes).byteString) (\(prefix)\(Int64(abs(delta)).byteString))")
+                            .font(Theme.Text.caption.monospacedDigit())
+                            .foregroundStyle(Theme.inkSoft)
+                    } else if let onlyBytes = imageDiff.newData?.count ?? imageDiff.oldData?.count {
+                        Text(Int64(onlyBytes).byteString)
+                            .font(Theme.Text.caption.monospacedDigit())
+                            .foregroundStyle(Theme.inkSoft)
+                    }
+                }
+
+                if let oldImage, let newImage {
+                    switch mode {
+                    case .sideBySide:
+                        HStack(alignment: .top, spacing: Theme.Space.l) {
+                            imageCard(title: "Before", image: oldImage, data: imageDiff.oldData, tint: Theme.critical)
+                            imageCard(title: "After", image: newImage, data: imageDiff.newData, tint: Theme.good)
+                        }
+                    case .swipe:
+                        VStack(spacing: Theme.Space.m) {
+                            GeometryReader { geo in
+                                let revealWidth = geo.size.width * CGFloat(splitRatio)
+                                ZStack(alignment: .leading) {
+                                    CheckerboardBackdrop()
+                                    Image(nsImage: oldImage)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: geo.size.width, height: geo.size.height)
+                                    Image(nsImage: newImage)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: geo.size.width, height: geo.size.height)
+                                        .mask(
+                                            HStack(spacing: 0) {
+                                                Rectangle().frame(width: max(0, revealWidth))
+                                                Spacer(minLength: 0)
+                                            }
+                                        )
+                                    Rectangle()
+                                        .fill(Theme.accent)
+                                        .frame(width: 2, height: geo.size.height)
+                                        .offset(x: max(0, min(geo.size.width - 2, revealWidth - 1)))
+                                }
+                            }
+                            .frame(height: 360)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+
+                            HStack(spacing: Theme.Space.s) {
+                                Text("After").font(Theme.Text.caption).foregroundStyle(Theme.good)
+                                Slider(value: $splitRatio, in: 0...1)
+                                Text("Before").font(Theme.Text.caption).foregroundStyle(Theme.critical)
+                            }
+                        }
+                        .padding(Theme.Space.l)
+                        .cardSurface()
+                    case .onionSkin:
+                        VStack(spacing: Theme.Space.m) {
+                            ZStack {
+                                CheckerboardBackdrop()
+                                Image(nsImage: oldImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                Image(nsImage: newImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .opacity(onionOpacity)
+                            }
+                            .frame(height: 360)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+
+                            HStack(spacing: Theme.Space.s) {
+                                Text("Before").font(Theme.Text.caption).foregroundStyle(Theme.critical)
+                                Slider(value: $onionOpacity, in: 0...1)
+                                Text("After (\(Int((onionOpacity * 100).rounded()))%)")
+                                    .font(Theme.Text.caption.monospacedDigit())
+                                    .foregroundStyle(Theme.good)
+                            }
+                        }
+                        .padding(Theme.Space.l)
+                        .cardSurface()
+                    }
+                } else if let newImage {
+                    imageCard(title: "Added image", image: newImage, data: imageDiff.newData, tint: Theme.good)
+                } else if let oldImage {
+                    imageCard(title: "Removed image", image: oldImage, data: imageDiff.oldData, tint: Theme.critical)
+                }
+            }
+            .padding(Theme.Space.xl)
+        }
+    }
+
+    private func imageCard(title: String, image: NSImage, data: Data?, tint: Color) -> some View {
+        let dims = pixelDimensions(data: data, fallback: image)
+        return VStack(alignment: .leading, spacing: Theme.Space.s) {
+            HStack {
+                Text(title).font(Theme.Text.bodyBold).foregroundStyle(tint)
+                Spacer()
+                Text("\(dims.width) × \(dims.height) px")
+                    .font(Theme.Text.caption.monospacedDigit())
+                    .foregroundStyle(Theme.inkMuted)
+                if let bytes = data?.count {
+                    Text("· \(Int64(bytes).byteString)")
+                        .font(Theme.Text.caption.monospacedDigit())
+                        .foregroundStyle(Theme.inkMuted)
+                }
+            }
+            ZStack {
+                CheckerboardBackdrop()
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(Theme.Space.m)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 320)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+        }
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity)
+        .cardSurface()
+    }
+
+    private func pixelDimensions(data: Data?, fallback: NSImage) -> (width: Int, height: Int) {
+        if let data, let rep = NSBitmapImageRep(data: data), rep.pixelsWide > 0, rep.pixelsHigh > 0 {
+            return (rep.pixelsWide, rep.pixelsHigh)
+        }
+        return (max(Int(fallback.size.width), 0), max(Int(fallback.size.height), 0))
+    }
+}
+
+private struct CheckerboardBackdrop: View {
+    var body: some View {
+        Canvas { context, size in
+            let tile: CGFloat = 12
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Theme.page))
+            var y: CGFloat = 0
+            var row = 0
+            while y < size.height {
+                var x: CGFloat = 0
+                var col = 0
+                while x < size.width {
+                    if (row + col).isMultiple(of: 2) {
+                        context.fill(
+                            Path(CGRect(x: x, y: y, width: tile, height: tile)),
+                            with: .color(Theme.wash)
+                        )
+                    }
+                    x += tile
+                    col += 1
+                }
+                y += tile
+                row += 1
+            }
+        }
     }
 }

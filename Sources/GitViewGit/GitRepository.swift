@@ -97,6 +97,42 @@ public struct GitRepository: Sendable {
         return sink.finish()
     }
 
+    /// Reads topological commit headers across all local & remote branches (`git log --all --topo-order`).
+    public func loadAllBranchesCommits(limit: Int = 600) throws -> [Commit] {
+        let root = try validate()
+        let output = try GitProcess.capture(
+            arguments: [
+                "-c", "core.quotePath=false",
+                "log", "--all", "--topo-order",
+                "--max-count=\(max(1, limit))",
+                "--pretty=format:%H%x1f%P%x1f%aN%x1f%aE%x1f%aI%x1f%s",
+            ],
+            in: root
+        )
+        var result: [Commit] = []
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            let fields = line.split(separator: "\u{1f}", omittingEmptySubsequences: false)
+            guard fields.count >= 6 else { continue }
+            let sha = String(fields[0])
+            let parents = fields[1].split(whereSeparator: \.isWhitespace).map(String.init)
+            let author = String(fields[2])
+            let email = String(fields[3])
+            let date = ISO8601.parse(String(fields[4])) ?? Date()
+            let subject = fields[5...].joined(separator: "\u{1f}")
+            result.append(Commit(
+                sha: sha,
+                parents: parents,
+                author: author,
+                email: email,
+                date: date,
+                subject: subject,
+                fileChanges: []
+            ))
+        }
+        return result
+    }
+
     private func historyArguments(range: String?) -> [String] {
         [
             // Stop git from octal-escaping non-ASCII paths, so UTF-8 filenames survive intact.

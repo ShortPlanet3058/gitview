@@ -24,9 +24,9 @@ struct AttributionStats: Sendable {
 
 struct RepositoryAnalysis: Sendable {
     let root: URL
-    let info: RepositoryInfo
-    let branches: [BranchInfo]
-    let tags: [TagInfo]
+    var info: RepositoryInfo
+    var branches: [BranchInfo]
+    var tags: [TagInfo]
     let commits: [Commit]
     let allUnits: [CodeUnit]
     let filesParsed: Int
@@ -45,6 +45,7 @@ struct RepositoryAnalysis: Sendable {
     var fullChurn: ChurnIndex? = nil
     var precomputedOwnership: OwnershipIndex? = nil
     var precomputedContributors: [Contributor]? = nil
+    let hasCodeUnits: Bool
 
     init(
         root: URL,
@@ -64,7 +65,8 @@ struct RepositoryAnalysis: Sendable {
         workingState: WorkingState,
         fullChurn: ChurnIndex? = nil,
         precomputedOwnership: OwnershipIndex? = nil,
-        precomputedContributors: [Contributor]? = nil
+        precomputedContributors: [Contributor]? = nil,
+        hasCodeUnits: Bool = true
     ) {
         self.root = root
         self.info = info
@@ -84,6 +86,7 @@ struct RepositoryAnalysis: Sendable {
         self.fullChurn = fullChurn
         self.precomputedOwnership = precomputedOwnership
         self.precomputedContributors = precomputedContributors
+        self.hasCodeUnits = hasCodeUnits
     }
 
     var authorCount: Int { Set(commits.map(\.author)).count }
@@ -147,6 +150,7 @@ enum AnalysisService {
     /// - Parameter partial: handed a usable analysis at each milestone, so the app can put
     ///   the parts it already has on screen instead of waiting for all of them.
     static func load(root: URL, useCache: Bool = true,
+                     includeCodeAnalysis: Bool = true,
                      progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in },
                      partial: @escaping @Sendable (RepositoryAnalysis, Readiness) -> Void = { _, _ in }
     ) async throws -> RepositoryAnalysis {
@@ -201,80 +205,27 @@ enum AnalysisService {
         let cached = snapshot.matchingPayload ?? snapshot.payload
         let cachedFileUnits = snapshot.fileUnits
 
-        // Partition tracked parsable files against cached per-file units up front (in-memory only).
-        let parsableTracked = info.inventory.files.filter { file in
-            let ext = (file.path as NSString).pathExtension.lowercased()
-            return LanguageRegistry.shared.language(forExtension: ext) != nil
-        }
-        var reusedUnits: [CodeUnit] = []
-        var reusedGenerated: Set<String> = []
-        var reusedFilesCount = 0
-        var dirtyPaths: [String] = []
-        dirtyPaths.reserveCapacity(parsableTracked.count)
-
-        for file in parsableTracked {
-            if useCache,
-               let entry = cachedFileUnits[file.path],
-               let modDate = file.modified,
-               entry.bytes == file.bytes,
-               abs(entry.modified - modDate.timeIntervalSince1970) < 0.001 {
-                reusedUnits.append(contentsOf: entry.units)
-                if entry.isGenerated { reusedGenerated.insert(file.path) }
-                reusedFilesCount += 1
-            } else {
-                dirtyPaths.append(file.path)
-            }
-        }
-
-        // Fast path: full cache hit for exact HEAD with zero dirty files skips intermediate UI flickers
-        // and avoids rewriting unchanged SQLite blobs.
-        if useCache,
+        // Standard-mode fast path: cache hit on exact HEAD skips tree-sitter & churn join entirely.
+        if !includeCodeAnalysis,
+           useCache,
            let matched = snapshot.matchingPayload,
            !head.isEmpty,
-           matched.headSHA == head,
-           dirtyPaths.isEmpty {
+           matched.headSHA == head {
             let commits = matched.commits
             let currentPaths = Set(info.inventory.files.map(\.path))
-            let units = reusedUnits
             async let contributorsTask = Task.detached(priority: .userInitiated) {
                 ContributorStats.compute(commits: commits)
             }.value
             async let ownershipTask = Task.detached(priority: .userInitiated) {
                 OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
             }.value
-            async let joinTask = Task.detached(priority: .userInitiated) {
-                ChurnJoiner.join(units: units, commits: commits)
-            }.value
 
             let precomputedContributors = await contributorsTask
             let precomputedOwnership = await ownershipTask
-            let fullJoin = await joinTask
 
-            let unitsByPath = Dictionary(grouping: units, by: \.filePath)
-            let fileEntries = parsableTracked.compactMap { file -> AnalysisCache.CachedFileUnits? in
-                guard let modified = file.modified else { return nil }
-                return AnalysisCache.CachedFileUnits(
-                    path: file.path,
-                    bytes: file.bytes,
-                    modified: modified.timeIntervalSince1970,
-                    isGenerated: reusedGenerated.contains(file.path),
-                    units: unitsByPath[file.path] ?? []
-                )
-            }
-            let needsPruneSave = cachedFileUnits.count != fileEntries.count
-            if needsPruneSave || !computedDivergence.isEmpty {
+            if !computedDivergence.isEmpty {
                 Task.detached(priority: .utility) {
-                    if needsPruneSave {
-                        AnalysisCache.save(
-                            headSHA: head,
-                            commits: commits,
-                            fileEntries: fileEntries,
-                            root: validated
-                        )
-                    }
-                    if !computedDivergence.isEmpty {
-                        AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
-                    }
+                    AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
                 }
             }
 
@@ -284,22 +235,127 @@ enum AnalysisService {
                 branches: branches,
                 tags: tags,
                 commits: commits,
-                allUnits: units,
-                filesParsed: reusedFilesCount,
+                allUnits: [],
+                filesParsed: 0,
                 filesFailed: [],
-                generatedFiles: reusedGenerated,
+                generatedFiles: [],
                 historyDuration: 0,
                 parseDuration: 0,
                 factsDuration: factsDuration,
-                attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
-                                              unmatchedHunks: fullJoin.unmatchedHunks,
-                                              unresolvedHunks: fullJoin.unresolvedPaths),
+                attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
                 source: .cached,
                 workingState: workingState,
-                fullChurn: fullJoin,
+                fullChurn: nil,
                 precomputedOwnership: precomputedOwnership,
-                precomputedContributors: precomputedContributors
+                precomputedContributors: precomputedContributors,
+                hasCodeUnits: false
             )
+        }
+
+        var parsableTracked: [FileInventory.TrackedFile] = []
+        var reusedUnits: [CodeUnit] = []
+        var reusedGenerated: Set<String> = []
+        var reusedFilesCount = 0
+        var dirtyPaths: [String] = []
+
+        if includeCodeAnalysis {
+            // Partition tracked parsable files against cached per-file units up front (in-memory only).
+            parsableTracked = info.inventory.files.filter { file in
+                let ext = (file.path as NSString).pathExtension.lowercased()
+                return LanguageRegistry.shared.language(forExtension: ext) != nil
+            }
+            dirtyPaths.reserveCapacity(parsableTracked.count)
+
+            for file in parsableTracked {
+                if useCache,
+                   let entry = cachedFileUnits[file.path],
+                   let modDate = file.modified,
+                   entry.bytes == file.bytes,
+                   abs(entry.modified - modDate.timeIntervalSince1970) < 0.001 {
+                    reusedUnits.append(contentsOf: entry.units)
+                    if entry.isGenerated { reusedGenerated.insert(file.path) }
+                    reusedFilesCount += 1
+                } else {
+                    dirtyPaths.append(file.path)
+                }
+            }
+
+            // Fast path: full cache hit for exact HEAD with zero dirty files skips intermediate UI flickers
+            // and avoids rewriting unchanged SQLite blobs.
+            if useCache,
+               let matched = snapshot.matchingPayload,
+               !head.isEmpty,
+               matched.headSHA == head,
+               dirtyPaths.isEmpty {
+                let commits = matched.commits
+                let currentPaths = Set(info.inventory.files.map(\.path))
+                let units = reusedUnits
+                async let contributorsTask = Task.detached(priority: .userInitiated) {
+                    ContributorStats.compute(commits: commits)
+                }.value
+                async let ownershipTask = Task.detached(priority: .userInitiated) {
+                    OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
+                }.value
+                async let joinTask = Task.detached(priority: .userInitiated) {
+                    ChurnJoiner.join(units: units, commits: commits)
+                }.value
+
+                let precomputedContributors = await contributorsTask
+                let precomputedOwnership = await ownershipTask
+                let fullJoin = await joinTask
+
+                let unitsByPath = Dictionary(grouping: units, by: \.filePath)
+                let fileEntries = parsableTracked.compactMap { file -> AnalysisCache.CachedFileUnits? in
+                    guard let modified = file.modified else { return nil }
+                    return AnalysisCache.CachedFileUnits(
+                        path: file.path,
+                        bytes: file.bytes,
+                        modified: modified.timeIntervalSince1970,
+                        isGenerated: reusedGenerated.contains(file.path),
+                        units: unitsByPath[file.path] ?? []
+                    )
+                }
+                let needsPruneSave = cachedFileUnits.count != fileEntries.count
+                if needsPruneSave || !computedDivergence.isEmpty {
+                    Task.detached(priority: .utility) {
+                        if needsPruneSave {
+                            AnalysisCache.save(
+                                headSHA: head,
+                                commits: commits,
+                                fileEntries: fileEntries,
+                                root: validated
+                            )
+                        }
+                        if !computedDivergence.isEmpty {
+                            AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+                        }
+                    }
+                }
+
+                return RepositoryAnalysis(
+                    root: validated,
+                    info: info,
+                    branches: branches,
+                    tags: tags,
+                    commits: commits,
+                    allUnits: units,
+                    filesParsed: reusedFilesCount,
+                    filesFailed: [],
+                    generatedFiles: reusedGenerated,
+                    historyDuration: 0,
+                    parseDuration: 0,
+                    factsDuration: factsDuration,
+                    attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
+                                                  unmatchedHunks: fullJoin.unmatchedHunks,
+                                                  unresolvedHunks: fullJoin.unresolvedPaths),
+                    source: .cached,
+                    workingState: workingState,
+                    fullChurn: fullJoin,
+                    precomputedOwnership: precomputedOwnership,
+                    precomputedContributors: precomputedContributors,
+                    hasCodeUnits: true
+                )
+            }
         }
 
         // Progressive path: emit facts immediately, then history, then scanned files.
@@ -308,7 +364,8 @@ enum AnalysisService {
             commits: [], allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
             historyDuration: 0, parseDuration: 0, factsDuration: factsDuration,
             attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
-            source: .fresh, workingState: workingState), .factsOnly)
+            source: .fresh, workingState: workingState,
+            hasCodeUnits: false), .factsOnly)
 
         progress(LoadingProgress(stage: "Reading history",
                                  detail: cached == nil ? "every commit, first time for this project"
@@ -344,6 +401,49 @@ enum AnalysisService {
         let precomputedContributors = await contributorsTask
         let precomputedOwnership = await ownershipTask
 
+        if !includeCodeAnalysis {
+            if useCache {
+                let needsSave = snapshot.matchingPayload?.headSHA != head
+                if needsSave || !computedDivergence.isEmpty {
+                    let commitsSnapshot = commits
+                    Task.detached(priority: .utility) {
+                        if needsSave {
+                            AnalysisCache.save(
+                                headSHA: head,
+                                commits: commitsSnapshot,
+                                fileEntries: nil,
+                                root: validated
+                            )
+                        }
+                        if !computedDivergence.isEmpty {
+                            AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+                        }
+                    }
+                }
+            }
+            return RepositoryAnalysis(
+                root: validated,
+                info: info,
+                branches: branches,
+                tags: tags,
+                commits: commits,
+                allUnits: [],
+                filesParsed: 0,
+                filesFailed: [],
+                generatedFiles: [],
+                historyDuration: historyDuration,
+                parseDuration: 0,
+                factsDuration: factsDuration,
+                attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
+                source: source,
+                workingState: workingState,
+                fullChurn: nil,
+                precomputedOwnership: precomputedOwnership,
+                precomputedContributors: precomputedContributors,
+                hasCodeUnits: false
+            )
+        }
+
         partial(RepositoryAnalysis(
             root: validated, info: info, branches: branches, tags: tags,
             commits: commits, allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
@@ -352,7 +452,8 @@ enum AnalysisService {
             source: source, workingState: workingState,
             fullChurn: nil,
             precomputedOwnership: precomputedOwnership,
-            precomputedContributors: precomputedContributors), .withHistory)
+            precomputedContributors: precomputedContributors,
+            hasCodeUnits: false), .withHistory)
 
         let parseStart = Date()
         let report: SourceScanner.Report
@@ -444,7 +545,124 @@ enum AnalysisService {
             workingState: workingState,
             fullChurn: fullJoin,
             precomputedOwnership: precomputedOwnership,
-            precomputedContributors: precomputedContributors
+            precomputedContributors: precomputedContributors,
+            hasCodeUnits: true
+        )
+    }
+
+    /// Hydrates source AST parsing and function-level churn on demand when switching from Standard to Advanced mode.
+    static func loadCodeUnits(
+        for analysis: RepositoryAnalysis,
+        useCache: Bool = true,
+        progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in }
+    ) async throws -> RepositoryAnalysis {
+        let root = analysis.root
+        let cachedFileUnits = useCache
+            ? await Task.detached(priority: .userInitiated) { AnalysisCache.loadFileUnits(root: root) }.value
+            : [:]
+        let parsableTracked = analysis.info.inventory.files.filter { file in
+            let ext = (file.path as NSString).pathExtension.lowercased()
+            return LanguageRegistry.shared.language(forExtension: ext) != nil
+        }
+
+        var reusedUnits: [CodeUnit] = []
+        var reusedGenerated: Set<String> = []
+        var reusedFilesCount = 0
+        var dirtyPaths: [String] = []
+        dirtyPaths.reserveCapacity(parsableTracked.count)
+
+        for file in parsableTracked {
+            if useCache,
+               let entry = cachedFileUnits[file.path],
+               let modDate = file.modified,
+               entry.bytes == file.bytes,
+               abs(entry.modified - modDate.timeIntervalSince1970) < 0.001 {
+                reusedUnits.append(contentsOf: entry.units)
+                if entry.isGenerated { reusedGenerated.insert(file.path) }
+                reusedFilesCount += 1
+            } else {
+                dirtyPaths.append(file.path)
+            }
+        }
+
+        let parseStart = Date()
+        let report: SourceScanner.Report
+        if dirtyPaths.isEmpty {
+            report = SourceScanner.Report(
+                units: reusedUnits,
+                filesParsed: reusedFilesCount,
+                filesFailed: [],
+                generatedFiles: reusedGenerated
+            )
+        } else {
+            progress(LoadingProgress(stage: "Parsing source files"))
+            let scanned = try await SourceScanner().scan(root: root, trackedPaths: dirtyPaths) { parsed, total in
+                guard total > 0 else { return }
+                progress(LoadingProgress(
+                    stage: "Parsing source files",
+                    detail: "\(parsed.formatted()) of \(total.formatted()) files",
+                    fraction: Double(parsed) / Double(total)))
+            }
+            report = SourceScanner.Report(
+                units: reusedUnits + scanned.units,
+                filesParsed: reusedFilesCount + scanned.filesParsed,
+                filesFailed: scanned.filesFailed,
+                generatedFiles: reusedGenerated.union(scanned.generatedFiles)
+            )
+        }
+        let parseDuration = Date().timeIntervalSince(parseStart)
+
+        let units = report.units
+        let commits = analysis.commits
+        let fullJoin = await Task.detached(priority: .userInitiated) { [units, commits] in
+            ChurnJoiner.join(units: units, commits: commits)
+        }.value
+
+        if useCache {
+            let head = analysis.commits.first?.sha ?? ""
+            let unitsByPath = Dictionary(grouping: units, by: \.filePath)
+            let failedSet = Set(report.filesFailed)
+            let fileEntries = parsableTracked.compactMap { file -> AnalysisCache.CachedFileUnits? in
+                guard !failedSet.contains(file.path), let modified = file.modified else { return nil }
+                return AnalysisCache.CachedFileUnits(
+                    path: file.path,
+                    bytes: file.bytes,
+                    modified: modified.timeIntervalSince1970,
+                    isGenerated: report.generatedFiles.contains(file.path),
+                    units: unitsByPath[file.path] ?? []
+                )
+            }
+            if !dirtyPaths.isEmpty || cachedFileUnits.count != fileEntries.count {
+                Task.detached(priority: .utility) {
+                    AnalysisCache.save(headSHA: head, commits: commits, fileEntries: fileEntries, root: root)
+                }
+            }
+        }
+
+        return RepositoryAnalysis(
+            root: root,
+            info: analysis.info,
+            branches: analysis.branches,
+            tags: analysis.tags,
+            commits: commits,
+            allUnits: units,
+            filesParsed: report.filesParsed,
+            filesFailed: report.filesFailed,
+            generatedFiles: report.generatedFiles,
+            historyDuration: analysis.historyDuration,
+            parseDuration: parseDuration,
+            factsDuration: analysis.factsDuration,
+            attribution: AttributionStats(
+                matchedHunks: fullJoin.matchedHunks,
+                unmatchedHunks: fullJoin.unmatchedHunks,
+                unresolvedHunks: fullJoin.unresolvedPaths
+            ),
+            source: analysis.source,
+            workingState: analysis.workingState,
+            fullChurn: fullJoin,
+            precomputedOwnership: analysis.precomputedOwnership,
+            precomputedContributors: analysis.precomputedContributors,
+            hasCodeUnits: true
         )
     }
 }

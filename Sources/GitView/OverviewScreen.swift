@@ -494,7 +494,8 @@ struct HealthTile: View {
                          + "conversation, not a verdict."
                      : "A quick summary of how active and tidy this repository is.",
                  destination: preferences.advanced ? .statistics : nil,
-                 needs: \.hasUnits, waitingFor: "the source files") {
+                 needs: preferences.advanced ? \.hasUnits : \.hasHistory,
+                 waitingFor: preferences.advanced ? "the source files" : "the commit history") {
             if let health = risk.health {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     HStack(spacing: Theme.Space.m) {

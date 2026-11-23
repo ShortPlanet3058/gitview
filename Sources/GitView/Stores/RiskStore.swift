@@ -156,6 +156,54 @@ final class RiskStore {
         rebuildInBackground()
     }
 
+    /// Populates `fileTree` and commit/branch/file-size `health` checks without parsing ASTs or running `ChurnJoiner`.
+    func updateLightweightSummary(analysis: RepositoryAnalysis) {
+        latestAnalysis = analysis
+        latestUnitsByID = [:]
+        latestIsComplete = false
+        backgroundRebuildTask?.cancel()
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
+        analysisRebuildInProgress = true
+
+        backgroundRebuildTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                let tree = FileTree(files: analysis.info.inventory.files, rows: [])
+                let now = Date()
+                let ninetyDays = now.addingTimeInterval(-90 * 86_400)
+                let isStale = { (b: BranchInfo) in !b.isDefault && !b.isMerged && b.date < ninetyDays }
+                let healthValue = RepositoryHealth.assess(.init(
+                    lastCommit: analysis.commits.map(\.date).max(),
+                    activeAuthors: ContributorStats.activeAuthors(commits: analysis.commits, since: ninetyDays, excludingBots: true),
+                    staleLocalBranches: analysis.branches.filter { !$0.isRemote && isStale($0) }.count,
+                    localBranches: analysis.branches.filter { !$0.isRemote }.count,
+                    staleRemoteBranches: analysis.branches.filter { $0.isRemote && isStale($0) }.count,
+                    largeFiles: analysis.info.inventory.largeFiles.count,
+                    complexChurnShare: nil,
+                    complexFunctionsChanged: 0,
+                    now: now
+                ))
+                return (tree, healthValue)
+            }.value
+            guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
+            self.analysisRebuildInProgress = false
+            self.fileTree = result.0
+            self.health = result.1
+            self.allRankedRows = []
+            self.allRankedRowsByID = [:]
+            self.rows = []
+            self.rowsByID = [:]
+            self.levelCounts = [:]
+            self.excludedUnitCount = 0
+            self.churn = nil
+            self.coupling = nil
+            self.couplingRows = []
+            self.couplingRowsByID = [:]
+            self.graph = nil
+            self.graphPositions = [:]
+        }
+    }
+
     private struct ConfigSnapshot: Sendable {
         let halfLifeDays: Double
         let excludeTests: Bool

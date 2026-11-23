@@ -432,4 +432,34 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(store.commitSubject, "Important feature message")
         XCTAssertEqual(store.commitBody, "Detailed context that must not vanish")
     }
+
+    func testAnalysisServiceDefersCodeUnitsInStandardModeAndHydratesOnDemand() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-lazy-ast-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRoot)
+        try "func computeValue() -> Int {\n    return 42\n}\n".write(
+            to: tempRoot.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "App.swift"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "Add App"], in: tempRoot)
+
+        let standard = try await AnalysisService.load(
+            root: tempRoot,
+            useCache: false,
+            includeCodeAnalysis: false
+        )
+        XCTAssertFalse(standard.hasCodeUnits)
+        XCTAssertTrue(standard.allUnits.isEmpty)
+        XCTAssertEqual(standard.filesParsed, 0)
+        XCTAssertEqual(standard.commits.count, 1)
+
+        let hydrated = try await AnalysisService.loadCodeUnits(for: standard, useCache: false)
+        XCTAssertTrue(hydrated.hasCodeUnits)
+        XCTAssertFalse(hydrated.allUnits.isEmpty)
+        XCTAssertEqual(hydrated.filesParsed, 1)
+    }
 }

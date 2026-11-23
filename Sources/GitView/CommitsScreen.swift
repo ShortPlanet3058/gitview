@@ -15,8 +15,17 @@ struct CommitsScreen: View {
     @State private var query = ""
     @State private var range: TimeRange = .all
     @State private var author: String = ""
+    @State private var scope: Scope = .currentBranch
+    @State private var allBranchesCommits: [Commit] = []
+    @State private var loadingAllBranches = false
     @State private var limit = 300
     @State private var cachedTimeline: CachedTimeline?
+
+    enum Scope: String, CaseIterable, Identifiable, Hashable {
+        case currentBranch = "Current branch"
+        case allBranches = "All branches"
+        var id: String { rawValue }
+    }
 
     enum TimeRange: String, CaseIterable, Identifiable, Hashable {
         case all = "All time", year = "Last year", sixMonths = "Last 6 months", month = "Last 30 days"
@@ -40,6 +49,8 @@ struct CommitsScreen: View {
         let query: String
         let range: TimeRange
         let author: String
+        let scope: Scope
+        let allBranchesCount: Int
         let limit: Int
         let advanced: Bool
     }
@@ -61,6 +72,8 @@ struct CommitsScreen: View {
         query: String,
         range: TimeRange,
         author: String,
+        scope: Scope,
+        allBranchesCount: Int,
         limit: Int,
         advanced: Bool
     ) -> TimelineCacheKey {
@@ -73,16 +86,27 @@ struct CommitsScreen: View {
             query: query,
             range: range,
             author: author,
+            scope: scope,
+            allBranchesCount: allBranchesCount,
             limit: limit,
             advanced: advanced
         )
     }
 
-    private static func buildTimeline(analysis: RepositoryAnalysis?, key: TimelineCacheKey) -> CachedTimeline {
-        let allCommits = analysis?.commits ?? []
+    private static func buildTimeline(
+        analysis: RepositoryAnalysis?,
+        allBranchesCommits: [Commit],
+        key: TimelineCacheKey
+    ) -> CachedTimeline {
+        let sourceCommits: [Commit]
+        if key.advanced && key.scope == .allBranches && !allBranchesCommits.isEmpty {
+            sourceCommits = allBranchesCommits
+        } else {
+            sourceCommits = analysis?.commits ?? []
+        }
         let q = key.query.trimmingCharacters(in: .whitespaces)
         let since = key.range.since
-        let filtered = allCommits.filter { commit in
+        let filtered = sourceCommits.filter { commit in
             if let since, commit.date < since { return false }
             if !key.author.isEmpty && commit.author != key.author { return false }
             if q.isEmpty { return true }
@@ -128,6 +152,13 @@ struct CommitsScreen: View {
         return map
     }
 
+    private var scopeTaskKey: String {
+        let branchSignature = (session.analysis?.branches ?? [])
+            .map { "\($0.name):\($0.sha)" }
+            .joined(separator: "|")
+        return "\(preferences.advanced):\(scope.rawValue):\(session.analysis?.workingState.headSHA ?? ""):\(branchSignature)"
+    }
+
     var body: some View {
         let advanced = preferences.advanced
         let key = Self.makeCacheKey(
@@ -135,19 +166,35 @@ struct CommitsScreen: View {
             query: query,
             range: range,
             author: author,
+            scope: scope,
+            allBranchesCount: allBranchesCommits.count,
             limit: limit,
             advanced: advanced
         )
         let timeline = (cachedTimeline?.key == key ? cachedTimeline : nil)
-            ?? Self.buildTimeline(analysis: session.analysis, key: key)
+            ?? Self.buildTimeline(analysis: session.analysis, allBranchesCommits: allBranchesCommits, key: key)
 
         Page {
-            ScreenHeader(
-                title: advanced ? "Commits" : "History",
-                subtitle: advanced
-                    ? "Browse the project history and branch topology."
-                    : "A timeline of changes saved to this repository."
-            )
+            HStack(alignment: .top) {
+                ScreenHeader(
+                    title: advanced ? "Commits" : "History",
+                    subtitle: advanced
+                        ? "Browse the project history and branch topology."
+                        : "A timeline of changes saved to this repository."
+                )
+                Spacer()
+                if advanced {
+                    HStack(spacing: Theme.Space.s) {
+                        if loadingAllBranches {
+                            ProgressView().controlSize(.small)
+                        }
+                        SegmentPicker(
+                            options: Scope.allCases.map { ($0, $0.rawValue) },
+                            selection: $scope
+                        )
+                    }
+                }
+            }
             HStack(spacing: Theme.Space.m) {
                 SearchField(text: $query,
                             prompt: advanced ? "Search commits, authors, or shas" : "Search changes or people",
@@ -175,7 +222,10 @@ struct CommitsScreen: View {
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.m).padding(.bottom, 4)
                         ForEach(group.commits, id: \.sha) { commit in
-                            Button { session.navigation.selectedCommitSHA = commit.sha } label: {
+                            Button {
+                                session.navigation.selectedCommitSHA = commit.sha
+                                session.inspector.ensureCommitDetail(sha: commit.sha)
+                            } label: {
                                 CommitRowView(
                                     commit: commit,
                                     selected: session.navigation.selectedCommitSHA == commit.sha,
@@ -205,23 +255,41 @@ struct CommitsScreen: View {
         }
         .onAppear { cachedTimeline = timeline }
         .onChange(of: key) { _, newKey in
-            cachedTimeline = Self.buildTimeline(analysis: session.analysis, key: newKey)
+            cachedTimeline = Self.buildTimeline(analysis: session.analysis, allBranchesCommits: allBranchesCommits, key: newKey)
+        }
+        .task(id: scopeTaskKey) {
+            guard preferences.advanced, scope == .allBranches, let root = session.analysis?.root else {
+                loadingAllBranches = false
+                return
+            }
+            loadingAllBranches = true
+            let loaded = await Task.detached(priority: .userInitiated) {
+                (try? GitRepository(url: root).loadAllBranchesCommits(limit: 600)) ?? []
+            }.value
+            guard !Task.isCancelled else { return }
+            allBranchesCommits = loaded
+            loadingAllBranches = false
         }
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.downArrow) {
-            session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
+            let next = NavigationStore.stepSelection(
                 in: timeline.visibleSHAs, current: session.navigation.selectedCommitSHA, delta: 1)
+            session.navigation.selectedCommitSHA = next
+            if let next { session.inspector.ensureCommitDetail(sha: next) }
             return .handled
         }
         .onKeyPress(.upArrow) {
-            session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
+            let prev = NavigationStore.stepSelection(
                 in: timeline.visibleSHAs, current: session.navigation.selectedCommitSHA, delta: -1)
+            session.navigation.selectedCommitSHA = prev
+            if let prev { session.inspector.ensureCommitDetail(sha: prev) }
             return .handled
         }
         .onKeyPress(.return) {
             if session.navigation.selectedCommitSHA == nil, let first = timeline.firstFilteredSHA {
                 session.navigation.selectedCommitSHA = first
+                session.inspector.ensureCommitDetail(sha: first)
                 return .handled
             }
             return .ignored

@@ -303,7 +303,78 @@ public enum DiffSource: Hashable, Sendable {
     case range(from: String, to: String)
 }
 
+/// Old and new image bytes for visual comparison of modified binary image assets.
+public struct ImageDiffData: Sendable, Equatable {
+    public let path: String
+    public let oldData: Data?
+    public let newData: Data?
+
+    public init(path: String, oldData: Data?, newData: Data?) {
+        self.path = path
+        self.oldData = oldData
+        self.newData = newData
+    }
+}
+
 extension GitRepository {
+    public static let supportedImageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "tiff", "tif", "bmp", "heic", "icns"
+    ]
+
+    public func imageDiff(_ source: DiffSource, path: String, oldPath: String? = nil,
+                          maxBytes: Int = 25_000_000) -> ImageDiffData? {
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard Self.supportedImageExtensions.contains(ext),
+              let root = try? validate() else {
+            return nil
+        }
+
+        func readGitObjectData(_ spec: String) -> Data? {
+            guard let data = try? GitProcess.captureData(arguments: ["show", spec], in: root),
+                  !data.isEmpty,
+                  data.count <= maxBytes else {
+                return nil
+            }
+            return data
+        }
+
+        func readWorktreeData(_ relativePath: String) -> Data? {
+            let fileURL = root.appendingPathComponent(relativePath)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir),
+                  !isDir.boolValue,
+                  let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                  let size = (attrs[.size] as? NSNumber)?.intValue,
+                  size > 0,
+                  size <= maxBytes,
+                  let data = try? Data(contentsOf: fileURL) else {
+                return nil
+            }
+            return data
+        }
+
+        let sourcePath = oldPath ?? path
+        let oldData: Data?
+        let newData: Data?
+
+        switch source {
+        case .workingTree(staged: false):
+            oldData = readGitObjectData(":0:\(sourcePath)") ?? readGitObjectData("HEAD:\(sourcePath)")
+            newData = readWorktreeData(path)
+        case .workingTree(staged: true):
+            oldData = readGitObjectData("HEAD:\(sourcePath)")
+            newData = readGitObjectData(":0:\(path)")
+        case .commit(let sha):
+            oldData = readGitObjectData("\(sha)^:\(sourcePath)")
+            newData = readGitObjectData("\(sha):\(path)")
+        case .range(let from, let to):
+            oldData = readGitObjectData("\(from):\(sourcePath)")
+            newData = readGitObjectData("\(to):\(path)")
+        }
+
+        guard oldData != nil || newData != nil else { return nil }
+        return ImageDiffData(path: path, oldData: oldData, newData: newData)
+    }
     public func diff(_ source: DiffSource, path: String, context: Int = 3,
                      ignoreWhitespace: Bool = false, maxLines: Int = 3000) throws -> FileDiff {
         let root = try validate()

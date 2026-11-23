@@ -35,12 +35,14 @@ public final class InspectorStore {
         didSet { loadDiff() }
     }
     public private(set) var loadedDiff: FileDiff?
+    public private(set) var loadedImageDiff: ImageDiffData?
     public private(set) var diffInFlight = false
 
     public var inlineDiffRequest: DiffRequest? {
         didSet { loadInlineDiff() }
     }
     public private(set) var inlineLoadedDiff: FileDiff?
+    public private(set) var inlineLoadedImageDiff: ImageDiffData?
     public private(set) var inlineDiffInFlight = false
 
     public var diffContext: Int = 3 {
@@ -81,7 +83,9 @@ public final class InspectorStore {
         inlineDiffRequest = nil
         fileHistoryPath = nil
         loadedDiff = nil
+        loadedImageDiff = nil
         inlineLoadedDiff = nil
+        inlineLoadedImageDiff = nil
         diffInFlight = false
         inlineDiffInFlight = false
         fileHistory = []
@@ -226,6 +230,7 @@ public final class InspectorStore {
     private func loadDiff() {
         guard let root = repositoryRoot, let request = diffRequest else {
             loadedDiff = nil
+            loadedImageDiff = nil
             diffInFlight = false
             return
         }
@@ -233,12 +238,17 @@ public final class InspectorStore {
         let context = diffContext
         let ignoreWS = ignoreWhitespace
         Task.detached(priority: .userInitiated) {
-            let diff = try? GitRepository(url: root).diff(
+            let repo = GitRepository(url: root)
+            let diff = try? repo.diff(
                 request.source, path: request.path, context: context, ignoreWhitespace: ignoreWS
             )
+            let imageDiff = diff?.isBinary == true
+                ? repo.imageDiff(request.source, path: request.path, oldPath: diff?.oldPath)
+                : nil
             await MainActor.run {
                 guard self.repositoryRoot == root, self.diffRequest == request else { return }
                 self.loadedDiff = diff
+                self.loadedImageDiff = imageDiff
                 self.diffInFlight = false
             }
         }
@@ -247,6 +257,7 @@ public final class InspectorStore {
     private func loadInlineDiff() {
         guard let root = repositoryRoot, let request = inlineDiffRequest else {
             inlineLoadedDiff = nil
+            inlineLoadedImageDiff = nil
             inlineDiffInFlight = false
             return
         }
@@ -254,12 +265,17 @@ public final class InspectorStore {
         let context = diffContext
         let ignoreWS = ignoreWhitespace
         Task.detached(priority: .userInitiated) {
-            let diff = try? GitRepository(url: root).diff(
+            let repo = GitRepository(url: root)
+            let diff = try? repo.diff(
                 request.source, path: request.path, context: context, ignoreWhitespace: ignoreWS
             )
+            let imageDiff = diff?.isBinary == true
+                ? repo.imageDiff(request.source, path: request.path, oldPath: diff?.oldPath)
+                : nil
             await MainActor.run {
                 guard self.repositoryRoot == root, self.inlineDiffRequest == request else { return }
                 self.inlineLoadedDiff = diff
+                self.inlineLoadedImageDiff = imageDiff
                 self.inlineDiffInFlight = false
             }
         }

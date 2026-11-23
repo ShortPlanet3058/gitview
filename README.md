@@ -67,9 +67,9 @@ a few minutes.
 | | |
 |---|---|
 | **Overview** | Plain-language everyday summary (**Standard**) or full project telemetry, health checks, hotspots, and weekly sparklines (**Advanced**). |
-| **Changes** | Split workspace pairing the file list & commit dock with a live side-by-side/unified diff viewer right in view — simple include/exclude checkboxes & one-click Sync in Standard, or full staged/unstaged/untracked sections, stashes, and hunk/line staging in Advanced. |
-| **History / Commits** | Clean chronological history (**Standard**) or interactive swimlane branch topology, inline branch/tag badges, commit-to-commit comparison, and parent navigation (**Advanced**). |
-| **Branches** | Switch or create local branches cleanly (**Standard**), or inspect remote-tracking branches, ahead/behind divergence, linked worktrees, and merged branch cleanup (**Advanced**). |
+| **Changes** | Resizable split workspace pairing a filterable file list & commit dock (Amend, Undo last commit, `⌘⏎`, `Space` stage toggle) with a live unified or side-by-side diff viewer (`-w` whitespace toggle, hunk jumping, visual PNG/image diffs, and per-block conflict resolution). |
+| **History / Commits** | Clean chronological history (**Standard**) or interactive swimlane branch topology with a **Current branch / All branches** scope toggle, branch/tag badges, Revert, Cherry-pick, and parent navigation (**Advanced**). |
+| **Branches** | Switch, create, rename, compare, and merge branches cleanly (**Standard**), or inspect remote-tracking branches, rebase onto target, force-delete unmerged branches, linked worktrees, and ahead/behind divergence (**Advanced**). |
 | **Releases** *(Advanced)* | Create, push, and delete tags, track unreleased commits, and compare any two refs or commits with inline word diffs. |
 | **People / Contributors** | See everyone who contributes (**Standard**), plus ownership concentration insights and CSV export (**Advanced**). |
 | **Files** | Interactive file tree, syntax-highlighted code viewer, and in Advanced mode line-by-line historical blame & function risk badges. |
@@ -78,7 +78,7 @@ a few minutes.
 | **Change together** *(Advanced)* | Interactive coupling graph with directory cluster hulls, draggable/pinnable nodes, and shared-commit edge inspection. |
 | **Statistics** *(Advanced)* | Transparent breakdown of health checks, risk weighting, and hunk attribution coverage. |
 
-Use **Command Palette (`⌘K`)** to jump across screens, files, branches, or actions; press **`⌘F`** for contextual local find inside the active screen or diff and **`⌘⇧F`** for repository-wide search. **Standard mode** is built for everyday Git workflows without technical jargon, while **Advanced mode** (`⌘⇧D` or the sidebar toggle) unlocks Git staging power tools, historical blame, swimlane topology, and code telemetry. Open Settings (`⌘,`) to choose your experience mode, external editor (VS Code, Cursor, Zed, Sublime Text, Xcode), terminal app, and author identity.
+Use **Command Palette (`⌘K`)** to jump across screens, files, branches, or actions, and press **`⌘/`** anytime for the full Keyboard Shortcuts overlay; press **`⌘F`** for contextual local find inside the active screen or diff (including the embedded Changes diff) and **`⌘⇧F`** for repository-wide search. **Standard mode** skips unnecessary tree-sitter AST parsing at launch for fast everyday Git workflows without technical jargon, while **Advanced mode** (`⌘⇧D` or the sidebar toggle) hydrates function-level telemetry on demand and unlocks staging power tools, historical blame, swimlane topology, and hotspots. Drop any folder onto a window, or clone/create a new repository right from Welcome or the `File` menu.
 
 ## How it works
 
@@ -110,20 +110,13 @@ diff or a file's history, in which case it offers rather than interrupts.
 
 ## Writing
 
-GitView can fetch, pull (`--ff-only`), switch and create branches, delete merged branches,
-stage, unstage, commit, stash, discard (by file or single hunk), and push. The rule it follows
-is whether an operation can be taken back:
+GitView can clone and initialize repositories, fetch, pull (fast-forward, or guided rebase/merge when diverged), merge, rebase, cherry-pick, revert commits, undo unpushed commits, amend commits, resolve conflict markers block-by-block, continue or abort interrupted operations, manage tags, switch/rename/create/delete branches, stage/unstage/discard (by file, hunk, or selected lines), stash, and push. The rule it follows is safety and recoverability:
 
-- **Reversible** things — stage, unstage, switch/create branch, fetch, ff-only pull, stash, commit — are plain buttons.
-- **Destructive** things — discarding edits or a single hunk, deleting an untracked file, deleting a merged branch, dropping a stash —
-  require a confirmation that says what will be lost, and offer to stash instead where that
-  makes sense.
+- **Reversible** things — stage, unstage, switch/create/rename branch, fetch, stash, commit, soft-undo unpushed commit, non-published amend — are direct controls.
+- **Destructive or history-changing** things — discarding edits, deleting files/branches, reverting commits, merging, rebasing, aborting, resolving conflicts — explain their impact clearly behind confirmation.
 - **Push** shows you exactly what will go where before it does anything.
 
-`push --force`, `reset --hard`, `branch -D`, and amending are deliberately absent. Each can destroy work
-that exists nowhere else, and none is needed often enough to be worth having within reach
-of a tired hand. A half-finished merge or rebase is reported, not driven — finish those in a
-terminal.
+`push --force` and `reset --hard` remain deliberately absent so an accidental click never destroys remote or working-tree history irreversibly.
 
 ## Development
 
