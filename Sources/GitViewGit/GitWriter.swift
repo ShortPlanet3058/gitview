@@ -63,6 +63,85 @@ extension GitRepository {
         return try headSHA()
     }
 
+    /// Metadata about HEAD used to safely gate Undo Last Commit and Amend actions.
+    public struct HeadCommitInfo: Sendable, Hashable {
+        public let sha: String
+        public let subject: String
+        public let body: String
+        public let hasParent: Bool
+        public let isPushedToUpstream: Bool
+    }
+
+    public func headCommitInfo() throws -> HeadCommitInfo? {
+        let root = try validate()
+        guard let output = try? GitProcess.capture(
+            arguments: ["log", "-1", "--format=%H%x1f%P%x1f%s%x1f%b", "HEAD"],
+            in: root
+        ) else {
+            return nil
+        }
+        let parts = output.components(separatedBy: "\u{1f}")
+        guard parts.count >= 4 else { return nil }
+        let sha = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sha.isEmpty else { return nil }
+        let parents = parts[1].split(whereSeparator: \.isWhitespace).map(String.init)
+        let subject = parts[2].trimmingCharacters(in: .newlines)
+        let body = parts[3...].joined(separator: "\u{1f}").trimmingCharacters(in: .whitespacesAndNewlines)
+        let upstreamSHA = (try? GitProcess.capture(
+            arguments: ["rev-parse", "--verify", "--quiet", "@{upstream}"],
+            in: root
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isPushed: Bool
+        if let upstreamSHA, !upstreamSHA.isEmpty {
+            isPushed = isAncestor(sha, of: upstreamSHA)
+        } else {
+            isPushed = false
+        }
+        return HeadCommitInfo(
+            sha: sha,
+            subject: subject,
+            body: body,
+            hasParent: !parents.isEmpty,
+            isPushedToUpstream: isPushed
+        )
+    }
+
+    /// Moves HEAD back one commit while keeping staged changes intact (`git reset --soft HEAD~1`).
+    public func undoLastCommitSoft() throws {
+        guard let info = try headCommitInfo() else {
+            throw GitWriteError(command: "reset", message: "Repository has no commits yet.")
+        }
+        guard info.hasParent else {
+            throw GitWriteError(command: "reset", message: "Cannot undo the initial commit.")
+        }
+        guard !info.isPushedToUpstream else {
+            throw GitWriteError(command: "reset", message: "The latest commit is already pushed to its remote branch.")
+        }
+        try write(["reset", "--soft", "HEAD~1"])
+    }
+
+    /// Amends HEAD with staged changes and an updated commit message.
+    public func amendCommit(subject: String, body: String = "", allowPublished: Bool = false) throws -> String {
+        let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "commit --amend", message: "A commit needs a message.")
+        }
+        guard let info = try headCommitInfo() else {
+            throw GitWriteError(command: "commit --amend", message: "Repository has no commits to amend.")
+        }
+        if info.isPushedToUpstream && !allowPublished {
+            throw GitWriteError(
+                command: "commit --amend",
+                message: "The latest commit is already pushed to its upstream branch."
+            )
+        }
+        var arguments = ["commit", "--amend", "-m", trimmed]
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedBody.isEmpty { arguments += ["-m", trimmedBody] }
+        try write(arguments)
+        return try headSHA()
+    }
+
     /// Saves changes aside. Recoverable from the stash list afterwards.
     public func stashPush(message: String, includeUntracked: Bool, paths: [String] = []) throws {
         var arguments = ["stash", "push"]
@@ -187,6 +266,14 @@ extension GitRepository {
         try write(["pull", "--ff-only"])
     }
 
+    public func pullRebase() throws {
+        try write(["-c", "core.editor=true", "pull", "--rebase"])
+    }
+
+    public func pullMerge() throws {
+        try write(["-c", "core.editor=true", "pull", "--no-rebase", "--no-edit"])
+    }
+
     /// Switches to a local branch, or creates a tracking branch when `isRemote` is true.
     public func checkoutBranch(_ name: String, isRemote: Bool = false) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -213,6 +300,16 @@ extension GitRepository {
         try write(arguments)
     }
 
+    /// Renames a local branch (`git branch -m <old> <new>`).
+    public func renameBranch(from oldName: String, to newName: String) throws {
+        let oldTrimmed = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTrimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !oldTrimmed.isEmpty, !newTrimmed.isEmpty else {
+            throw GitWriteError(command: "branch", message: "Branch names cannot be empty.")
+        }
+        try write(["branch", "-m", oldTrimmed, newTrimmed])
+    }
+
     /// Deletes a merged local branch (`-d`). Unmerged branches are refused by git itself.
     public func deleteMergedBranch(name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -220,6 +317,51 @@ extension GitRepository {
             throw GitWriteError(command: "branch", message: "Branch name cannot be empty.")
         }
         try write(["branch", "-d", trimmed])
+    }
+
+    /// Force-deletes a local branch (`-D`).
+    public func deleteBranchForce(name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "branch", message: "Branch name cannot be empty.")
+        }
+        try write(["branch", "-D", trimmed])
+    }
+
+    /// Merges `name` into the currently checked out branch.
+    public func mergeBranch(_ name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "merge", message: "Branch name cannot be empty.")
+        }
+        try write(["-c", "core.editor=true", "merge", "--no-edit", trimmed])
+    }
+
+    /// Rebases the currently checked out branch onto `target`.
+    public func rebaseOnto(_ target: String) throws {
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "rebase", message: "Target branch cannot be empty.")
+        }
+        try write(["-c", "core.editor=true", "rebase", trimmed])
+    }
+
+    /// Applies a single commit onto HEAD (`git cherry-pick <sha>`).
+    public func cherryPick(sha: String) throws {
+        let trimmed = sha.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "cherry-pick", message: "Commit hash cannot be empty.")
+        }
+        try write(["cherry-pick", trimmed])
+    }
+
+    /// Creates a new commit that reverses the edits introduced by `sha`.
+    public func revertCommit(sha: String) throws {
+        let trimmed = sha.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "revert", message: "Commit hash cannot be empty.")
+        }
+        try write(["-c", "core.editor=true", "revert", "--no-edit", trimmed])
     }
 
     // MARK: - Per-hunk patching
@@ -290,6 +432,18 @@ extension GitRepository {
         }
     }
 
+    /// Continues a merge, rebase, cherry-pick, or revert once conflicts have been staged.
+    public func continueOperation(_ operation: WorkingState.Operation) throws {
+        switch operation {
+        case .merge:      try write(["-c", "core.editor=true", "merge", "--continue"])
+        case .rebase:     try write(["-c", "core.editor=true", "rebase", "--continue"])
+        case .cherryPick: try write(["-c", "core.editor=true", "cherry-pick", "--continue"])
+        case .revert:     try write(["-c", "core.editor=true", "revert", "--continue"])
+        case .bisect:
+            throw GitWriteError(command: "bisect", message: "Continue is not applicable to bisect.")
+        }
+    }
+
     /// Resolves a conflicted path by accepting either ours (`:2:`) or theirs (`:3:`) and updating the index.
     public func resolveConflictUsingSide(path: String, acceptOurs: Bool) throws {
         let root = try validate()
@@ -304,6 +458,67 @@ extension GitRepository {
         } else {
             try write(["rm", "-f", "--", path])
         }
+    }
+
+    /// Parses conflict marker blocks in `path`.
+    public func conflictBlocks(path: String) throws -> [ConflictBlock] {
+        let root = try validate()
+        let fileURL = root.appendingPathComponent(path)
+        let text = try String(contentsOf: fileURL, encoding: .utf8)
+        return ConflictMarkerResolver.parseBlocks(in: text)
+    }
+
+    /// Resolves a single conflict block in `path`, automatically staging the file when zero blocks remain.
+    @discardableResult
+    public func resolveConflictBlock(path: String, blockIndex: Int, choice: ConflictBlockChoice) throws -> Int {
+        let root = try validate()
+        let fileURL = root.appendingPathComponent(path)
+        let text = try String(contentsOf: fileURL, encoding: .utf8)
+        guard let resolved = ConflictMarkerResolver.resolving(text: text, blockIndex: blockIndex, choice: choice) else {
+            throw GitWriteError(command: "resolve conflict", message: "Conflict block \(blockIndex + 1) was not found.")
+        }
+        try resolved.write(to: fileURL, atomically: true, encoding: .utf8)
+        let remaining = ConflictMarkerResolver.parseBlocks(in: resolved).count
+        if remaining == 0 {
+            try stage(paths: [path])
+        }
+        return remaining
+    }
+
+    // MARK: - Creating Repositories
+
+    /// Initializes a new git repository at `directory` and returns its validated root URL.
+    public static func initRepository(at directory: URL, initialBranch: String = "main") throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let branch = initialBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        var arguments = ["init", "-q"]
+        if !branch.isEmpty {
+            arguments += ["-b", branch]
+        }
+        do {
+            try GitProcess.capture(arguments: arguments, in: directory)
+        } catch let GitError.failed(command, _, stderr) {
+            throw GitWriteError(command: command,
+                                message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return try GitRepository(url: directory).validate()
+    }
+
+    /// Clones `remoteURL` into `destination` and returns its validated repository root URL.
+    public static func clone(remoteURL: String, into destination: URL) async throws -> URL {
+        let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "clone", message: "Repository URL cannot be empty.")
+        }
+        let parent = destination.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        do {
+            try await GitProcess.captureAsync(arguments: ["clone", trimmed, destination.path], in: parent)
+        } catch let GitError.failed(command, _, stderr) {
+            throw GitWriteError(command: command,
+                                message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return try GitRepository(url: destination).validate()
     }
 
     // MARK: - Tags
@@ -340,5 +555,121 @@ extension GitRepository {
             throw GitWriteError(command: "push", message: "Remote and tag name cannot be empty.")
         }
         try write(["push", trimmedRemote, "refs/tags/\(trimmedName)"])
+    }
+}
+
+public enum ConflictBlockChoice: Sendable, Hashable {
+    case ours, theirs, both
+}
+
+public struct ConflictBlock: Identifiable, Hashable, Sendable {
+    public let id: Int
+    public let startLine: Int
+    public let oursLabel: String
+    public let theirsLabel: String
+    public let oursText: String
+    public let theirsText: String
+}
+
+/// Pure parser & resolver for standard and diff3 (`|||||||`) git conflict markers.
+public enum ConflictMarkerResolver {
+    private struct ParsedBlock {
+        let startIndex: Int
+        let endIndex: Int
+        let oursLabel: String
+        let theirsLabel: String
+        let oursLines: [String]
+        let theirsLines: [String]
+    }
+
+    public static func parseBlocks(in text: String) -> [ConflictBlock] {
+        let lines = splitLines(text)
+        return parse(lines: lines).enumerated().map { idx, block in
+            ConflictBlock(
+                id: idx,
+                startLine: block.startIndex + 1,
+                oursLabel: block.oursLabel,
+                theirsLabel: block.theirsLabel,
+                oursText: block.oursLines.joined(separator: "\n"),
+                theirsText: block.theirsLines.joined(separator: "\n")
+            )
+        }
+    }
+
+    public static func resolving(text: String, blockIndex: Int, choice: ConflictBlockChoice) -> String? {
+        var lines = splitLines(text)
+        let blocks = parse(lines: lines)
+        guard blockIndex >= 0, blockIndex < blocks.count else { return nil }
+        let block = blocks[blockIndex]
+
+        let replacement: [String]
+        switch choice {
+        case .ours:   replacement = block.oursLines
+        case .theirs: replacement = block.theirsLines
+        case .both:   replacement = block.oursLines + block.theirsLines
+        }
+        lines.replaceSubrange(block.startIndex...block.endIndex, with: replacement)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func splitLines(_ text: String) -> [String] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { raw in
+            raw.last == "\r" ? String(raw.dropLast()) : String(raw)
+        }
+    }
+
+    private static func parse(lines: [String]) -> [ParsedBlock] {
+        var blocks: [ParsedBlock] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            guard line.hasPrefix("<<<<<<<") else {
+                i += 1
+                continue
+            }
+            let startIndex = i
+            let oursLabel = line.dropFirst(7).trimmingCharacters(in: .whitespaces)
+            var oursLines: [String] = []
+            var theirsLines: [String] = []
+            var inBase = false
+            var inTheirs = false
+            var endIndex: Int?
+            var theirsLabel = ""
+
+            var j = i + 1
+            while j < lines.count {
+                let current = lines[j]
+                if !inTheirs && current.hasPrefix("|||||||") {
+                    inBase = true
+                } else if !inTheirs && current.hasPrefix("=======") {
+                    inBase = false
+                    inTheirs = true
+                } else if inTheirs && current.hasPrefix(">>>>>>>") {
+                    theirsLabel = current.dropFirst(7).trimmingCharacters(in: .whitespaces)
+                    endIndex = j
+                    break
+                } else if inTheirs {
+                    theirsLines.append(current)
+                } else if !inBase {
+                    oursLines.append(current)
+                }
+                j += 1
+            }
+
+            if let endIndex {
+                blocks.append(ParsedBlock(
+                    startIndex: startIndex,
+                    endIndex: endIndex,
+                    oursLabel: oursLabel,
+                    theirsLabel: theirsLabel,
+                    oursLines: oursLines,
+                    theirsLines: theirsLines
+                ))
+                i = endIndex + 1
+            } else {
+                i += 1
+            }
+        }
+        return blocks
     }
 }

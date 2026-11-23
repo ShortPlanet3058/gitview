@@ -10,6 +10,8 @@ struct BranchesScreen: View {
     @State private var showMerged = false
     @State private var query = ""
     @State private var newBranchName = ""
+    @State private var renamingBranch: BranchInfo?
+    @State private var renameName = ""
 
     var body: some View {
         if let analysis = session.analysis {
@@ -56,11 +58,20 @@ struct BranchesScreen: View {
                             ("Name", nil, .leading),
                             (advanced ? "Last commit" : "Latest update", 240, .leading),
                             (advanced ? "Behind / Ahead" : "Status", 120, .trailing),
-                            ("Actions", 130, .trailing)
+                            ("Actions", 160, .trailing)
                         ])
                         HairlineDivider()
                         ForEach(shown) { branch in
-                            BranchRow(branch: branch, advanced: advanced)
+                            BranchRow(
+                                branch: branch,
+                                advanced: advanced,
+                                currentBranch: analysis.info.currentBranch,
+                                root: analysis.root,
+                                onRename: { target in
+                                    renamingBranch = target
+                                    renameName = target.name
+                                }
+                            )
                             if branch.id != shown.last?.id { HairlineDivider() }
                         }
                         if advanced && !merged.isEmpty {
@@ -85,7 +96,41 @@ struct BranchesScreen: View {
                         .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 }
             }
+            .sheet(item: $renamingBranch) { branch in
+                renameBranchSheet(branch)
+            }
         }
+    }
+
+    private func renameBranchSheet(_ branch: BranchInfo) -> some View {
+        let trimmed = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: Theme.Space.l) {
+            Text("Rename Branch").font(Theme.Text.title).foregroundStyle(Theme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("New name for “\(branch.name)”").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                TextField(branch.name, text: $renameName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        guard !trimmed.isEmpty, trimmed != branch.name else { return }
+                        workingCopy.renameBranch(from: branch.name, to: trimmed)
+                        renamingBranch = nil
+                    }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { renamingBranch = nil }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Rename") {
+                    workingCopy.renameBranch(from: branch.name, to: trimmed)
+                    renamingBranch = nil
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(trimmed.isEmpty || trimmed == branch.name || workingCopy.writeInFlight)
+            }
+        }
+        .padding(Theme.Space.xl)
+        .frame(width: 360)
+        .background(Theme.surface)
     }
 
     private func createBranch() {
@@ -97,12 +142,20 @@ struct BranchesScreen: View {
 }
 
 struct BranchRow: View {
+    @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
     let branch: BranchInfo
     var advanced: Bool = true
+    var currentBranch: String? = nil
+    var root: URL? = nil
+    var onRename: ((BranchInfo) -> Void)? = nil
 
-    private var canDelete: Bool {
+    private var canDeleteMerged: Bool {
         advanced && !branch.isRemote && !branch.isCurrent && !branch.isDefault && branch.isMerged
+    }
+
+    private var canForceDelete: Bool {
+        advanced && !branch.isRemote && !branch.isCurrent && !branch.isDefault && !branch.isMerged
     }
 
     var body: some View {
@@ -133,7 +186,7 @@ struct BranchRow: View {
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                     .disabled(workingCopy.writeInFlight)
                 }
-                if canDelete {
+                if canDeleteMerged {
                     Button { workingCopy.confirmDeleteBranch(branch) } label: {
                         Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Theme.critical)
                     }
@@ -141,20 +194,66 @@ struct BranchRow: View {
                     .disabled(workingCopy.writeInFlight)
                     .help("Delete merged branch")
                 }
+                Menu {
+                    rowActionsMenuContent
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.inkSoft)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 24)
             }
-            .frame(width: 130, alignment: .trailing)
+            .frame(width: 160, alignment: .trailing)
         }
         .padding(.horizontal, Theme.Space.m).padding(.vertical, 9)
         .contextMenu {
-            if !branch.isCurrent {
-                Button(branch.isRemote ? "Track & Switch" : "Switch to Branch") {
-                    workingCopy.switchBranch(branch.checkoutTarget, isRemote: branch.isRemote)
+            rowActionsMenuContent
+        }
+    }
+
+    @ViewBuilder
+    private var rowActionsMenuContent: some View {
+        if !branch.isCurrent {
+            Button(branch.isRemote ? "Track & Switch" : "Switch to Branch") {
+                workingCopy.switchBranch(branch.checkoutTarget, isRemote: branch.isRemote)
+            }
+            Button("Merge into \(currentBranch ?? "Current Branch")…") {
+                workingCopy.confirmMergeBranch(branch, into: currentBranch)
+            }
+            .disabled(workingCopy.writeInFlight)
+            if advanced {
+                Button("Rebase \(currentBranch ?? "Current Branch") onto \(branch.name)…") {
+                    workingCopy.confirmRebaseOnto(branch, currentBranch: currentBranch)
+                }
+                .disabled(workingCopy.writeInFlight)
+            }
+            if let root {
+                Button("Compare with Current Branch") {
+                    session.navigation.compareFrom = branch.name
+                    session.navigation.compareTo = "HEAD"
+                    session.navigation.runComparison(in: root)
+                    session.show(.releases)
                 }
             }
-            if canDelete {
-                Button("Delete Merged Branch", role: .destructive) {
-                    workingCopy.confirmDeleteBranch(branch)
-                }
+        }
+        if !branch.isRemote {
+            if !branch.isCurrent { Divider() }
+            Button("Rename Branch…") {
+                onRename?(branch)
+            }
+            .disabled(workingCopy.writeInFlight)
+        }
+        if canDeleteMerged {
+            Divider()
+            Button("Delete Merged Branch", role: .destructive) {
+                workingCopy.confirmDeleteBranch(branch)
+            }
+        } else if canForceDelete {
+            Divider()
+            Button("Force Delete Branch…", role: .destructive) {
+                workingCopy.confirmForceDeleteBranch(branch)
             }
         }
     }

@@ -447,4 +447,169 @@ final class GitWriterTests: XCTestCase {
         XCTAssertFalse(afterDelete.contains(where: { $0.name == "v0.1.0" }))
         XCTAssertTrue(afterDelete.contains(where: { $0.name == "v0.2.0" }))
     }
+
+    func testUndoLastCommitSoftAndAmendCommitRespectPushSafety() throws {
+        let remote = root.appendingPathComponent("../remote-safety-\(UUID().uuidString).git").standardized
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", remote.path], in: root)
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try run(["remote", "add", "origin", remote.path])
+        try repository.push(remote: "origin", branch: "main", setUpstream: true)
+
+        // Cannot undo or unguarded-amend a pushed commit.
+        let pushedInfo = try XCTUnwrap(repository.headCommitInfo())
+        XCTAssertTrue(pushedInfo.isPushedToUpstream)
+        XCTAssertFalse(pushedInfo.hasParent)
+        XCTAssertThrowsError(try repository.undoLastCommitSoft())
+        XCTAssertThrowsError(try repository.amendCommit(subject: "Should refuse", allowPublished: false))
+
+        // Make a local unpushed commit.
+        try write("tracked.txt", "second version\n")
+        try repository.stage(paths: ["tracked.txt"])
+        _ = try repository.commit(subject: "Draft commit", body: "Initial notes")
+
+        let localInfo = try XCTUnwrap(repository.headCommitInfo())
+        XCTAssertFalse(localInfo.isPushedToUpstream)
+        XCTAssertTrue(localInfo.hasParent)
+        XCTAssertEqual(localInfo.subject, "Draft commit")
+        XCTAssertEqual(localInfo.body, "Initial notes")
+
+        // Amend updates subject & body without requiring new staged files.
+        _ = try repository.amendCommit(subject: "Polished commit", body: "Updated notes")
+        let amended = try XCTUnwrap(repository.headCommitInfo())
+        XCTAssertEqual(amended.subject, "Polished commit")
+        XCTAssertEqual(amended.body, "Updated notes")
+
+        // Soft undo returns HEAD to initial while keeping tracked.txt staged.
+        try repository.undoLastCommitSoft()
+        let undoneState = try state()
+        XCTAssertEqual(undoneState.staged.map(\.path), ["tracked.txt"])
+        XCTAssertEqual(try repository.headCommitInfo()?.subject, "initial")
+    }
+
+    func testMergeRebaseRenameForceDeleteCherryPickAndRevert() throws {
+        // Rename branch & force delete unmerged branch.
+        try repository.createBranch(name: "feat-temp", checkout: true)
+        try write("feat.txt", "feature work\n")
+        try repository.stage(paths: ["feat.txt"])
+        let featSHA = try repository.commit(subject: "Add feature file")
+
+        try repository.renameBranch(from: "feat-temp", to: "feat-renamed")
+        XCTAssertEqual(try state().branch, "feat-renamed")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        // Cherry-pick featSHA onto main and revert it.
+        try repository.cherryPick(sha: featSHA)
+        XCTAssertEqual(read("feat.txt"), "feature work\n")
+        let pickedSHA = try repository.headSHA()
+
+        try repository.revertCommit(sha: pickedSHA)
+        XCTAssertNil(read("feat.txt"))
+
+        // Rebase feat-renamed onto main (or merge another branch).
+        try repository.createBranch(name: "side", checkout: true)
+        try write("side.txt", "side edit\n")
+        try repository.stage(paths: ["side.txt"])
+        _ = try repository.commit(subject: "Side work")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        try write("main.txt", "main edit\n")
+        try repository.stage(paths: ["main.txt"])
+        _ = try repository.commit(subject: "Main work")
+
+        try repository.checkoutBranch("side", isRemote: false)
+        try repository.rebaseOnto("main")
+        XCTAssertEqual(read("main.txt"), "main edit\n")
+        XCTAssertEqual(read("side.txt"), "side edit\n")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        try repository.mergeBranch("side")
+        XCTAssertEqual(read("side.txt"), "side edit\n")
+
+        // Force delete unmerged branch feat-renamed.
+        try repository.deleteBranchForce(name: "feat-renamed")
+        let remaining = try GitProcess.capture(arguments: ["branch", "--list", "feat-renamed"], in: root)
+        XCTAssertTrue(remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    func testConflictMarkerResolverAndContinueMergeOperation() throws {
+        let diff3Text = """
+        top
+        <<<<<<< HEAD
+        ours line
+        ||||||| base
+        base line
+        =======
+        theirs line
+        >>>>>>> topic
+        bottom
+        """
+        let parsed = ConflictMarkerResolver.parseBlocks(in: diff3Text)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].oursText, "ours line")
+        XCTAssertEqual(parsed[0].theirsText, "theirs line")
+        XCTAssertEqual(
+            ConflictMarkerResolver.resolving(text: diff3Text, blockIndex: 0, choice: .both),
+            "top\nours line\ntheirs line\nbottom"
+        )
+        XCTAssertEqual(
+            ConflictMarkerResolver.resolving(text: diff3Text + "\n", blockIndex: 0, choice: .both),
+            "top\nours line\ntheirs line\nbottom\n"
+        )
+
+        // End-to-end merge conflict -> resolveConflictBlock -> continueOperation(.merge).
+        try write("shared.txt", "line1\nbase\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Base file")
+
+        try repository.createBranch(name: "topic", checkout: true)
+        try write("shared.txt", "line1\ntheirs\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Topic change")
+
+        try repository.checkoutBranch("main", isRemote: false)
+        try write("shared.txt", "line1\nours\nline3\n")
+        try repository.stage(paths: ["shared.txt"])
+        _ = try repository.commit(subject: "Main change")
+
+        XCTAssertThrowsError(try repository.mergeBranch("topic"))
+        XCTAssertEqual(try state().operation, .merge)
+
+        let blocks = try repository.conflictBlocks(path: "shared.txt")
+        XCTAssertEqual(blocks.count, 1)
+        let remaining = try repository.resolveConflictBlock(path: "shared.txt", blockIndex: 0, choice: .ours)
+        XCTAssertEqual(remaining, 0)
+        XCTAssertTrue(try state().conflicted.isEmpty)
+
+        try repository.continueOperation(.merge)
+        XCTAssertNil(try state().operation)
+        XCTAssertEqual(read("shared.txt"), "line1\nours\nline3\n")
+    }
+
+    func testInitRepositoryAndCloneLocalRemote() async throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-initclone-\(UUID().uuidString)")
+        let newRepoURL = base.appendingPathComponent("created")
+        let bareRemoteURL = base.appendingPathComponent("remote.git")
+        let clonedURL = base.appendingPathComponent("cloned")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let validatedInit = try GitRepository.initRepository(at: newRepoURL, initialBranch: "trunk")
+        XCTAssertEqual(validatedInit.standardizedFileURL, newRepoURL.standardizedFileURL)
+        try "hello\n".write(to: newRepoURL.appendingPathComponent("hello.txt"), atomically: true, encoding: .utf8)
+        let repo = GitRepository(url: validatedInit)
+        try repo.stageAll()
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Init User"], in: validatedInit)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "init@example.com"], in: validatedInit)
+        _ = try repo.commit(subject: "Init commit")
+
+        _ = try GitProcess.capture(arguments: ["init", "--bare", "-q", "-b", "trunk", bareRemoteURL.path], in: base)
+        _ = try GitProcess.capture(arguments: ["remote", "add", "origin", bareRemoteURL.path], in: validatedInit)
+        try repo.push(remote: "origin", branch: "trunk", setUpstream: true)
+
+        let validatedClone = try await GitRepository.clone(remoteURL: bareRemoteURL.path, into: clonedURL)
+        XCTAssertEqual(validatedClone.standardizedFileURL, clonedURL.standardizedFileURL)
+        let clonedFile = try String(contentsOf: clonedURL.appendingPathComponent("hello.txt"), encoding: .utf8)
+        XCTAssertEqual(clonedFile, "hello\n")
+    }
 }

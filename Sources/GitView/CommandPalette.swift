@@ -114,6 +114,24 @@ struct CommandPaletteOverlay: View {
             keywords: "open repo choose",
             perform: { chooseRepository(into: session) }
         ))
+        items.append(CommandPaletteEntry(
+            id: "action:clone",
+            title: "Clone Repository…",
+            subtitle: "Clone a remote git URL into a local folder",
+            category: "Action",
+            symbol: "square.and.arrow.down.on.square",
+            keywords: "clone url download remote git",
+            perform: { session.navigation.isCloneSheetPresented = true }
+        ))
+        items.append(CommandPaletteEntry(
+            id: "action:init",
+            title: "New Repository…",
+            subtitle: "Initialize a new local git repository",
+            category: "Action",
+            symbol: "plus.rectangle.on.folder",
+            keywords: "init create new repository",
+            perform: { session.navigation.isInitSheetPresented = true }
+        ))
 
         if let analysis = session.analysis {
             items.append(CommandPaletteEntry(

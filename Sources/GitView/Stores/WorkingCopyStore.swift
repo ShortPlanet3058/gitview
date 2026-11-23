@@ -22,10 +22,13 @@ public final class WorkingCopyStore {
     public var commitSubject = ""
     public var commitBody = ""
     public var stashMessage = ""
+    public var amendLastCommit = false
     public private(set) var writeInFlight = false
     public var writeError: String?
     public var confirmation: DestructiveConfirmation?
     public private(set) var pushPlan: GitRepository.PushPlan?
+    public private(set) var headCommitInfo: GitRepository.HeadCommitInfo?
+    public var divergedPullPrompt = false
 
     @ObservationIgnored var rootProvider: () -> URL? = { nil }
     @ObservationIgnored var onWorkingStateRefreshed: (URL, WorkingState) -> Void = { _, _ in }
@@ -37,6 +40,9 @@ public final class WorkingCopyStore {
         writeError = nil
         confirmation = nil
         pushPlan = nil
+        headCommitInfo = nil
+        amendLastCommit = false
+        divergedPullPrompt = false
     }
 
     public func refreshWorkingState() {
@@ -60,7 +66,26 @@ public final class WorkingCopyStore {
         }
     }
 
+    public func refreshHeadCommitInfo() {
+        guard let root = rootProvider() else { return }
+        Task.detached(priority: .utility) {
+            let info = try? GitRepository(url: root).headCommitInfo()
+            await MainActor.run {
+                guard self.rootProvider() == root else { return }
+                self.headCommitInfo = info
+            }
+        }
+    }
+
+    private static func isDivergedPullFailure(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("not possible to fast-forward")
+            || lower.contains("divergent branches")
+            || lower.contains("can't be fast-forwarded")
+    }
+
     private func perform(_ label: String, reloadHistory: Bool = false,
+                         detectDivergence: Bool = false,
                          onSuccess: (@MainActor () -> Void)? = nil,
                          _ work: @escaping @Sendable (GitRepository) throws -> Void) {
         guard let root = rootProvider(), !writeInFlight else { return }
@@ -70,7 +95,12 @@ public final class WorkingCopyStore {
             let failure: String? = await Task.detached(priority: .userInitiated) {
                 do { try work(GitRepository(url: root)); return nil } catch { return "\(error)" }
             }.value
-            self.writeError = failure
+            if let failure, detectDivergence, Self.isDivergedPullFailure(failure) {
+                self.writeError = nil
+                self.divergedPullPrompt = true
+            } else {
+                self.writeError = failure
+            }
             self.writeInFlight = false
             if failure == nil {
                 if reloadHistory {
@@ -78,11 +108,13 @@ public final class WorkingCopyStore {
                 } else {
                     self.refreshWorkingState()
                     self.refreshPushPlan()
+                    self.refreshHeadCommitInfo()
                 }
                 onSuccess?()
             } else {
                 self.refreshWorkingState()
                 self.refreshPushPlan()
+                self.refreshHeadCommitInfo()
             }
         }
     }
@@ -91,20 +123,37 @@ public final class WorkingCopyStore {
     public func stageAll() { perform("stage all") { try $0.stageAll() } }
     public func unstage(_ paths: [String]) { perform("unstage") { try $0.unstage(paths: paths) } }
 
-    public func commitStaged() {
-        let subject = commitSubject
-        let body = commitBody
-        perform("commit", reloadHistory: true, onSuccess: { [weak self] in
-            self?.commitSubject = ""
-            self?.commitBody = ""
-        }) {
-            _ = try $0.commit(subject: subject, body: body)
+    public func toggleAmend() {
+        amendLastCommit.toggle()
+        if amendLastCommit,
+           commitSubject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let info = headCommitInfo {
+            commitSubject = info.subject
+            commitBody = info.body
         }
     }
 
-    public func commitAndPush() {
+    public func commitStaged(allowPublishedAmend: Bool = false) {
         let subject = commitSubject
         let body = commitBody
+        let amending = amendLastCommit
+        perform(amending ? "amend commit" : "commit", reloadHistory: true, onSuccess: { [weak self] in
+            self?.commitSubject = ""
+            self?.commitBody = ""
+            self?.amendLastCommit = false
+        }) { repository in
+            if amending {
+                _ = try repository.amendCommit(subject: subject, body: body, allowPublished: allowPublishedAmend)
+            } else {
+                _ = try repository.commit(subject: subject, body: body)
+            }
+        }
+    }
+
+    public func commitAndPush(allowPublishedAmend: Bool = false) {
+        let subject = commitSubject
+        let body = commitBody
+        let amending = amendLastCommit
         guard let root = rootProvider(), !writeInFlight else { return }
         writeInFlight = true
         writeError = nil
@@ -112,7 +161,11 @@ public final class WorkingCopyStore {
             let outcome: (committed: Bool, failure: String?) = await Task.detached(priority: .userInitiated) {
                 let repository = GitRepository(url: root)
                 do {
-                    _ = try repository.commit(subject: subject, body: body)
+                    if amending {
+                        _ = try repository.amendCommit(subject: subject, body: body, allowPublished: allowPublishedAmend)
+                    } else {
+                        _ = try repository.commit(subject: subject, body: body)
+                    }
                 } catch {
                     return (false, "\(error)")
                 }
@@ -130,16 +183,18 @@ public final class WorkingCopyStore {
             if outcome.committed {
                 self.commitSubject = ""
                 self.commitBody = ""
+                self.amendLastCommit = false
                 self.onHistoryMutated()
             } else {
                 self.refreshWorkingState()
                 self.refreshPushPlan()
+                self.refreshHeadCommitInfo()
             }
         }
     }
 
     public func sync() {
-        perform("sync", reloadHistory: true) { repository in
+        perform("sync", reloadHistory: true, detectDivergence: true) { repository in
             try repository.fetch(prune: true)
             let fresh = try repository.workingState()
             if fresh.behind > 0 {
@@ -176,7 +231,117 @@ public final class WorkingCopyStore {
     }
 
     public func pull() {
-        perform("pull", reloadHistory: true) { try $0.pullFastForwardOnly() }
+        perform("pull", reloadHistory: true, detectDivergence: true) { try $0.pullFastForwardOnly() }
+    }
+
+    public func pullRebase() {
+        perform("pull --rebase", reloadHistory: true) { try $0.pullRebase() }
+    }
+
+    public func pullMerge() {
+        perform("pull merge", reloadHistory: true) { try $0.pullMerge() }
+    }
+
+    public func confirmUndoLastCommit() {
+        guard let info = headCommitInfo, info.hasParent, !info.isPushedToUpstream else { return }
+        confirmation = DestructiveConfirmation(
+            title: "Undo last commit?",
+            message: "“\(info.subject)” (\(String(info.sha.prefix(7)))) will be undone, keeping its changes staged in your working copy.",
+            confirmLabel: "Undo Commit",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("undo commit", reloadHistory: true) {
+                    try $0.undoLastCommitSoft()
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func confirmMergeBranch(_ branch: BranchInfo, into currentBranch: String?) {
+        confirmation = DestructiveConfirmation(
+            title: "Merge “\(branch.name)” into “\(currentBranch ?? "current branch")”?",
+            message: "Changes from \(branch.name) will be merged into your checked out branch.",
+            confirmLabel: "Merge Branch",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("merge", reloadHistory: true) {
+                    try $0.mergeBranch(branch.name)
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func confirmRebaseOnto(_ branch: BranchInfo, currentBranch: String?) {
+        confirmation = DestructiveConfirmation(
+            title: "Rebase “\(currentBranch ?? "current branch")” onto “\(branch.name)”?",
+            message: "Your local commits will be replayed on top of \(branch.name). Any conflicts can be resolved in Changes.",
+            confirmLabel: "Rebase",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("rebase", reloadHistory: true) {
+                    try $0.rebaseOnto(branch.name)
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func renameBranch(from oldName: String, to newName: String) {
+        perform("rename branch", reloadHistory: true) {
+            try $0.renameBranch(from: oldName, to: newName)
+        }
+    }
+
+    public func confirmForceDeleteBranch(_ branch: BranchInfo) {
+        confirmation = DestructiveConfirmation(
+            title: "Force delete “\(branch.name)”?",
+            message: "This branch is not marked as merged. Deleting with git branch -D removes the branch ref even if its commits are not on the default branch.",
+            confirmLabel: "Force Delete",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("force delete branch", reloadHistory: true) {
+                    try $0.deleteBranchForce(name: branch.name)
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func cherryPick(commit: Commit) {
+        perform("cherry-pick", reloadHistory: true) {
+            try $0.cherryPick(sha: commit.sha)
+        }
+    }
+
+    public func confirmRevertCommit(_ commit: Commit) {
+        let summary = commit.subject.isEmpty ? String(commit.sha.prefix(7)) : commit.subject
+        confirmation = DestructiveConfirmation(
+            title: "Revert “\(summary)”?",
+            message: "Creates a new commit that reverses the changes from \(String(commit.sha.prefix(7))).",
+            confirmLabel: "Revert Commit",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("revert commit", reloadHistory: true) {
+                    try $0.revertCommit(sha: commit.sha)
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func continueOperation(_ operation: WorkingState.Operation) {
+        perform("continue operation", reloadHistory: true) {
+            try $0.continueOperation(operation)
+        }
+    }
+
+    public func resolveConflictBlock(path: String, blockIndex: Int, choice: ConflictBlockChoice,
+                                     onComplete: @escaping @MainActor () -> Void = {}) {
+        perform("resolve conflict block", onSuccess: onComplete) {
+            _ = try $0.resolveConflictBlock(path: path, blockIndex: blockIndex, choice: choice)
+        }
     }
 
     public func switchBranch(_ name: String, isRemote: Bool = false) {
