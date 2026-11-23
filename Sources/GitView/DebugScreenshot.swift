@@ -26,7 +26,10 @@ enum DebugScreenshot {
                     if case .failed = session.state { return true }
                     return false
                 }()
-                if isFailed || (session.readiness == .complete && session.hasRepository && !session.risk.graphLayoutInProgress) {
+                if isFailed || (session.readiness == .complete
+                                && session.hasRepository
+                                && !session.risk.analysisRebuildInProgress
+                                && !session.risk.graphLayoutInProgress) {
                     try? await Task.sleep(for: .milliseconds(250))
                     break
                 }

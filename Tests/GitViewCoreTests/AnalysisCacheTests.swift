@@ -166,4 +166,31 @@ final class AnalysisCacheTests: XCTestCase {
         let raw = try JSONEncoder().encode(large).count
         XCTAssertLessThan(Int(onDisk), raw / 3, "sqlite \(onDisk) vs raw \(raw)")
     }
+
+    func testLoadSnapshotReadsPayloadFileUnitsAndDivergenceTogether() throws {
+        let pair = AnalysisCache.DivergencePair(baseSHA: "base", tipSHA: "tip")
+        XCTAssertTrue(AnalysisCache.saveBranchDivergence([pair: (behind: 1, ahead: 3)], root: root))
+        let unit = CodeUnit(filePath: "Main.swift", name: "start()", kind: .function,
+                            lineRange: 1...8, complexity: 3, nestingDepth: 1, lineCount: 8, language: "swift")
+        let entry = AnalysisCache.CachedFileUnits(
+            path: "Main.swift", bytes: 180, modified: 1_700_000_000, isGenerated: false, units: [unit]
+        )
+        let commit = Commit(sha: "tip", author: "Alice", date: Date(timeIntervalSince1970: 100),
+                            subject: "Init", fileChanges: [])
+        XCTAssertTrue(AnalysisCache.save(headSHA: "tip", commits: [commit], fileEntries: [entry], root: root))
+
+        let hit = AnalysisCache.loadSnapshot(root: root, matchingHead: "tip")
+        XCTAssertEqual(hit.matchingPayload?.headSHA, "tip")
+        XCTAssertEqual(hit.matchingPayload?.commits.map(\.sha), ["tip"])
+        XCTAssertEqual(hit.payload?.headSHA, "tip")
+        XCTAssertEqual(hit.fileUnits["Main.swift"]?.units, [unit])
+        XCTAssertEqual(hit.branchDivergence[pair]?.ahead, 3)
+        XCTAssertEqual(hit.branchDivergence[pair]?.behind, 1)
+
+        // When matchingHead misses, payload falls back to the stored head while matchingPayload is nil.
+        let miss = AnalysisCache.loadSnapshot(root: root, matchingHead: "other_head")
+        XCTAssertNil(miss.matchingPayload)
+        XCTAssertEqual(miss.payload?.headSHA, "tip")
+        XCTAssertEqual(miss.fileUnits.count, 1)
+    }
 }

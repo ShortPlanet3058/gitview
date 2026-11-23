@@ -14,8 +14,9 @@ struct CommitsScreen: View {
     @State private var range: TimeRange = .all
     @State private var author: String = ""
     @State private var limit = 300
+    @State private var cachedTimeline: CachedTimeline?
 
-    enum TimeRange: String, CaseIterable, Identifiable {
+    enum TimeRange: String, CaseIterable, Identifiable, Hashable {
         case all = "All time", year = "Last year", sixMonths = "Last 6 months", month = "Last 30 days"
         var id: String { rawValue }
         var since: Date? {
@@ -28,17 +29,79 @@ struct CommitsScreen: View {
         }
     }
 
-    private var filtered: [Commit] {
-        guard let commits = session.analysis?.commits else { return [] }
-        let q = query.trimmingCharacters(in: .whitespaces)
-        return commits.filter { commit in
-            if let since = range.since, commit.date < since { return false }
-            if !author.isEmpty && commit.author != author { return false }
+    private struct TimelineCacheKey: Equatable {
+        let headSHA: String?
+        let commitCount: Int
+        let workingHeadSHA: String?
+        let branches: [BranchInfo]
+        let tags: [TagInfo]
+        let query: String
+        let range: TimeRange
+        let author: String
+        let limit: Int
+    }
+
+    private struct CachedTimeline {
+        let key: TimelineCacheKey
+        let filteredCount: Int
+        let visibleSHAs: [String]
+        let firstFilteredSHA: String?
+        let grouped: [DayGroup]
+        let isUnfiltered: Bool
+        let graphBySHA: [String: CommitGraphRow]
+        let visibleMaxLanes: Int
+        let refsBySHA: [String: [CommitRefBadge]]
+    }
+
+    private static func makeCacheKey(
+        analysis: RepositoryAnalysis?,
+        query: String,
+        range: TimeRange,
+        author: String,
+        limit: Int
+    ) -> TimelineCacheKey {
+        TimelineCacheKey(
+            headSHA: analysis?.commits.first?.sha,
+            commitCount: analysis?.commits.count ?? 0,
+            workingHeadSHA: analysis?.workingState.headSHA,
+            branches: analysis?.branches ?? [],
+            tags: analysis?.tags ?? [],
+            query: query,
+            range: range,
+            author: author,
+            limit: limit
+        )
+    }
+
+    private static func buildTimeline(analysis: RepositoryAnalysis?, key: TimelineCacheKey) -> CachedTimeline {
+        let allCommits = analysis?.commits ?? []
+        let q = key.query.trimmingCharacters(in: .whitespaces)
+        let since = key.range.since
+        let filtered = allCommits.filter { commit in
+            if let since, commit.date < since { return false }
+            if !key.author.isEmpty && commit.author != key.author { return false }
             if q.isEmpty { return true }
             return commit.subject.localizedCaseInsensitiveContains(q)
                 || commit.author.localizedCaseInsensitiveContains(q)
                 || commit.sha.hasPrefix(q.lowercased())
         }
+        let visible = Array(filtered.prefix(key.limit))
+        let grouped = groupByDay(visible)
+        let isUnfiltered = q.isEmpty && key.author.isEmpty && key.range == .all
+        let graphBySHA = isUnfiltered ? CommitGraphLayout.build(commits: visible) : [:]
+        let visibleMaxLanes = max(min(graphBySHA.values.map(\.laneCount).max() ?? 1, 8), 1)
+        let refsBySHA = refBadges(for: analysis)
+        return CachedTimeline(
+            key: key,
+            filteredCount: filtered.count,
+            visibleSHAs: visible.map(\.sha),
+            firstFilteredSHA: filtered.first?.sha,
+            grouped: grouped,
+            isUnfiltered: isUnfiltered,
+            graphBySHA: graphBySHA,
+            visibleMaxLanes: visibleMaxLanes,
+            refsBySHA: refsBySHA
+        )
     }
 
     private static func refBadges(for analysis: RepositoryAnalysis?) -> [String: [CommitRefBadge]] {
@@ -61,13 +124,15 @@ struct CommitsScreen: View {
     }
 
     var body: some View {
-        let commits = filtered
-        let visible = Array(commits.prefix(limit))
-        let grouped = Self.groupByDay(visible)
-        let isUnfiltered = query.trimmingCharacters(in: .whitespaces).isEmpty && author.isEmpty && range == .all
-        let graphBySHA = isUnfiltered ? CommitGraphLayout.build(commits: visible) : [:]
-        let visibleMaxLanes = max(min(graphBySHA.values.map(\.laneCount).max() ?? 1, 8), 1)
-        let refsBySHA = Self.refBadges(for: session.analysis)
+        let key = Self.makeCacheKey(
+            analysis: session.analysis,
+            query: query,
+            range: range,
+            author: author,
+            limit: limit
+        )
+        let timeline = (cachedTimeline?.key == key ? cachedTimeline : nil)
+            ?? Self.buildTimeline(analysis: session.analysis, key: key)
 
         Page {
             ScreenHeader(title: "Commits", subtitle: "Browse the project history and branch topology.")
@@ -82,11 +147,11 @@ struct CommitsScreen: View {
                 }
                 .labelsHidden().frame(width: 180)
                 Spacer()
-                Text("\(commits.count.formatted()) commits").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                Text("\(timeline.filteredCount.formatted()) commits").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             Card(padding: Theme.Space.s) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(grouped, id: \.day) { group in
+                    ForEach(timeline.grouped, id: \.day) { group in
                         Text(group.day.formatted(.dateTime.year().month(.abbreviated).day()))
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.inkMuted)
                             .padding(.horizontal, Theme.Space.m).padding(.top, Theme.Space.m).padding(.bottom, 4)
@@ -95,46 +160,48 @@ struct CommitsScreen: View {
                                 CommitRowView(
                                     commit: commit,
                                     selected: session.navigation.selectedCommitSHA == commit.sha,
-                                    graphRow: isUnfiltered ? graphBySHA[commit.sha] : nil,
-                                    laneSlots: visibleMaxLanes,
-                                    refs: refsBySHA[commit.sha] ?? []
+                                    graphRow: timeline.isUnfiltered ? timeline.graphBySHA[commit.sha] : nil,
+                                    laneSlots: timeline.visibleMaxLanes,
+                                    refs: timeline.refsBySHA[commit.sha] ?? []
                                 )
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    if commits.count > limit {
+                    if timeline.filteredCount > limit {
                         HStack {
                             Spacer()
-                            Button("Show \(min(300, commits.count - limit)) more") { limit += 300 }
+                            Button("Show \(min(300, timeline.filteredCount - limit)) more") { limit += 300 }
                                 .buttonStyle(SecondaryButtonStyle())
                             Spacer()
                         }
                         .padding(Theme.Space.m)
                     }
-                    if commits.isEmpty {
+                    if timeline.filteredCount == 0 {
                         Text("No commits match.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted).padding(Theme.Space.l)
                     }
                 }
             }
         }
+        .onAppear { cachedTimeline = timeline }
+        .onChange(of: key) { _, newKey in
+            cachedTimeline = Self.buildTimeline(analysis: session.analysis, key: newKey)
+        }
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.downArrow) {
-            let visibleIDs = visible.map(\.sha)
             session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
-                in: visibleIDs, current: session.navigation.selectedCommitSHA, delta: 1)
+                in: timeline.visibleSHAs, current: session.navigation.selectedCommitSHA, delta: 1)
             return .handled
         }
         .onKeyPress(.upArrow) {
-            let visibleIDs = visible.map(\.sha)
             session.navigation.selectedCommitSHA = NavigationStore.stepSelection(
-                in: visibleIDs, current: session.navigation.selectedCommitSHA, delta: -1)
+                in: timeline.visibleSHAs, current: session.navigation.selectedCommitSHA, delta: -1)
             return .handled
         }
         .onKeyPress(.return) {
-            if session.navigation.selectedCommitSHA == nil, let first = commits.first {
-                session.navigation.selectedCommitSHA = first.sha
+            if session.navigation.selectedCommitSHA == nil, let first = timeline.firstFilteredSHA {
+                session.navigation.selectedCommitSHA = first
                 return .handled
             }
             return .ignored

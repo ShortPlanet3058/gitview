@@ -113,22 +113,23 @@ struct OverviewScreen: View {
     }
 
     private func numbersRow(_ analysis: RepositoryAnalysis, narrow: Bool) -> some View {
-        HStack(spacing: narrow ? Theme.Space.s : gap) {
+        let metrics = session.overviewMetrics
+        return HStack(spacing: narrow ? Theme.Space.s : gap) {
             NumberTile(icon: "clock.arrow.circlepath", tint: .blue, destination: .commits,
                        value: session.readiness.hasHistory ? analysis.commits.count.formatted() : "—",
-                       label: "Commits", detail: narrow ? nil : commitsThisMonth(analysis))
+                       label: "Commits", detail: narrow ? nil : commitsThisMonth(metrics))
             NumberTile(icon: "person.2", tint: .aqua, destination: .contributors,
                        value: session.readiness.hasHistory ? session.contributors.count.formatted() : "—",
                        label: session.contributors.count == 1 ? "Contributor" : "Contributors",
-                       detail: narrow ? nil : activePeople())
+                       detail: narrow ? nil : activePeople(metrics))
             NumberTile(icon: "doc.text.fill", tint: .orange, destination: .files,
                        value: analysis.info.inventory.fileCount.formatted(),
                        label: "Files", detail: narrow ? nil : analysis.info.inventory.totalBytes.byteString)
             NumberTile(icon: "arrow.triangle.branch", tint: .violet, destination: .branches,
-                       value: localBranches(analysis).count.formatted(),
-                       label: localBranches(analysis).count == 1 ? "Branch" : "Branches",
-                       detail: narrow ? nil : (analysis.branches.count > localBranches(analysis).count
-                           ? "\(analysis.branches.count - localBranches(analysis).count) on the remote" : nil))
+                       value: metrics.localBranchCount.formatted(),
+                       label: metrics.localBranchCount == 1 ? "Branch" : "Branches",
+                       detail: narrow ? nil : (metrics.remoteBranchCount > 0
+                           ? "\(metrics.remoteBranchCount) on the remote" : nil))
             NumberTile(icon: "tag", tint: .yellow, destination: .releases,
                        value: analysis.tags.count.formatted(),
                        label: analysis.tags.count == 1 ? "Release" : "Releases",
@@ -146,22 +147,14 @@ struct OverviewScreen: View {
 
     // MARK: - Small derivations
 
-    private func localBranches(_ analysis: RepositoryAnalysis) -> [BranchInfo] {
-        analysis.branches.filter { !$0.isRemote }
+    private func commitsThisMonth(_ metrics: WorkspaceSession.OverviewMetrics) -> String? {
+        guard session.readiness.hasHistory else { return nil }
+        return metrics.commitsLast30Days == 0 ? "none in 30 days" : "+\(metrics.commitsLast30Days) in 30 days"
     }
 
-    private func commitsThisMonth(_ analysis: RepositoryAnalysis) -> String? {
+    private func activePeople(_ metrics: WorkspaceSession.OverviewMetrics) -> String? {
         guard session.readiness.hasHistory else { return nil }
-        let start = Date().addingTimeInterval(-30 * 86_400)
-        let count = analysis.commits.lazy.filter { $0.date >= start }.count
-        return count == 0 ? "none in 30 days" : "+\(count) in 30 days"
-    }
-
-    private func activePeople() -> String? {
-        guard session.readiness.hasHistory else { return nil }
-        let start = Date().addingTimeInterval(-90 * 86_400)
-        let active = session.contributors.filter { $0.lastCommit >= start }.count
-        return active == 0 ? "none in 90 days" : "\(active) active"
+        return metrics.activeAuthorsLast90Days == 0 ? "none in 90 days" : "\(metrics.activeAuthorsLast90Days) active"
     }
 
     private func unreleasedDetail() -> String? {

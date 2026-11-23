@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import GitViewCore
 
 public struct BranchInfo: Hashable, Sendable, Identifiable {
@@ -175,32 +176,66 @@ public struct RepositoryInfo: Hashable, Sendable {
 
 extension GitRepository {
 
-    public func info() throws -> RepositoryInfo {
-        let root = try validate()
-        let box = InfoGatherBox()
-
-        DispatchQueue.concurrentPerform(iterations: 7) { taskIndex in
-            switch taskIndex {
-            case 0:
+    public func quickBranchRefs(validatedRoot root: URL) -> (current: String, defaultBranch: String) {
+        final class PairBox: @unchecked Sendable {
+            private let lock = NSLock()
+            var current: String?
+            var candidate: String?
+            func setCurrent(_ value: String) { lock.lock(); current = value; lock.unlock() }
+            func setCandidate(_ value: String?) { lock.lock(); candidate = value; lock.unlock() }
+        }
+        let box = PairBox()
+        DispatchQueue.concurrentPerform(iterations: 2) { index in
+            if index == 0 {
                 if let current = try? GitProcess.capture(arguments: ["rev-parse", "--abbrev-ref", "HEAD"], in: root) {
                     box.setCurrent(current.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
-            case 1:
+            } else {
+                box.setCandidate(Self.defaultBranchCandidate(in: root))
+            }
+        }
+        let current = box.current ?? "HEAD"
+        return (current, box.candidate ?? current)
+    }
+
+    public func info() throws -> RepositoryInfo {
+        let root = try validate()
+        return try info(validatedRoot: root, quickBranches: nil)
+    }
+
+    public func info(
+        validatedRoot root: URL,
+        quickBranches: (current: String, defaultBranch: String)? = nil
+    ) throws -> RepositoryInfo {
+        let box = InfoGatherBox()
+        if let quickBranches {
+            box.setCurrent(quickBranches.current)
+            box.setDefaultBranchCandidate(quickBranches.defaultBranch)
+        }
+
+        let iterations = quickBranches == nil ? 7 : 5
+        DispatchQueue.concurrentPerform(iterations: iterations) { taskIndex in
+            switch taskIndex {
+            case 0:
                 if let rawConfig = try? GitProcess.capture(arguments: ["config", "--list"], in: root) {
                     box.setConfig(Self.parseConfigList(rawConfig))
                 }
-            case 2:
-                box.setDefaultBranchCandidate(Self.defaultBranchCandidate(in: root))
-            case 3:
+            case 1:
                 box.setPackedBytes(Self.objectStoreBytes(in: root))
-            case 4:
-                box.setUnreleased(GitRepository(url: root).unreleasedSummary())
-            case 5:
+            case 2:
+                box.setUnreleased(GitRepository(url: root).unreleasedSummary(validatedRoot: root))
+            case 3:
                 box.setInventory(Self.inventory(in: root))
-            case 6:
+            case 4:
                 if let rawWorktrees = try? GitProcess.capture(arguments: ["worktree", "list", "--porcelain"], in: root) {
                     box.setWorktrees(Self.parseWorktrees(rawWorktrees, currentRoot: root))
                 }
+            case 5:
+                if let current = try? GitProcess.capture(arguments: ["rev-parse", "--abbrev-ref", "HEAD"], in: root) {
+                    box.setCurrent(current.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            case 6:
+                box.setDefaultBranchCandidate(Self.defaultBranchCandidate(in: root))
             default:
                 break
             }
@@ -235,6 +270,7 @@ extension GitRepository {
 
     public func branches(defaultBranch: String, currentBranch: String, detailLimit: Int = 60) throws -> [BranchInfo] {
         try branches(
+            validatedRoot: try validate(),
             defaultBranch: defaultBranch,
             currentBranch: currentBranch,
             detailLimit: detailLimit,
@@ -250,14 +286,48 @@ extension GitRepository {
         detailLimit: Int = 60,
         cachedDivergence: [AnalysisCache.DivergencePair: (behind: Int, ahead: Int)]
     ) throws -> (branches: [BranchInfo], computedDivergence: [AnalysisCache.DivergencePair: (behind: Int, ahead: Int)]) {
-        let root = try validate()
+        try branches(
+            validatedRoot: try validate(),
+            defaultBranch: defaultBranch,
+            currentBranch: currentBranch,
+            detailLimit: detailLimit,
+            cachedDivergence: cachedDivergence
+        )
+    }
+
+    public func branches(
+        validatedRoot root: URL,
+        defaultBranch: String,
+        currentBranch: String,
+        detailLimit: Int = 60,
+        cachedDivergence: [AnalysisCache.DivergencePair: (behind: Int, ahead: Int)]
+    ) throws -> (branches: [BranchInfo], computedDivergence: [AnalysisCache.DivergencePair: (behind: Int, ahead: Int)]) {
         let format = "%(refname)%1f%(objectname)%1f%(committerdate:iso-strict)%1f%(authorname:mailmap)%1f%(subject)"
-        let output = try GitProcess.capture(
-            arguments: ["for-each-ref", "--sort=-committerdate", "--format=\(format)", "refs/heads", "refs/remotes"],
-            in: root)
-        let merged = Set((try? GitProcess.capture(
-            arguments: ["branch", "-a", "--merged", defaultBranch, "--format=%(refname:short)"], in: root))?
-            .split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) } ?? [])
+        final class RefScanBox: @unchecked Sendable {
+            private let lock = NSLock()
+            var refResult: Result<String, Error>?
+            var merged: Set<String> = []
+            func setRefs(_ r: Result<String, Error>) { lock.lock(); refResult = r; lock.unlock() }
+            func setMerged(_ s: Set<String>) { lock.lock(); merged = s; lock.unlock() }
+        }
+        let scanBox = RefScanBox()
+        DispatchQueue.concurrentPerform(iterations: 2) { index in
+            if index == 0 {
+                scanBox.setRefs(Result {
+                    try GitProcess.capture(
+                        arguments: ["for-each-ref", "--sort=-committerdate", "--format=\(format)", "refs/heads", "refs/remotes"],
+                        in: root
+                    )
+                })
+            } else {
+                let rawMerged = (try? GitProcess.capture(
+                    arguments: ["branch", "-a", "--merged", defaultBranch, "--format=%(refname:short)"], in: root
+                )) ?? ""
+                scanBox.setMerged(Set(rawMerged.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }))
+            }
+        }
+        let output = try scanBox.refResult!.get()
+        let merged = scanBox.merged
 
         let rows = Self.parseBranchRows(output)
         let baseSHA = rows.first(where: { !$0.isRemote && $0.name == defaultBranch })?.sha
@@ -546,6 +616,12 @@ extension GitRepository {
         return joined
     }
 
+    private static func pathExtension(of path: String) -> String {
+        let filename = path.lastIndex(of: "/").map { path[path.index(after: $0)...] } ?? path[...]
+        guard let dot = filename.lastIndex(of: "."), dot > filename.startIndex else { return "" }
+        return String(filename[filename.index(after: dot)...])
+    }
+
     static func inventory(in root: URL) -> FileInventory {
         guard let listing = try? GitProcess.capture(arguments: ["ls-files", "-z"], in: root) else {
             return FileInventory(fileCount: 0, totalBytes: 0, files: [], bytesByCategory: [:],
@@ -561,23 +637,29 @@ extension GitRepository {
         var large: [FileInventory.LargeFile] = []
         var files: [FileInventory.TrackedFile] = []
         var newest: Date?
-        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        var st = Darwin.stat()
         for entry in listing.split(separator: "\0") where !entry.isEmpty {
             let path = String(entry)
-            let url = root.appendingPathComponent(path)
-            guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
-            let bytes = Int64(values.fileSize ?? 0)
+            let fullPath = rootPath + path
+            guard Darwin.lstat(fullPath, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { continue }
+            let bytes = Int64(st.st_size)
+            let modified = Date(
+                timeIntervalSince1970: Double(st.st_mtimespec.tv_sec)
+                    + Double(st.st_mtimespec.tv_nsec) / 1_000_000_000.0
+            )
             count += 1
             total += bytes
-            byCategory[FileInventory.category(forExtension: url.pathExtension), default: 0] += bytes
+            byCategory[FileInventory.category(forExtension: pathExtension(of: path)), default: 0] += bytes
             if let language = LanguageCatalog.language(forPath: path) {
                 byLanguage[language.name, default: 0] += bytes
                 countByLanguage[language.name, default: 0] += 1
                 known[language.name] = language
             }
-            files.append(.init(path: path, bytes: bytes, modified: values.contentModificationDate))
+            files.append(.init(path: path, bytes: bytes, modified: modified))
             if bytes >= FileInventory.largeFileThreshold { large.append(.init(path: path, bytes: bytes)) }
-            if let modified = values.contentModificationDate, newest.map({ modified > $0 }) ?? true { newest = modified }
+            if newest.map({ modified > $0 }) ?? true { newest = modified }
         }
         let ranked = byLanguage
             .compactMap { name, bytes -> LanguageShare? in

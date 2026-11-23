@@ -25,6 +25,20 @@ public final class WorkspaceSession {
         let isFastForward: Bool
     }
 
+    struct OverviewMetrics: Equatable, Sendable {
+        let commitsLast30Days: Int
+        let activeAuthorsLast90Days: Int
+        let localBranchCount: Int
+        let remoteBranchCount: Int
+
+        static let empty = OverviewMetrics(
+            commitsLast30Days: 0,
+            activeAuthorsLast90Days: 0,
+            localBranchCount: 0,
+            remoteBranchCount: 0
+        )
+    }
+
     let preferences: AppPreferences
     let navigation: NavigationStore
     let risk: RiskStore
@@ -46,6 +60,7 @@ public final class WorkspaceSession {
     private(set) var contributors: [Contributor] = []
     private(set) var unitsByID: [UUID: CodeUnit] = [:]
     private(set) var recentActivityBuckets: [ActivityBucket] = []
+    private(set) var overviewMetrics: OverviewMetrics = .empty
 
     @ObservationIgnored private var watcher: RepositoryWatcher?
     @ObservationIgnored private var refreshNoteTask: Task<Void, Never>?
@@ -256,6 +271,7 @@ public final class WorkspaceSession {
         search.reset()
         ownership = nil
         recentActivityBuckets = []
+        overviewMetrics = .empty
 
         loadTask = Task {
             do {
@@ -297,7 +313,12 @@ public final class WorkspaceSession {
                 currentPaths: Set(analysis.info.inventory.files.map(\.path))
             )
         }
-        risk.update(analysis: analysis, unitsByID: unitsByID, isComplete: false)
+        overviewMetrics = Self.computeOverviewMetrics(
+            analysis: analysis,
+            contributors: contributors,
+            hasHistory: readiness.hasHistory
+        )
+        risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: false)
         workingCopy.refreshPushPlan()
     }
 
@@ -391,6 +412,11 @@ public final class WorkspaceSession {
             }?.sha
         }
         self.state = .loaded(analysis)
+        self.overviewMetrics = Self.computeOverviewMetrics(
+            analysis: analysis,
+            contributors: contributors,
+            hasHistory: true
+        )
         if preservingSelection { navigation.screen = keptScreen }
         search.updateContext(
             root: analysis.root,
@@ -401,7 +427,7 @@ public final class WorkspaceSession {
             branches: analysis.branches.map(\.name),
             tags: analysis.tags.map(\.name)
         )
-        risk.update(analysis: analysis, unitsByID: unitsByID, isComplete: true)
+        risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: true)
         workingCopy.refreshPushPlan()
 
         if let term = navigation.pendingSearch {
@@ -441,6 +467,34 @@ public final class WorkspaceSession {
     }
 
     // MARK: - Derived Helpers
+
+    private static func computeOverviewMetrics(
+        analysis: RepositoryAnalysis,
+        contributors: [Contributor],
+        hasHistory: Bool
+    ) -> OverviewMetrics {
+        let localCount = analysis.branches.count(where: { !$0.isRemote })
+        let remoteCount = analysis.branches.count - localCount
+        guard hasHistory else {
+            return OverviewMetrics(
+                commitsLast30Days: 0,
+                activeAuthorsLast90Days: 0,
+                localBranchCount: localCount,
+                remoteBranchCount: remoteCount
+            )
+        }
+        let now = Date()
+        let monthStart = now.addingTimeInterval(-30 * 86_400)
+        let ninetyStart = now.addingTimeInterval(-90 * 86_400)
+        let commits30 = analysis.commits.count(where: { $0.date >= monthStart })
+        let active90 = contributors.count(where: { $0.lastCommit >= ninetyStart })
+        return OverviewMetrics(
+            commitsLast30Days: commits30,
+            activeAuthorsLast90Days: active90,
+            localBranchCount: localCount,
+            remoteBranchCount: remoteCount
+        )
+    }
 
     private static func computeRecentBuckets(from commits: [Commit]) -> [ActivityBucket] {
         let now = Date()

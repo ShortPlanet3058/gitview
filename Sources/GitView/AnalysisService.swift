@@ -155,94 +155,57 @@ enum AnalysisService {
             try GitRepository(url: root).validate()
         }.value
         let repository = GitRepository(url: validated)
-        let head = (try? repository.headSHA()) ?? ""
-        let cached = useCache ? AnalysisCache.load(root: validated, matchingHead: head.isEmpty ? nil : head)
-            ?? AnalysisCache.load(root: validated) : nil
-        let cachedFileUnits = useCache ? AnalysisCache.loadFileUnits(root: validated) : [:]
-        let cachedDivergence = useCache ? AnalysisCache.loadBranchDivergence(root: validated) : [:]
 
-        // Facts are cheap and always current; run independent git reads in parallel.
+        // Facts are cheap and always current; run independent git reads & SQLite snapshot load in parallel.
         let factsStart = Date()
         progress(LoadingProgress(stage: "Reading branches and tags"))
-        async let infoTask = Task.detached(priority: .userInitiated) { try repository.info() }.value
-        async let tagsTask = Task.detached(priority: .userInitiated) { (try? repository.tags()) ?? [] }.value
+        async let cacheStateTask: (head: String, snapshot: AnalysisCache.Snapshot) = Task.detached(priority: .userInitiated) {
+            let head = (try? repository.headSHA()) ?? ""
+            let snapshot = useCache
+                ? AnalysisCache.loadSnapshot(root: validated, matchingHead: head.isEmpty ? nil : head)
+                : .empty
+            return (head, snapshot)
+        }.value
+        async let quickBranchesTask = Task.detached(priority: .userInitiated) {
+            repository.quickBranchRefs(validatedRoot: validated)
+        }.value
+        async let tagsTask = Task.detached(priority: .userInitiated) {
+            (try? repository.tags(validatedRoot: validated)) ?? []
+        }.value
         async let workingTask = Task.detached(priority: .userInitiated) {
-            (try? repository.workingState()) ?? .clean
+            (try? repository.workingState(validatedRoot: validated)) ?? .clean
+        }.value
+
+        let quickBranches = await quickBranchesTask
+        async let infoTask = Task.detached(priority: .userInitiated) {
+            try repository.info(validatedRoot: validated, quickBranches: quickBranches)
+        }.value
+        let (head, snapshot) = await cacheStateTask
+        async let branchScanTask = Task.detached(priority: .userInitiated) {
+            try repository.branches(
+                validatedRoot: validated,
+                defaultBranch: quickBranches.defaultBranch,
+                currentBranch: quickBranches.current,
+                cachedDivergence: snapshot.branchDivergence
+            )
         }.value
 
         let info = try await infoTask
-        let branchScan = try await Task.detached(priority: .userInitiated) {
-            try repository.branches(
-                defaultBranch: info.defaultBranch,
-                currentBranch: info.currentBranch,
-                cachedDivergence: cachedDivergence
-            )
-        }.value
+        let branchScan = try await branchScanTask
         let branches = branchScan.branches
         let computedDivergence = branchScan.computedDivergence
         let tags = await tagsTask
         let workingState = await workingTask
         let factsDuration = Date().timeIntervalSince(factsStart)
 
-        // History: reuse, extend, or read in full.
-        // Everything the quick git calls answered is already worth showing: the working
-        // copy, the branches, the tags, the file tree.
-        partial(RepositoryAnalysis(
-            root: validated, info: info, branches: branches, tags: tags,
-            commits: [], allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
-            historyDuration: 0, parseDuration: 0, factsDuration: factsDuration,
-            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
-            source: .fresh, workingState: workingState), .factsOnly)
+        let cached = snapshot.matchingPayload ?? snapshot.payload
+        let cachedFileUnits = snapshot.fileUnits
 
-        progress(LoadingProgress(stage: "Reading history",
-                                 detail: cached == nil ? "every commit, first time for this project"
-                                                       : "only what is new since last time"))
-        let historyStart = Date()
-        var source = AnalysisSource.fresh
-        var commits: [Commit]
-        if let cached, cached.headSHA == head {
-            commits = cached.commits
-            source = .cached
-        } else if useCache, !head.isEmpty,
-                  let headSHAs = repository.revListSHAs(),
-                  let poolCommits = AnalysisCache.loadCommits(orderedSHAs: headSHAs, root: validated) {
-            commits = poolCommits
-            source = .cached
-        } else if let cached, !cached.headSHA.isEmpty, repository.isAncestor(cached.headSHA, of: head) {
-            let since = cached.headSHA
-            let newCommits = try await repository.loadHistoryAsync(since: since)
-            commits = newCommits + cached.commits
-            source = .incremental(newCommits: newCommits.count)
-        } else {
-            commits = try await repository.loadHistoryAsync()
-        }
-        let historyDuration = Date().timeIntervalSince(historyStart)
-        let currentPaths = Set(info.inventory.files.map(\.path))
-        let precomputedContributors = await Task.detached(priority: .userInitiated) {
-            ContributorStats.compute(commits: commits)
-        }.value
-        let precomputedOwnership = await Task.detached(priority: .userInitiated) {
-            OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
-        }.value
-
-        partial(RepositoryAnalysis(
-            root: validated, info: info, branches: branches, tags: tags,
-            commits: commits, allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
-            historyDuration: historyDuration, parseDuration: 0, factsDuration: factsDuration,
-            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
-            source: source, workingState: workingState,
-            fullChurn: nil,
-            precomputedOwnership: precomputedOwnership,
-            precomputedContributors: precomputedContributors), .withHistory)
-
-        // Reuse cached per-file units wherever byte size and modification timestamp still match;
-        // scan only dirty or newly added files, dropping deleted files from the result.
-        let parseStart = Date()
+        // Partition tracked parsable files against cached per-file units up front (in-memory only).
         let parsableTracked = info.inventory.files.filter { file in
             let ext = (file.path as NSString).pathExtension.lowercased()
             return LanguageRegistry.shared.language(forExtension: ext) != nil
         }
-
         var reusedUnits: [CodeUnit] = []
         var reusedGenerated: Set<String> = []
         var reusedFilesCount = 0
@@ -263,6 +226,135 @@ enum AnalysisService {
             }
         }
 
+        // Fast path: full cache hit for exact HEAD with zero dirty files skips intermediate UI flickers
+        // and avoids rewriting unchanged SQLite blobs.
+        if useCache,
+           let matched = snapshot.matchingPayload,
+           !head.isEmpty,
+           matched.headSHA == head,
+           dirtyPaths.isEmpty {
+            let commits = matched.commits
+            let currentPaths = Set(info.inventory.files.map(\.path))
+            let units = reusedUnits
+            async let contributorsTask = Task.detached(priority: .userInitiated) {
+                ContributorStats.compute(commits: commits)
+            }.value
+            async let ownershipTask = Task.detached(priority: .userInitiated) {
+                OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
+            }.value
+            async let joinTask = Task.detached(priority: .userInitiated) {
+                ChurnJoiner.join(units: units, commits: commits)
+            }.value
+
+            let precomputedContributors = await contributorsTask
+            let precomputedOwnership = await ownershipTask
+            let fullJoin = await joinTask
+
+            let unitsByPath = Dictionary(grouping: units, by: \.filePath)
+            let fileEntries = parsableTracked.compactMap { file -> AnalysisCache.CachedFileUnits? in
+                guard let modified = file.modified else { return nil }
+                return AnalysisCache.CachedFileUnits(
+                    path: file.path,
+                    bytes: file.bytes,
+                    modified: modified.timeIntervalSince1970,
+                    isGenerated: reusedGenerated.contains(file.path),
+                    units: unitsByPath[file.path] ?? []
+                )
+            }
+            let needsPruneSave = cachedFileUnits.count != fileEntries.count
+            if needsPruneSave || !computedDivergence.isEmpty {
+                Task.detached(priority: .utility) {
+                    if needsPruneSave {
+                        AnalysisCache.save(
+                            headSHA: head,
+                            commits: commits,
+                            fileEntries: fileEntries,
+                            root: validated
+                        )
+                    }
+                    if !computedDivergence.isEmpty {
+                        AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+                    }
+                }
+            }
+
+            return RepositoryAnalysis(
+                root: validated,
+                info: info,
+                branches: branches,
+                tags: tags,
+                commits: commits,
+                allUnits: units,
+                filesParsed: reusedFilesCount,
+                filesFailed: [],
+                generatedFiles: reusedGenerated,
+                historyDuration: 0,
+                parseDuration: 0,
+                factsDuration: factsDuration,
+                attribution: AttributionStats(matchedHunks: fullJoin.matchedHunks,
+                                              unmatchedHunks: fullJoin.unmatchedHunks,
+                                              unresolvedHunks: fullJoin.unresolvedPaths),
+                source: .cached,
+                workingState: workingState,
+                fullChurn: fullJoin,
+                precomputedOwnership: precomputedOwnership,
+                precomputedContributors: precomputedContributors
+            )
+        }
+
+        // Progressive path: emit facts immediately, then history, then scanned files.
+        partial(RepositoryAnalysis(
+            root: validated, info: info, branches: branches, tags: tags,
+            commits: [], allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
+            historyDuration: 0, parseDuration: 0, factsDuration: factsDuration,
+            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
+            source: .fresh, workingState: workingState), .factsOnly)
+
+        progress(LoadingProgress(stage: "Reading history",
+                                 detail: cached == nil ? "every commit, first time for this project"
+                                                       : "only what is new since last time"))
+        let historyStart = Date()
+        var source = AnalysisSource.fresh
+        let resolvedCommits: [Commit]
+        if let cached, cached.headSHA == head {
+            resolvedCommits = cached.commits
+            source = .cached
+        } else if useCache, !head.isEmpty,
+                  let headSHAs = repository.revListSHAs(),
+                  let poolCommits = AnalysisCache.loadCommits(orderedSHAs: headSHAs, root: validated) {
+            resolvedCommits = poolCommits
+            source = .cached
+        } else if let cached, !cached.headSHA.isEmpty, repository.isAncestor(cached.headSHA, of: head) {
+            let since = cached.headSHA
+            let newCommits = try await repository.loadHistoryAsync(since: since)
+            resolvedCommits = newCommits + cached.commits
+            source = .incremental(newCommits: newCommits.count)
+        } else {
+            resolvedCommits = try await repository.loadHistoryAsync()
+        }
+        let commits = resolvedCommits
+        let historyDuration = Date().timeIntervalSince(historyStart)
+        let currentPaths = Set(info.inventory.files.map(\.path))
+        async let contributorsTask = Task.detached(priority: .userInitiated) { [commits] in
+            ContributorStats.compute(commits: commits)
+        }.value
+        async let ownershipTask = Task.detached(priority: .userInitiated) { [commits, currentPaths] in
+            OwnershipBuilder.build(commits: commits, currentPaths: currentPaths)
+        }.value
+        let precomputedContributors = await contributorsTask
+        let precomputedOwnership = await ownershipTask
+
+        partial(RepositoryAnalysis(
+            root: validated, info: info, branches: branches, tags: tags,
+            commits: commits, allUnits: [], filesParsed: 0, filesFailed: [], generatedFiles: [],
+            historyDuration: historyDuration, parseDuration: 0, factsDuration: factsDuration,
+            attribution: AttributionStats(matchedHunks: 0, unmatchedHunks: 0, unresolvedHunks: 0),
+            source: source, workingState: workingState,
+            fullChurn: nil,
+            precomputedOwnership: precomputedOwnership,
+            precomputedContributors: precomputedContributors), .withHistory)
+
+        let parseStart = Date()
         let report: SourceScanner.Report
         if dirtyPaths.isEmpty {
             report = SourceScanner.Report(
@@ -305,20 +397,31 @@ enum AnalysisService {
             )
         }
         if useCache {
-            AnalysisCache.save(
-                headSHA: head,
-                commits: commits,
-                fileEntries: fileEntries,
-                root: validated
-            )
-            if !computedDivergence.isEmpty {
-                AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+            let needsSave = snapshot.matchingPayload?.headSHA != head
+                || !dirtyPaths.isEmpty
+                || cachedFileUnits.count != fileEntries.count
+            if needsSave || !computedDivergence.isEmpty {
+                let commitsSnapshot = commits
+                Task.detached(priority: .utility) {
+                    if needsSave {
+                        AnalysisCache.save(
+                            headSHA: head,
+                            commits: commitsSnapshot,
+                            fileEntries: fileEntries,
+                            root: validated
+                        )
+                    }
+                    if !computedDivergence.isEmpty {
+                        AnalysisCache.saveBranchDivergence(computedDivergence, root: validated)
+                    }
+                }
             }
         }
 
         // Join once over all parsed units off the main actor; RiskStore reuses this index.
-        let fullJoin = await Task.detached(priority: .userInitiated) {
-            ChurnJoiner.join(units: report.units, commits: commits)
+        let parsedUnits = report.units
+        let fullJoin = await Task.detached(priority: .userInitiated) { [parsedUnits, commits] in
+            ChurnJoiner.join(units: parsedUnits, commits: commits)
         }.value
 
         return RepositoryAnalysis(

@@ -61,6 +61,27 @@ public enum AnalysisCache {
         }
     }
 
+    public struct Snapshot: Sendable {
+        public let payload: Payload?
+        public let matchingPayload: Payload?
+        public let fileUnits: [String: CachedFileUnits]
+        public let branchDivergence: [DivergencePair: (behind: Int, ahead: Int)]
+
+        public init(
+            payload: Payload?,
+            matchingPayload: Payload?,
+            fileUnits: [String: CachedFileUnits],
+            branchDivergence: [DivergencePair: (behind: Int, ahead: Int)]
+        ) {
+            self.payload = payload
+            self.matchingPayload = matchingPayload
+            self.fileUnits = fileUnits
+            self.branchDivergence = branchDivergence
+        }
+
+        public static let empty = Snapshot(payload: nil, matchingPayload: nil, fileUnits: [:], branchDivergence: [:])
+    }
+
     private static let writeLock = NSLock()
 
     public static var directory: URL {
@@ -92,43 +113,100 @@ public enum AnalysisCache {
     /// Loads cached analysis for `matchingHead` if specified and present in the branch pool,
     /// otherwise for the last recorded active head.
     public static func load(root: URL, matchingHead: String?) -> Payload? {
+        loadSnapshot(root: root, matchingHead: matchingHead).payload
+    }
+
+    /// Opens the cache SQLite database once and returns cached payload, per-file units,
+    /// and branch divergence counts in a single pass.
+    public static func loadSnapshot(root: URL, matchingHead: String?) -> Snapshot {
         writeLock.lock()
         defer { writeLock.unlock() }
 
         let dbURL = url(for: root)
         guard FileManager.default.fileExists(atPath: dbURL.path),
-              let db = openReadOnly(at: dbURL) else { return nil }
+              let db = openReadOnly(at: dbURL) else { return .empty }
         defer { sqlite3_close_v2(db) }
 
-        guard readMetaInt(db, key: "format_version") == formatVersion,
-              let targetHead = matchingHead ?? readMetaString(db, key: "head_sha"),
-              let branchData = readBranchHead(db, headSHA: targetHead) else {
-            return nil
+        guard readMetaInt(db, key: "format_version") == formatVersion else { return .empty }
+
+        let divergence = readBranchDivergence(db)
+        let fileEntries = readAllFileUnits(db)
+        var fileMap: [String: CachedFileUnits] = [:]
+        fileMap.reserveCapacity(fileEntries.count)
+        var units: [CodeUnit] = []
+        var generated: [String] = []
+        for entry in fileEntries {
+            fileMap[entry.path] = entry
+            units.append(contentsOf: entry.units)
+            if entry.isGenerated { generated.append(entry.path) }
+        }
+        let sortedGenerated = generated.sorted()
+
+        var matchingPayload: Payload?
+        var payload: Payload?
+
+        let matchingHeadData = matchingHead.flatMap { readBranchHead(db, headSHA: $0).map { ($0, $1) } }
+        let fallbackHead = readMetaString(db, key: "head_sha")
+        let fallbackData: (String, (createdAt: TimeInterval, shasBlob: Data))? = {
+            if matchingHeadData != nil {
+                return nil
+            }
+            guard let fallbackHead,
+                  let branchData = readBranchHead(db, headSHA: fallbackHead) else { return nil }
+            return (fallbackHead, branchData)
+        }()
+
+        if matchingHeadData != nil || fallbackData != nil {
+            let commitMap = readAllCommits(db)
+            if let matchingHead, let branchData = matchingHeadData {
+                matchingPayload = assemblePayload(
+                    headSHA: matchingHead,
+                    branchData: branchData,
+                    commitMap: commitMap,
+                    units: units,
+                    generatedFiles: sortedGenerated
+                )
+                payload = matchingPayload
+            }
+            if payload == nil, let (headSHA, branchData) = fallbackData {
+                payload = assemblePayload(
+                    headSHA: headSHA,
+                    branchData: branchData,
+                    commitMap: commitMap,
+                    units: units,
+                    generatedFiles: sortedGenerated
+                )
+            }
         }
 
+        return Snapshot(
+            payload: payload,
+            matchingPayload: matchingPayload,
+            fileUnits: fileMap,
+            branchDivergence: divergence
+        )
+    }
+
+    private static func assemblePayload(
+        headSHA: String,
+        branchData: (createdAt: TimeInterval, shasBlob: Data),
+        commitMap: [String: Commit],
+        units: [CodeUnit],
+        generatedFiles: [String]
+    ) -> Payload? {
         let orderedSHAs = splitSHAList(branchData.shasBlob)
-        let commitMap = readAllCommits(db)
         var orderedCommits: [Commit] = []
         orderedCommits.reserveCapacity(orderedSHAs.count)
         for sha in orderedSHAs {
             guard let commit = commitMap[sha] else { return nil }
             orderedCommits.append(commit)
         }
-
-        let fileEntries = readAllFileUnits(db)
-        var units: [CodeUnit] = []
-        var generated: [String] = []
-        for entry in fileEntries {
-            units.append(contentsOf: entry.units)
-            if entry.isGenerated { generated.append(entry.path) }
-        }
-
         return Payload(
-            headSHA: targetHead,
+            headSHA: headSHA,
             createdAt: Date(timeIntervalSince1970: branchData.createdAt),
             commits: orderedCommits,
             units: units,
-            generatedFiles: generated.sorted()
+            generatedFiles: generatedFiles
         )
     }
 
@@ -268,7 +346,10 @@ public enum AnalysisCache {
         defer { sqlite3_close_v2(db) }
 
         guard readMetaInt(db, key: "format_version") == formatVersion else { return [:] }
+        return readBranchDivergence(db)
+    }
 
+    private static func readBranchDivergence(_ db: OpaquePointer) -> [DivergencePair: (behind: Int, ahead: Int)] {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(
             db,

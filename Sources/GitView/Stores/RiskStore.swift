@@ -70,10 +70,20 @@ final class RiskStore {
     }
 
     var couplingScope: CouplingScope = .crossDirectory {
-        didSet { rebuildCoupling() }
+        didSet {
+            if latestAnalysis != nil, churn != nil {
+                rebuildCouplingInBackground()
+            }
+        }
     }
 
-    var couplingViewMode: CouplingViewMode = .list
+    var couplingViewMode: CouplingViewMode = .list {
+        didSet {
+            if couplingViewMode == .graph {
+                ensureGraphLayoutIfNeeded()
+            }
+        }
+    }
 
     private(set) var excludedUnitCount = 0
     private(set) var allRankedRows: [RiskRow] = []
@@ -92,6 +102,7 @@ final class RiskStore {
     private(set) var graph: CouplingGraph?
     private(set) var graphPositions: [UUID: CGPoint] = [:]
     private(set) var graphLayoutInProgress = false
+    private(set) var analysisRebuildInProgress = false
     @ObservationIgnored private var graphLayoutGeneration = 0
     @ObservationIgnored private var rebuildGeneration = 0
     @ObservationIgnored private var backgroundRebuildTask: Task<Void, Never>?
@@ -123,16 +134,26 @@ final class RiskStore {
         graph = nil
         graphPositions = [:]
         graphLayoutInProgress = false
+        analysisRebuildInProgress = false
     }
 
     func update(analysis: RepositoryAnalysis, unitsByID: [UUID: CodeUnit], isComplete: Bool) {
         backgroundRebuildTask?.cancel()
         backgroundRebuildTask = nil
         rebuildGeneration += 1
+        analysisRebuildInProgress = false
         self.latestAnalysis = analysis
         self.latestUnitsByID = unitsByID
         self.latestIsComplete = isComplete
         rebuildFromCached()
+    }
+
+    /// Runs risk ranking, health, file tree, and coupling calculations off `@MainActor`.
+    func updateInBackground(analysis: RepositoryAnalysis, unitsByID: [UUID: CodeUnit], isComplete: Bool) {
+        self.latestAnalysis = analysis
+        self.latestUnitsByID = unitsByID
+        self.latestIsComplete = isComplete
+        rebuildInBackground()
     }
 
     private struct ConfigSnapshot: Sendable {
@@ -180,13 +201,13 @@ final class RiskStore {
         guard let analysis = latestAnalysis else { return }
         fullRebuildCount += 1
         let output = Self.computeRanking(analysis: analysis, config: configSnapshot(), isComplete: latestIsComplete)
-        applyRankingOutput(output, analysis: analysis, isComplete: latestIsComplete)
+        applyRankingOutput(output, isComplete: latestIsComplete)
         if latestIsComplete {
             rebuildCoupling()
         }
     }
 
-    /// Recomputes risk ranking, health, FileTree, and coupling off the main actor when preferences change.
+    /// Recomputes risk ranking, health, FileTree, and coupling off the main actor.
     func rebuildInBackground() {
         guard let analysis = latestAnalysis else { return }
         fullRebuildCount += 1
@@ -196,6 +217,7 @@ final class RiskStore {
         backgroundRebuildTask?.cancel()
         rebuildGeneration += 1
         let generation = rebuildGeneration
+        analysisRebuildInProgress = true
 
         backgroundRebuildTask = Task {
             let ranked = await Task.detached(priority: .userInitiated) {
@@ -211,7 +233,8 @@ final class RiskStore {
                 )
             }.value : nil
             guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
-            self.applyRankingOutput(ranked, analysis: analysis, isComplete: complete)
+            self.analysisRebuildInProgress = false
+            self.applyRankingOutput(ranked, isComplete: complete)
             if let coupled {
                 self.applyCouplingOutput(coupled)
             }
@@ -226,23 +249,25 @@ final class RiskStore {
         backgroundRebuildTask?.cancel()
         rebuildGeneration += 1
         let generation = rebuildGeneration
+        analysisRebuildInProgress = true
 
         backgroundRebuildTask = Task {
             let coupled = await Task.detached(priority: .userInitiated) {
                 Self.computeCoupling(units: unitsSnapshot, rankedIDs: rankedIDs, churn: churn, config: config)
             }.value
             guard !Task.isCancelled, generation == self.rebuildGeneration else { return }
+            self.analysisRebuildInProgress = false
             self.applyCouplingOutput(coupled)
         }
     }
 
-    private func applyRankingOutput(_ output: RankingOutput, analysis: RepositoryAnalysis, isComplete: Bool) {
+    private func applyRankingOutput(_ output: RankingOutput, isComplete: Bool) {
         excludedUnitCount = output.excludedUnitCount
         recentWindowLabel = output.recentWindowLabel
         levelCounts = output.levelCounts
         guard isComplete else {
             health = nil
-            fileTree = FileTree(files: analysis.info.inventory.files, rows: [])
+            fileTree = output.fileTree
             return
         }
         health = output.health
@@ -257,8 +282,14 @@ final class RiskStore {
         coupling = output.coupling
         couplingRows = output.couplingRows
         couplingRowsByID = output.couplingRowsByID
+        graph = nil
+        graphPositions = [:]
+        graphLayoutInProgress = false
+        graphLayoutGeneration += 1
         onCouplingChanged?(output.couplingRows, output.couplingRowsByID)
-        rebuildGraph()
+        if couplingViewMode == .graph {
+            ensureGraphLayoutIfNeeded()
+        }
     }
 
     nonisolated private static func computeRanking(analysis: RepositoryAnalysis,
@@ -331,6 +362,7 @@ final class RiskStore {
         let counts = Dictionary(grouping: built, by: \.level).mapValues(\.count)
 
         guard isComplete else {
+            let partialTree = FileTree(files: analysis.info.inventory.files, rows: [])
             return RankingOutput(
                 excludedUnitCount: excludedCount,
                 recentWindowLabel: windowLabel,
@@ -338,7 +370,7 @@ final class RiskStore {
                 health: nil,
                 allRankedRows: [],
                 allRankedRowsByID: [:],
-                fileTree: nil,
+                fileTree: partialTree,
                 churn: index
             )
         }
@@ -434,10 +466,17 @@ final class RiskStore {
         applyCouplingOutput(output)
     }
 
+    /// Lazily builds `CouplingGraph` and runs `ForceDirectedLayout` only when graph mode is viewed.
+    func ensureGraphLayoutIfNeeded() {
+        guard graph == nil, !graphLayoutInProgress else { return }
+        rebuildGraph()
+    }
+
     private func rebuildGraph() {
         guard let churn else {
             graph = nil
             graphPositions = [:]
+            graphLayoutInProgress = false
             return
         }
         let unitsSnapshot = latestUnitsByID
