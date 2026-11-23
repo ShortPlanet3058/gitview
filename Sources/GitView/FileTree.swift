@@ -34,13 +34,21 @@ struct FileTree: Sendable {
     private var index: [String: Node] = [:]
 
     init(files: [FileInventory.TrackedFile], rows: [RiskRow]) {
+        self.init(entries: files.map { ($0.path, $0.bytes, $0.modified) }, rows: rows)
+    }
+
+    init(paths: [String]) {
+        self.init(entries: paths.map { ($0, 0, nil) }, rows: [])
+    }
+
+    private init(entries: [(path: String, bytes: Int64, modified: Date?)], rows: [RiskRow]) {
         root = Node(path: "", name: "/", isDirectory: true)
         index[""] = root
         var attention: [String: [RiskLevel: Int]] = [:]
         for row in rows where row.level == .critical || row.level == .high {
             attention[row.filePath, default: [:]][row.level, default: 0] += 1
         }
-        for file in files {
+        for file in entries {
             var parent = root
             let components = file.path.split(separator: "/").map(String.init)
             var current = ""

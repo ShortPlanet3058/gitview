@@ -15,6 +15,11 @@ public struct PullRequestSummary: Identifiable, Hashable, Sendable {
     public let isDraft: Bool
     public let reviewDecision: String?
     public let checkStatus: CheckStatus
+    public let authorLogin: String?
+    public let updatedAt: Date?
+    public let additions: Int?
+    public let deletions: Int?
+    public let changedFiles: Int?
 
     public init(
         number: Int,
@@ -24,7 +29,12 @@ public struct PullRequestSummary: Identifiable, Hashable, Sendable {
         baseRefName: String,
         isDraft: Bool,
         reviewDecision: String?,
-        checkStatus: CheckStatus
+        checkStatus: CheckStatus,
+        authorLogin: String? = nil,
+        updatedAt: Date? = nil,
+        additions: Int? = nil,
+        deletions: Int? = nil,
+        changedFiles: Int? = nil
     ) {
         self.number = number
         self.title = title
@@ -34,6 +44,11 @@ public struct PullRequestSummary: Identifiable, Hashable, Sendable {
         self.isDraft = isDraft
         self.reviewDecision = reviewDecision
         self.checkStatus = checkStatus
+        self.authorLogin = authorLogin
+        self.updatedAt = updatedAt
+        self.additions = additions
+        self.deletions = deletions
+        self.changedFiles = changedFiles
     }
 }
 
@@ -54,6 +69,7 @@ public enum GitHubBridge {
         }
         return decoded.compactMap { raw in
             guard let url = URL(string: raw.url), !raw.headRefName.isEmpty else { return nil }
+            let trimmedLogin = raw.author?.login?.trimmingCharacters(in: .whitespacesAndNewlines)
             return PullRequestSummary(
                 number: raw.number,
                 title: raw.title,
@@ -62,7 +78,12 @@ public enum GitHubBridge {
                 baseRefName: raw.baseRefName,
                 isDraft: raw.isDraft ?? false,
                 reviewDecision: raw.reviewDecision,
-                checkStatus: rollupStatus(from: raw.statusCheckRollup ?? [])
+                checkStatus: rollupStatus(from: raw.statusCheckRollup ?? []),
+                authorLogin: trimmedLogin?.isEmpty == false ? trimmedLogin : nil,
+                updatedAt: raw.updatedAt.flatMap(ISO8601.parse),
+                additions: raw.additions,
+                deletions: raw.deletions,
+                changedFiles: raw.changedFiles
             )
         }
     }
@@ -131,7 +152,7 @@ public enum GitHubBridge {
             "pr", "list",
             "--state", "open",
             "--limit", "50",
-            "--json", "number,title,url,headRefName,baseRefName,isDraft,reviewDecision,statusCheckRollup",
+            "--json", "number,title,url,headRefName,baseRefName,isDraft,reviewDecision,statusCheckRollup,author,updatedAt,additions,deletions,changedFiles",
         ]
         guard let data = await captureProcessData(
             executablePath: ghPath,
@@ -142,6 +163,70 @@ public enum GitHubBridge {
             return []
         }
         return parsePullRequests(json: data)
+    }
+
+    public static func checkoutPullRequest(number: Int, in root: URL) throws {
+        _ = try runGH(arguments: ["pr", "checkout", "\(number)"], in: root, commandLabel: "gh pr checkout")
+    }
+
+    public static func createPullRequest(
+        title: String,
+        body: String,
+        base: String,
+        draft: Bool,
+        in root: URL
+    ) throws -> URL? {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else {
+            throw GitWriteError(command: "gh pr create", message: "Pull request title cannot be empty.")
+        }
+        var arguments = [
+            "pr", "create",
+            "--title", trimmedTitle,
+            "--body", body,
+            "--base", base,
+        ]
+        if draft { arguments.append("--draft") }
+        let stdout = try runGH(arguments: arguments, in: root, commandLabel: "gh pr create")
+        let lastLine = stdout
+            .split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
+            .last
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        return lastLine.flatMap(URL.init(string:))
+    }
+
+    private static func runGH(arguments: [String], in directory: URL, commandLabel: String) throws -> String {
+        guard let ghPath = ghExecutablePath() else {
+            throw GitWriteError(command: commandLabel, message: "GitHub CLI (gh) is not installed.")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ghPath)
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        var env = ProcessInfo.processInfo.environment
+        env["GH_PROMPT_DISABLED"] = "1"
+        env["NO_COLOR"] = "1"
+        process.environment = env
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        try process.run()
+
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let stdout = String(decoding: outData, as: UTF8.self)
+        let stderr = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else {
+            throw GitWriteError(
+                command: commandLabel,
+                message: stderr.isEmpty ? "gh exited with code \(process.terminationStatus)" : stderr
+            )
+        }
+        return stdout
     }
 
     private static func captureProcessData(
@@ -273,6 +358,15 @@ public enum GitHubBridge {
         let isDraft: Bool?
         let reviewDecision: String?
         let statusCheckRollup: [RawStatusItem]?
+        let author: RawAuthor?
+        let updatedAt: String?
+        let additions: Int?
+        let deletions: Int?
+        let changedFiles: Int?
+    }
+
+    private struct RawAuthor: Decodable {
+        let login: String?
     }
 
     private struct RawStatusItem: Decodable {

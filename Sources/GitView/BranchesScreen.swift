@@ -33,13 +33,27 @@ struct BranchesScreen: View {
                     )
                     Spacer()
                     if advanced {
-                        Button {
-                            session.navigation.isManageRepoSheetPresented = true
-                        } label: {
-                            Label("Remotes & Worktrees", systemImage: "externaldrive.connected.to.line.below")
+                        HStack(spacing: Theme.Space.s) {
+                            Button {
+                                session.navigation.isPullRequestsSheetPresented = true
+                            } label: {
+                                let prCount = session.openPullRequests.count
+                                Label(
+                                    prCount > 0 ? "Pull Requests (\(prCount))" : "Pull Requests",
+                                    systemImage: "arrow.triangle.pull"
+                                )
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .controlSize(.small)
+
+                            Button {
+                                session.navigation.isManageRepoSheetPresented = true
+                            } label: {
+                                Label("Remotes & Worktrees", systemImage: "externaldrive.connected.to.line.below")
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .controlSize(.small)
                         }
-                        .buttonStyle(SecondaryButtonStyle())
-                        .controlSize(.small)
                     }
                 }
                 HStack(spacing: Theme.Space.m) {
@@ -285,10 +299,11 @@ struct BranchRow: View {
             }
             if let root {
                 Button("Compare with Current Branch") {
-                    session.navigation.compareFrom = branch.name
-                    session.navigation.compareTo = "HEAD"
-                    session.navigation.runComparison(in: root)
-                    session.show(.releases)
+                    session.navigation.openCompareWorkspace(
+                        from: branch.name,
+                        to: "HEAD",
+                        in: root
+                    )
                 }
             }
         }

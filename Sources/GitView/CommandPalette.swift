@@ -181,12 +181,30 @@ struct CommandPaletteOverlay: View {
                     perform: { session.navigation.isReflogSheetPresented = true }
                 ))
                 items.append(CommandPaletteEntry(
+                    id: "action:pullRequests",
+                    title: "Pull Requests…",
+                    subtitle: "Browse, check out, compare, or create GitHub pull requests",
+                    category: "Action",
+                    symbol: "arrow.triangle.pull",
+                    keywords: "pr pull request github checkout create review",
+                    perform: { session.navigation.isPullRequestsSheetPresented = true }
+                ))
+                items.append(CommandPaletteEntry(
+                    id: "action:interactiveRebase",
+                    title: "Interactive Rebase…",
+                    subtitle: "Reorder, squash, fixup, reword, or drop commits",
+                    category: "Action",
+                    symbol: "arrow.triangle.swap",
+                    keywords: "rebase interactive squash fixup reword reorder drop",
+                    perform: { session.navigation.isInteractiveRebaseSheetPresented = true }
+                ))
+                items.append(CommandPaletteEntry(
                     id: "action:manageRepo",
-                    title: "Manage Remotes & Worktrees…",
-                    subtitle: "Configure remotes and linked working trees",
+                    title: "Manage Remotes, Worktrees & Submodules…",
+                    subtitle: "Configure remotes, linked working trees, and submodules",
                     category: "Action",
                     symbol: "externaldrive.connected.to.line.below",
-                    keywords: "remote url origin worktree add remove",
+                    keywords: "remote url origin worktree submodule add remove init",
                     perform: { session.navigation.isManageRepoSheetPresented = true }
                 ))
             }

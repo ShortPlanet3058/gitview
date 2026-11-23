@@ -13,6 +13,11 @@ final class GitHubBridgeTests: XCTestCase {
             "baseRefName": "main",
             "isDraft": false,
             "reviewDecision": "APPROVED",
+            "author": { "login": "ShortPlanet3058" },
+            "updatedAt": "2026-11-20T12:30:00Z",
+            "additions": 120,
+            "deletions": 15,
+            "changedFiles": 4,
             "statusCheckRollup": [
               { "status": "COMPLETED", "conclusion": "SUCCESS" },
               { "state": "SUCCESS" }
@@ -51,8 +56,15 @@ final class GitHubBridgeTests: XCTestCase {
         XCTAssertEqual(prs[0].number, 42)
         XCTAssertEqual(prs[0].checkStatus, .passing)
         XCTAssertEqual(prs[0].reviewDecision, "APPROVED")
+        XCTAssertEqual(prs[0].authorLogin, "ShortPlanet3058")
+        XCTAssertNotNil(prs[0].updatedAt)
+        XCTAssertEqual(prs[0].additions, 120)
+        XCTAssertEqual(prs[0].deletions, 15)
+        XCTAssertEqual(prs[0].changedFiles, 4)
 
         XCTAssertEqual(prs[1].number, 43)
+        XCTAssertNil(prs[1].authorLogin)
+        XCTAssertNil(prs[1].additions)
         XCTAssertTrue(prs[1].isDraft)
         XCTAssertEqual(prs[1].checkStatus, .failing)
 

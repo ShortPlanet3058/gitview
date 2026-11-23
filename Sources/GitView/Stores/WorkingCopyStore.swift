@@ -47,6 +47,7 @@ public final class WorkingCopyStore {
     public var confirmation: DestructiveConfirmation?
     public private(set) var pushPlan: GitRepository.PushPlan?
     public private(set) var headCommitInfo: GitRepository.HeadCommitInfo?
+    public private(set) var bisectStatus: BisectStatus?
     public var divergedPullPrompt = false
     /// Bumped when a working-tree change event triggers a status refresh so active diffs reload even if status flags stayed dirty.
     public private(set) var worktreeTick: Int = 0
@@ -93,6 +94,7 @@ public final class WorkingCopyStore {
         confirmation = nil
         pushPlan = nil
         headCommitInfo = nil
+        bisectStatus = nil
         divergedPullPrompt = false
         worktreeTick = 0
     }
@@ -208,10 +210,13 @@ public final class WorkingCopyStore {
     public func refreshHeadCommitInfo() {
         guard let root = rootProvider() else { return }
         Task.detached(priority: .utility) {
-            let info = try? GitRepository(url: root).headCommitInfo()
+            let repo = GitRepository(url: root)
+            let info = try? repo.headCommitInfo()
+            let bisect = repo.bisectStatus()
             await MainActor.run {
                 guard self.rootProvider() == root else { return }
                 self.headCommitInfo = info
+                self.bisectStatus = bisect
             }
         }
     }
@@ -855,6 +860,134 @@ public final class WorkingCopyStore {
     public func removeRemote(name: String, onSuccess: (@MainActor () -> Void)? = nil) {
         perform("remove remote", refsOnly: true, onSuccess: onSuccess) {
             try $0.removeRemote(name: name)
+        }
+    }
+
+    public func checkoutPullRequest(number: Int, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("checkout PR #\(number)", reloadHistory: true, onSuccess: onSuccess) { repo in
+            let root = try repo.validate()
+            try GitHubBridge.checkoutPullRequest(number: number, in: root)
+        }
+    }
+
+    public func createPullRequest(
+        title: String,
+        body: String,
+        base: String,
+        draft: Bool,
+        onCreated: (@MainActor (URL?) -> Void)? = nil
+    ) {
+        guard let root = rootProvider(), !writeInFlight else { return }
+        writeInFlight = true
+        writeError = nil
+        Task {
+            let result: Result<URL?, Error> = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try GitHubBridge.createPullRequest(
+                        title: title,
+                        body: body,
+                        base: base,
+                        draft: draft,
+                        in: root
+                    )
+                }
+            }.value
+            self.writeInFlight = false
+            switch result {
+            case .success(let createdURL):
+                self.onRefsMutated()
+                onCreated?(createdURL)
+            case .failure(let error):
+                self.writeError = "\(error)"
+            }
+        }
+    }
+
+    public func runInteractiveRebase(
+        onto baseRef: String,
+        items: [RebaseTodoItem],
+        onSuccess: (@MainActor () -> Void)? = nil,
+        onConflict: (@MainActor () -> Void)? = nil
+    ) {
+        guard let root = rootProvider(), !writeInFlight else { return }
+        writeInFlight = true
+        writeError = nil
+        Task {
+            let outcome: (failure: String?, hasConflictOrRebase: Bool) = await Task.detached(priority: .userInitiated) {
+                let repository = GitRepository(url: root)
+                do {
+                    try repository.interactiveRebase(onto: baseRef, items: items)
+                    return (nil, false)
+                } catch {
+                    let state = try? repository.workingState()
+                    let paused = state?.operation == .rebase || !(state?.conflicted.isEmpty ?? true)
+                    return ("\(error)", paused)
+                }
+            }.value
+            self.writeInFlight = false
+            self.reloadCommandLog()
+            if outcome.failure == nil {
+                self.writeError = nil
+                self.onHistoryMutated()
+                onSuccess?()
+            } else if outcome.hasConflictOrRebase {
+                self.writeError = outcome.failure
+                self.refreshWorkingState()
+                self.refreshHeadCommitInfo()
+                onConflict?()
+            } else {
+                self.writeError = outcome.failure
+                self.refreshWorkingState()
+            }
+        }
+    }
+
+    public func confirmReset(to rev: String, subject: String, mode: ResetMode, onSuccess: (@MainActor () -> Void)? = nil) {
+        let short = String(rev.prefix(7))
+        let modeDetail: String
+        switch mode {
+        case .soft:
+            modeDetail = "Moves your current branch pointer to \(short) and keeps all changes staged."
+        case .mixed:
+            modeDetail = "Moves your current branch pointer to \(short) and resets the index while keeping files in your working tree."
+        case .hard:
+            modeDetail = "Moves your current branch pointer to \(short) and PERMANENTLY discards any uncommitted or staged changes."
+        }
+        confirmation = DestructiveConfirmation(
+            title: "Reset current branch (\(mode.rawValue)) to \(short)?",
+            message: "\(subject)\n\n\(modeDetail)",
+            confirmLabel: "Reset (\(mode.rawValue.capitalized))",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.perform("reset --\(mode.rawValue)", reloadHistory: true, onSuccess: onSuccess) {
+                    try $0.reset(to: rev, mode: mode)
+                }
+            },
+            alternative: nil
+        )
+    }
+
+    public func checkoutDetached(rev: String) {
+        perform("checkout detached", reloadHistory: true) {
+            try $0.checkoutDetached(rev: rev)
+        }
+    }
+
+    public func bisectStart(bad: String, good: String) {
+        perform("bisect start", reloadHistory: true) {
+            try $0.bisectStart(bad: bad, good: good)
+        }
+    }
+
+    public func bisectMark(_ verdict: BisectVerdict) {
+        perform("bisect \(verdict.rawValue)", reloadHistory: true) {
+            try $0.bisectMark(verdict)
+        }
+    }
+
+    public func updateSubmodules(onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("update submodules", refsOnly: true, onSuccess: onSuccess) {
+            try $0.updateSubmodules(recursive: true)
         }
     }
 }

@@ -129,4 +129,43 @@ final class FileHistoryParserTests: XCTestCase {
         XCTAssertEqual(secondDetail.body, "Extended explanation\nover multiple lines.")
         XCTAssertEqual(secondDetail.deltas.first?.insertions, 1)
     }
+
+    func testCommitDetailParserSupportsSignatureFieldsAndLegacy9FieldOutput() {
+        let signedHeader = [
+            "deadbeef1234",
+            "Alice",
+            "alice@example.com",
+            "2026-01-15T10:00:00Z",
+            "Alice",
+            "alice@example.com",
+            "2026-01-15T10:00:00Z",
+            "parent001",
+            "Verified commit",
+            "G",
+            "Alice <alice@example.com>",
+            "ABCD1234EF567890",
+        ].joined(separator: "\u{1F}") + "\u{1E}Signed body"
+
+        let signedDetail = CommitDetailParser.parse(signedHeader, deltas: [])
+        XCTAssertEqual(signedDetail?.signature?.status, .good)
+        XCTAssertEqual(signedDetail?.signature?.signer, "Alice <alice@example.com>")
+        XCTAssertEqual(signedDetail?.signature?.key, "ABCD1234EF567890")
+        XCTAssertEqual(signedDetail?.body, "Signed body")
+
+        let legacyHeader = [
+            "cafebabe5678",
+            "Bob",
+            "bob@example.com",
+            "2026-01-15T11:00:00Z",
+            "Bob",
+            "bob@example.com",
+            "2026-01-15T11:00:00Z",
+            "",
+            "Legacy commit",
+        ].joined(separator: "\u{1F}") + "\u{1E}"
+
+        let legacyDetail = CommitDetailParser.parse(legacyHeader, deltas: [])
+        XCTAssertEqual(legacyDetail?.subject, "Legacy commit")
+        XCTAssertNil(legacyDetail?.signature)
+    }
 }

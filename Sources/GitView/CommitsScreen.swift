@@ -193,6 +193,15 @@ struct CommitsScreen: View {
                             selection: $scope
                         )
                         Button {
+                            session.navigation.isInteractiveRebaseSheetPresented = true
+                        } label: {
+                            Label("Rebase…", systemImage: "arrow.triangle.swap")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .controlSize(.small)
+                        .help("Open interactive rebase planner")
+
+                        Button {
                             session.navigation.isReflogSheetPresented = true
                         } label: {
                             Label("Reflog", systemImage: "clock.arrow.2.circlepath")
