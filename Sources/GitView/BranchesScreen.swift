@@ -6,6 +6,7 @@ struct BranchesScreen: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(\.staticRendering) private var staticRendering
     @State private var showMerged = false
     @State private var query = ""
     @State private var newBranchName = ""
@@ -30,10 +31,20 @@ struct BranchesScreen: View {
                     SearchField(text: $query, prompt: "Filter branches",
                                 focusTrigger: session.navigation.focusLocalFindRequest).frame(maxWidth: 280)
                     Spacer()
-                    TextField("New branch name…", text: $newBranchName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 190)
-                        .onSubmit(createBranch)
+                    if staticRendering {
+                        Text(newBranchName.isEmpty ? "New branch name…" : newBranchName)
+                            .font(Theme.Text.body)
+                            .foregroundStyle(newBranchName.isEmpty ? Theme.inkMuted : Theme.ink)
+                            .frame(width: 170, alignment: .leading)
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+                    } else {
+                        TextField("New branch name…", text: $newBranchName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 190)
+                            .onSubmit(createBranch)
+                    }
                     Button("New branch", action: createBranch)
                         .buttonStyle(SecondaryButtonStyle())
                         .disabled(newBranchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || workingCopy.writeInFlight)

@@ -130,6 +130,7 @@ struct LevelChip: View {
 }
 
 struct SearchField: View {
+    @Environment(\.staticRendering) private var staticRendering
     @Binding var text: String
     let prompt: String
     var focusTrigger: Int = 0
@@ -138,10 +139,18 @@ struct SearchField: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)
-            TextField(prompt, text: $text)
-                .textFieldStyle(.plain)
-                .font(Theme.Text.body)
-                .focused($isFocused)
+            if staticRendering {
+                Text(text.isEmpty ? prompt : text)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(text.isEmpty ? Theme.inkMuted : Theme.ink)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                TextField(prompt, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Text.body)
+                    .focused($isFocused)
+            }
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.inkMuted)

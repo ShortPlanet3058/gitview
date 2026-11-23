@@ -3,6 +3,23 @@ import GitViewCore
 
 // MARK: - Card
 
+extension View {
+    func cardSurface(cornerRadius: CGFloat = Theme.Radius.card, hovered: Bool = false) -> some View {
+        self
+            .background(hovered ? Theme.raised : Theme.surface,
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(hovered ? Theme.accent.opacity(0.45) : Theme.hairline, lineWidth: 1))
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Theme.innerHighlight, lineWidth: 1)
+                    .mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center))
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: Theme.cardShadow, radius: 6, y: 2)
+    }
+}
+
 struct Card<Content: View>: View {
     var padding: CGFloat = Theme.Space.l
     @ViewBuilder let content: Content
@@ -10,9 +27,7 @@ struct Card<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1))
+            .cardSurface()
     }
 }
 
@@ -132,25 +147,41 @@ struct NavButton: View {
     let title: String
     let systemImage: String
     let selected: Bool
+    var badge: String? = nil
+    var badgeTint: Color = Theme.inkSoft
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Space.s) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(selected ? Theme.accent : .clear)
+                    .frame(width: 3, height: 14)
                 Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(selected ? Theme.accent : (hovering ? Theme.ink : Theme.inkSoft))
                     .frame(width: 18)
                 Text(title).font(Theme.Text.body.weight(selected ? .semibold : .regular))
                 Spacer()
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(badgeTint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(badgeTint.opacity(0.14), in: Capsule())
+                }
             }
             .foregroundStyle(selected ? Theme.ink : Theme.inkSoft)
-            .padding(.horizontal, Theme.Space.m)
+            .padding(.leading, 6)
+            .padding(.trailing, Theme.Space.m)
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                     .fill(selected ? Theme.accentWash : (hovering ? Theme.wash : .clear))
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -174,26 +205,69 @@ struct Chip: View {
 }
 
 struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Theme.Text.bodyBold)
             .foregroundStyle(.white)
-            .padding(.horizontal, Theme.Space.l).padding(.vertical, Theme.Space.s)
-            .background(Theme.accent.opacity(configuration.isPressed ? 0.8 : 1),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .padding(.horizontal, Theme.Space.m).padding(.vertical, 6)
+            .background(
+                Theme.accent.opacity(configuration.isPressed ? 0.85 : (hovering && isEnabled ? 0.94 : 1)),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.985 : 1)
+            .opacity(isEnabled ? 1 : 0.45)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
 struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Theme.Text.body)
+            .font(Theme.Text.body.weight(.medium))
             .foregroundStyle(Theme.ink)
             .padding(.horizontal, Theme.Space.m).padding(.vertical, 6)
-            .background(configuration.isPressed ? Theme.wash : Theme.surface,
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                .strokeBorder(Theme.hairline))
+            .background(
+                (configuration.isPressed || hovering) && isEnabled ? Theme.wash : Theme.surface.opacity(0.85),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(hovering && isEnabled ? Theme.ink.opacity(0.12) : Theme.hairline, lineWidth: 1)
+            )
+            .opacity(isEnabled ? 1 : 0.45)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// Borderless icon button with a soft rounded wash highlight on hover.
+struct GhostIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(hovering && isEnabled ? Theme.ink : Theme.inkSoft)
+            .frame(width: 28, height: 28)
+            .background(
+                (configuration.isPressed || hovering) && isEnabled ? Theme.wash : .clear,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .contentShape(Rectangle())
+            .opacity(isEnabled ? 1 : 0.4)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -205,19 +279,59 @@ struct SegmentPicker<T: Hashable>: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.0) { value, label in
+                let isSelected = selection == value
                 Button { selection = value } label: {
                     Text(label)
-                        .font(.system(size: 12, weight: selection == value ? .semibold : .regular))
-                        .foregroundStyle(selection == value ? Theme.ink : Theme.inkSoft)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? Theme.ink : Theme.inkSoft)
                         .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(selection == value ? Theme.raised : .clear,
-                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(
+                            isSelected ? Theme.raised : .clear,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(isSelected ? Theme.hairline : .clear, lineWidth: 1)
+                        )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(2)
+        .padding(3)
         .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .animation(.easeOut(duration: 0.14), value: selection)
+    }
+}
+
+struct EmptyStateView: View {
+    let icon: String
+    var tint: Color = Theme.accent
+    let title: String
+    let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: Theme.Space.m) {
+            Image(systemName: icon)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 52, height: 52)
+                .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            VStack(spacing: 4) {
+                Text(title).font(Theme.Text.title).foregroundStyle(Theme.ink)
+                Text(message)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 340)
+            }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .padding(.top, Theme.Space.xs)
+            }
+        }
     }
 }
 

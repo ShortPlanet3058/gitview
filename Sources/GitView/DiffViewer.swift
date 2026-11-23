@@ -9,7 +9,9 @@ struct DiffViewer: View {
     @Environment(AppPreferences.self) private var preferences
     @Environment(InspectorStore.self) private var inspector
     @Environment(WorkingCopyStore.self) private var workingCopy
+    @Environment(\.staticRendering) private var staticRendering
     let request: DiffRequest
+    var embedded: Bool = false
 
     enum LayoutMode: String, CaseIterable {
         case unified = "Unified"
@@ -25,6 +27,22 @@ struct DiffViewer: View {
     @State private var inlineRangesByLineID: [Int: [Range<Int>]] = [:]
     @State private var selectedLineIDs: Set<Int> = []
     @FocusState private var findFieldFocused: Bool
+
+    private var activeDiff: FileDiff? {
+        embedded ? inspector.inlineLoadedDiff : inspector.loadedDiff
+    }
+
+    private var activeDiffInFlight: Bool {
+        embedded ? inspector.inlineDiffInFlight : inspector.diffInFlight
+    }
+
+    private func reloadActiveDiff() {
+        if embedded {
+            inspector.reloadInlineDiff()
+        } else {
+            inspector.reloadDiff()
+        }
+    }
 
     private var isUntrackedFile: Bool {
         guard case .workingTree(staged: false) = request.source else { return false }
@@ -57,7 +75,7 @@ struct DiffViewer: View {
     }
 
     private var matchingTargetIDs: [Int] {
-        guard !trimmedQuery.isEmpty, let diff = inspector.loadedDiff else { return [] }
+        guard !trimmedQuery.isEmpty, let diff = activeDiff else { return [] }
         if layoutMode == .unified {
             return diff.hunks.flatMap(\.lines)
                 .filter { $0.text.localizedCaseInsensitiveContains(trimmedQuery) }
@@ -89,13 +107,13 @@ struct DiffViewer: View {
             showingFindBar = true
             findFieldFocused = true
         }
-        .task(id: inspector.loadedDiff) {
+        .task(id: activeDiff) {
             await computeHighlightsAndInlineDiffs()
         }
     }
 
     private func computeHighlightsAndInlineDiffs() async {
-        guard let diff = inspector.loadedDiff, !diff.isBinary, !diff.isEmpty else {
+        guard let diff = activeDiff, !diff.isBinary, !diff.isEmpty else {
             spansByLineID = [:]
             inlineRangesByLineID = [:]
             return
@@ -115,7 +133,7 @@ struct DiffViewer: View {
             let computedInline = DiffPresentation.computeInlineDiffRanges(in: hunks)
             return (computedSpans, computedInline)
         }.value
-        guard !Task.isCancelled, inspector.loadedDiff == diff else { return }
+        guard !Task.isCancelled, activeDiff == diff else { return }
         spansByLineID = spans
         inlineRangesByLineID = inline
     }
@@ -126,17 +144,22 @@ struct DiffViewer: View {
         @Bindable var inspector = inspector
         return VStack(alignment: .leading, spacing: Theme.Space.s) {
             HStack(spacing: Theme.Space.s) {
-                Button { inspector.closeDiff() } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                        // Closing a diff opened from a history returns to that history.
-                        Text(inspector.fileHistoryPath == nil ? "Back" : "Back to history")
+                if embedded {
+                    Text(request.path).font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                } else {
+                    Button { inspector.closeDiff() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                            // Closing a diff opened from a history returns to that history.
+                            Text(inspector.fileHistoryPath == nil ? "Back" : "Back to history")
+                        }
+                        .font(Theme.Text.body).foregroundStyle(Theme.accent)
                     }
-                    .font(Theme.Text.body).foregroundStyle(Theme.accent)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 Spacer()
-                if let diff = inspector.loadedDiff, !diff.isBinary {
+                if let diff = activeDiff, !diff.isBinary {
                     Text("+\(diff.additions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.good)
                     Text("−\(diff.deletions)").font(Theme.Text.caption.monospacedDigit()).foregroundStyle(Theme.critical)
                 }
@@ -145,13 +168,29 @@ struct DiffViewer: View {
                     selection: $layoutMode
                 )
                 if preferences.advanced {
-                    Picker("", selection: $inspector.diffContext) {
-                        Text("3 lines").tag(3)
-                        Text("10 lines").tag(10)
-                        Text("25 lines").tag(25)
+                    if staticRendering {
+                        HStack(spacing: 4) {
+                            Text("\(inspector.diffContext) lines")
+                                .font(Theme.Text.caption.weight(.medium))
+                                .foregroundStyle(Theme.ink)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Theme.inkMuted)
+                        }
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .frame(width: 92)
+                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+                    } else {
+                        Picker("", selection: $inspector.diffContext) {
+                            Text("3 lines").tag(3)
+                            Text("10 lines").tag(10)
+                            Text("25 lines").tag(25)
+                        }
+                        .labelsHidden().frame(width: 96)
+                        .help("Lines of unchanged context shown around each change")
                     }
-                    .labelsHidden().frame(width: 96)
-                    .help("Lines of unchanged context shown around each change")
                 }
                 Button {
                     showingFindBar.toggle()
@@ -166,12 +205,12 @@ struct DiffViewer: View {
                 }
                 .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 .help("Find in diff")
-                if preferences.advanced {
+                if preferences.advanced && !embedded {
                     Button("File history") { inspector.showFileHistory(request.path) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
-                if isUntrackedFile {
-                    Button("Stage file") {
+                if isUntrackedFile && !embedded {
+                    Button(preferences.advanced ? "Stage file" : "Include file") {
                         workingCopy.stage([request.path])
                         inspector.closeDiff()
                     }
@@ -179,15 +218,23 @@ struct DiffViewer: View {
                     .disabled(workingCopy.writeInFlight)
                 }
                 if let url = fileURL {
-                    Button("Open file") { openInEditor(url, line: initialEditorLine) }
+                    Button(embedded ? "Edit" : "Open file") { openInEditor(url, line: initialEditorLine) }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
+                if embedded {
+                    Button {
+                        inspector.expandInlineDiff()
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(GhostIconButtonStyle())
+                    .help("Expand diff to full window")
+                }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(request.path).font(Theme.Text.title).foregroundStyle(Theme.ink)
-                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            if embedded {
                 HStack(spacing: Theme.Space.s) {
-                    if let diff = inspector.loadedDiff {
+                    if let diff = activeDiff {
                         if diff.isNew { Chip(text: "new file", tint: Theme.good) }
                         if diff.isDeleted { Chip(text: "deleted", tint: Theme.critical) }
                         if diff.isRename, let old = diff.oldPath {
@@ -196,9 +243,26 @@ struct DiffViewer: View {
                     }
                     Text(request.title).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).lineLimit(1)
                 }
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(request.path).font(Theme.Text.title).foregroundStyle(Theme.ink)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    HStack(spacing: Theme.Space.s) {
+                        if let diff = activeDiff {
+                            if diff.isNew { Chip(text: "new file", tint: Theme.good) }
+                            if diff.isDeleted { Chip(text: "deleted", tint: Theme.critical) }
+                            if diff.isRename, let old = diff.oldPath {
+                                Chip(text: "renamed from \(old)")
+                            }
+                        }
+                        Text(request.title).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted).lineLimit(1)
+                    }
+                }
             }
         }
-        .padding(.horizontal, Theme.Space.xl).padding(.top, Theme.Space.xl).padding(.bottom, Theme.Space.m)
+        .padding(.horizontal, embedded ? Theme.Space.l : Theme.Space.xl)
+        .padding(.top, embedded ? Theme.Space.m : Theme.Space.xl)
+        .padding(.bottom, Theme.Space.m)
     }
 
     private var findBar: some View {
@@ -278,7 +342,7 @@ struct DiffViewer: View {
     }
 
     private var initialEditorLine: Int? {
-        guard let hunk = inspector.loadedDiff?.hunks.first else { return nil }
+        guard let hunk = activeDiff?.hunks.first else { return nil }
         return hunk.lines.first(where: { $0.newNumber != nil })?.newNumber ?? max(1, hunk.newStart)
     }
 
@@ -302,13 +366,13 @@ struct DiffViewer: View {
 
     @ViewBuilder
     private var content: some View {
-        if inspector.diffInFlight && inspector.loadedDiff == nil {
+        if activeDiffInFlight && activeDiff == nil {
             VStack(spacing: Theme.Space.s) {
                 ProgressView().controlSize(.small)
                 Text("Reading the diff…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let diff = inspector.loadedDiff {
+        } else if let diff = activeDiff {
             if diff.isBinary {
                 message("Binary file", "Its contents changed, but there are no text lines to show.")
             } else if diff.isEmpty {
@@ -408,7 +472,7 @@ struct DiffViewer: View {
                         Button("Unstage \(noun)") {
                             workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: true, discard: false) {
                                 selectedLineIDs.subtract(selectedInHunk)
-                                inspector.reloadDiff()
+                                reloadActiveDiff()
                             }
                         }
                         .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
@@ -417,7 +481,7 @@ struct DiffViewer: View {
                         Button("Stage \(noun)") {
                             workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: false, discard: false) {
                                 selectedLineIDs.subtract(selectedInHunk)
-                                inspector.reloadDiff()
+                                reloadActiveDiff()
                             }
                         }
                         .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
@@ -425,7 +489,7 @@ struct DiffViewer: View {
                         Button("Discard \(noun)") {
                             workingCopy.applySelectedLines(selectedInHunk, in: hunk, diff: diff, staged: false, discard: true) {
                                 selectedLineIDs.subtract(selectedInHunk)
-                                inspector.reloadDiff()
+                                reloadActiveDiff()
                             }
                         }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
@@ -441,7 +505,7 @@ struct DiffViewer: View {
                     Button("Unstage hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: true, discard: false) {
                             selectedLineIDs.subtract(selectedInHunk)
-                            inspector.reloadDiff()
+                            reloadActiveDiff()
                         }
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
@@ -450,7 +514,7 @@ struct DiffViewer: View {
                     Button("Stage hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: false) {
                             selectedLineIDs.subtract(selectedInHunk)
-                            inspector.reloadDiff()
+                            reloadActiveDiff()
                         }
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
@@ -458,7 +522,7 @@ struct DiffViewer: View {
                     Button("Discard hunk") {
                         workingCopy.applyHunk(hunk, diff: diff, staged: false, discard: true) {
                             selectedLineIDs.subtract(selectedInHunk)
-                            inspector.reloadDiff()
+                            reloadActiveDiff()
                         }
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)

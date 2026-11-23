@@ -29,7 +29,8 @@ enum DebugScreenshot {
                 if isFailed || (session.readiness == .complete
                                 && session.hasRepository
                                 && !session.risk.analysisRebuildInProgress
-                                && !session.risk.graphLayoutInProgress) {
+                                && !session.risk.graphLayoutInProgress
+                                && !session.inspector.inlineDiffInFlight) {
                     try? await Task.sleep(for: .milliseconds(250))
                     break
                 }

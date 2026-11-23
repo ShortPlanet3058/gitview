@@ -7,17 +7,17 @@ struct AppShell: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(WorkingCopyStore.self) private var workingCopy
     @Environment(AppPreferences.self) private var preferences
-    @AppStorage("gitview.sidebarWidth") private var sidebarWidth: Double = 216
+    @AppStorage("gitview.sidebarWidth") private var sidebarWidth: Double = 236
     @AppStorage("gitview.detailWidth") private var detailWidth: Double = 420
 
     var body: some View {
         @Bindable var workingCopy = workingCopy
-        let clampedSidebar = min(max(sidebarWidth, 180), 320)
+        let clampedSidebar = min(max(sidebarWidth, 200), 320)
         let clampedDetail = min(max(detailWidth, 340), 620)
         HStack(spacing: 0) {
             SidebarView()
                 .frame(width: clampedSidebar)
-            VerticalPaneResizer(width: $sidebarWidth, range: 180...320, invertDrag: false)
+            VerticalPaneResizer(width: $sidebarWidth, range: 200...320, invertDrag: false)
             VStack(spacing: 0) {
                 TopBar()
                 Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -275,7 +275,7 @@ struct RepositoryPicker: View {
             .help("\(analysis.root.path)\nClick to switch repository, or ⌘O to open another")
             .accessibilityLabel("Repository \(analysis.root.lastPathComponent)")
             .accessibilityHint("Switch to another repository")
-            .popover(isPresented: $showingMenu, arrowEdge: .bottom) {
+            .popover(isPresented: $showingMenu, arrowEdge: .trailing) {
                 RepositoryMenu(analysis: analysis, dismiss: { showingMenu = false })
                     .environment(session)
             }
@@ -284,29 +284,30 @@ struct RepositoryPicker: View {
     private var picker: some View {
         HStack(spacing: Theme.Space.s) {
             Image(systemName: "folder.fill")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(Theme.accent)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("REPOSITORY")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Theme.inkMuted)
-                    .tracking(0.6)
+                .frame(width: 24, height: 24)
+                .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
                 Text(analysis.root.lastPathComponent)
-                    .font(Theme.Text.heading).foregroundStyle(Theme.ink)
-                    .lineLimit(1)
+                    .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
+                    .lineLimit(1).truncationMode(.middle)
+                Text(analysis.root.deletingLastPathComponent().lastPathComponent)
+                    .font(.system(size: 10)).foregroundStyle(Theme.inkMuted)
+                    .lineLimit(1).truncationMode(.head)
             }
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.inkMuted)
-                .rotationEffect(.degrees(showingMenu ? 180 : 0))
-                .animation(.easeOut(duration: 0.15), value: showingMenu)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(hovering || showingMenu ? Theme.raised : Theme.surface,
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering || showingMenu ? Theme.raised : Theme.surface.opacity(0.8),
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-            .strokeBorder(hovering || showingMenu ? Theme.accent.opacity(0.5) : Theme.hairline))
+            .strokeBorder(hovering || showingMenu ? Theme.accent.opacity(0.45) : Theme.hairline))
         .contentShape(Rectangle())
     }
 }
@@ -443,104 +444,142 @@ struct TopBar: View {
     @Environment(WorkingCopyStore.self) private var workingCopy
     @Environment(AppPreferences.self) private var preferences
 
+    private var breadcrumbTitle: String {
+        if let path = session.inspector.fileHistoryPath {
+            return "History · \((path as NSString).lastPathComponent)"
+        }
+        if session.search.isSearching {
+            return "Search"
+        }
+        if session.inspector.diffRequest != nil {
+            return (session.inspector.diffRequest!.path as NSString).lastPathComponent
+        }
+        return session.navigation.screen.displayTitle(advanced: preferences.advanced)
+    }
+
     var body: some View {
         HStack(spacing: Theme.Space.m) {
-            if let analysis = session.analysis {
-                RepositoryPicker(analysis: analysis)
-                BranchPicker(analysis: analysis)
-                let hasRemote = analysis.info.remoteURL != nil
-                    || workingCopy.pushPlan != nil
-                    || analysis.branches.contains(where: \.isRemote)
-                if hasRemote {
-                    if preferences.advanced {
-                        Button { workingCopy.fetch() } label: {
-                            Label("Fetch", systemImage: "arrow.down.circle")
+            if session.hasRepository {
+                HStack(spacing: Theme.Space.s) {
+                    if session.canGoBack {
+                        Button {
+                            session.goBack()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
                         }
                         .buttonStyle(SecondaryButtonStyle())
-                        .fixedSize()
-                        .disabled(workingCopy.writeInFlight)
-                        .help("Fetch all remotes and prune deleted branches")
-                        if analysis.workingState.behind > 0 {
-                            Button { workingCopy.pull() } label: {
-                                Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
-                            }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .fixedSize()
-                            .disabled(workingCopy.writeInFlight)
-                            .help("Fast-forward pull from upstream (git pull --ff-only)")
-                        }
-                    } else {
-                        let syncPending = analysis.workingState.ahead > 0 || analysis.workingState.behind > 0
-                        let syncTitle = syncPending
-                            ? "Sync (\(analysis.workingState.ahead + analysis.workingState.behind))"
-                            : "Sync"
-                        if syncPending {
-                            Button { workingCopy.sync() } label: {
-                                Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
-                            }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .fixedSize()
-                            .disabled(workingCopy.writeInFlight)
-                            .help("Fetch updates, fast-forward pull, and push local commits")
-                        } else {
-                            Button { workingCopy.sync() } label: {
-                                Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
-                            }
-                            .buttonStyle(SecondaryButtonStyle())
-                            .fixedSize()
-                            .disabled(workingCopy.writeInFlight)
-                            .help("Fetch updates, fast-forward pull, and push local commits")
-                        }
+                        .controlSize(.small)
+                        .help("Go back (⌘[)")
+                    }
+                    Text(breadcrumbTitle)
+                        .font(Theme.Text.heading)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if session.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.65)
+                            .frame(width: 14, height: 14)
                     }
                 }
+                .frame(minWidth: 120, alignment: .leading)
             } else {
-                Text("GitView").font(Theme.Text.heading).foregroundStyle(Theme.ink)
+                Text("Welcome")
+                    .font(Theme.Text.heading)
+                    .foregroundStyle(Theme.inkSoft)
             }
-            Spacer(minLength: Theme.Space.xs)
-            Button {
-                session.navigation.isCommandPalettePresented.toggle()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "command").font(.system(size: 10, weight: .semibold))
-                    Text("K").font(.system(size: 10, weight: .semibold))
-                }
-                .foregroundStyle(Theme.inkSoft)
-                .padding(.horizontal, 8).padding(.vertical, 6)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
+
+            Spacer(minLength: Theme.Space.s)
+            if session.analysis != nil {
+                GlobalSearchField()
             }
-            .buttonStyle(.plain)
-            .help("Open Command Palette (⌘K)")
-            if session.analysis != nil { GlobalSearchField() }
-            Spacer(minLength: Theme.Space.xs)
-            ModeSwitch()
+            Spacer(minLength: Theme.Space.s)
+
             if let analysis = session.analysis {
-                Button { session.refresh() } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                        .rotationEffect(.degrees(session.isRefreshing ? 360 : 0))
-                        .animation(session.isRefreshing
-                                   ? .linear(duration: 0.9).repeatForever(autoreverses: false)
-                                   : .default, value: session.isRefreshing)
+                HStack(spacing: Theme.Space.xs) {
+                    let hasRemote = analysis.info.remoteURL != nil
+                        || workingCopy.pushPlan != nil
+                        || analysis.branches.contains(where: \.isRemote)
+                    if hasRemote {
+                        if preferences.advanced {
+                            Button { workingCopy.fetch() } label: {
+                                Label("Fetch", systemImage: "arrow.down.circle")
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .controlSize(.small)
+                            .fixedSize()
+                            .disabled(workingCopy.writeInFlight)
+                            .help("Fetch all remotes and prune deleted branches")
+                            if analysis.workingState.behind > 0 {
+                                Button { workingCopy.pull() } label: {
+                                    Label("Pull \(analysis.workingState.behind)", systemImage: "arrow.down")
+                                }
+                                .buttonStyle(PrimaryButtonStyle())
+                                .controlSize(.small)
+                                .fixedSize()
+                                .disabled(workingCopy.writeInFlight)
+                                .help("Fast-forward pull from upstream (git pull --ff-only)")
+                            }
+                        } else {
+                            let syncPending = analysis.workingState.ahead > 0 || analysis.workingState.behind > 0
+                            let syncTitle = syncPending
+                                ? "Sync (\(analysis.workingState.ahead + analysis.workingState.behind))"
+                                : "Sync"
+                            if syncPending {
+                                Button { workingCopy.sync() } label: {
+                                    Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
+                                }
+                                .buttonStyle(PrimaryButtonStyle())
+                                .controlSize(.small)
+                                .fixedSize()
+                                .disabled(workingCopy.writeInFlight)
+                                .help("Fetch updates, fast-forward pull, and push local commits")
+                            } else {
+                                Button { workingCopy.sync() } label: {
+                                    Label(syncTitle, systemImage: "arrow.triangle.2.circlepath")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .controlSize(.small)
+                                .fixedSize()
+                                .disabled(workingCopy.writeInFlight)
+                                .help("Fetch updates, fast-forward pull, and push local commits")
+                            }
+                        }
+                    }
+
+                    Button { session.refresh() } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .medium))
+                            .rotationEffect(.degrees(session.isRefreshing ? 360 : 0))
+                            .animation(session.isRefreshing
+                                       ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                                       : .default, value: session.isRefreshing)
+                    }
+                    .buttonStyle(GhostIconButtonStyle())
+                    .disabled(session.isRefreshing)
+                    .help("Re-read this repository (⌘R)")
+
+                    Button { revealInFinder(analysis.root) } label: {
+                        Image(systemName: "folder")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(GhostIconButtonStyle())
+                    .help("Reveal repository in Finder")
+                    .accessibilityLabel("Reveal in Finder")
+
+                    Button { openInTerminal(analysis.root) } label: {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(GhostIconButtonStyle())
+                    .help("Open repository in Terminal")
+                    .accessibilityLabel("Open in Terminal")
                 }
-                .buttonStyle(SecondaryButtonStyle())
-                .disabled(session.isRefreshing)
-                .help("Re-read this repository (⌘R)")
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([analysis.root])
-                } label: {
-                    Image(systemName: "folder")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .help("Open repository in Finder")
-                .accessibilityLabel("Open in Finder")
             }
         }
         .padding(.horizontal, Theme.Space.xl)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-        .frame(height: 64)
+        .frame(height: 52)
     }
 }
 
@@ -558,9 +597,15 @@ struct BranchPicker: View {
     var body: some View {
         Button { showingPopover.toggle() } label: {
             HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
-                Text(analysis.info.currentBranch).font(.system(size: 11, weight: .medium))
-                    .lineLimit(1).truncationMode(.middle)
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.inkSoft)
+                Text(analysis.info.currentBranch)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
                 if preferences.advanced && (state.behind > 0 || state.ahead > 0) {
                     HStack(spacing: 4) {
                         if state.behind > 0 {
@@ -576,19 +621,17 @@ struct BranchPicker: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.inkMuted)
             }
-            .foregroundStyle(Theme.inkSoft)
-            .padding(.horizontal, 9).padding(.vertical, 5)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(hovering || showingPopover ? Theme.raised : Theme.wash,
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.chip + 2, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.chip + 2, style: .continuous)
                 .strokeBorder(hovering || showingPopover ? Theme.accent.opacity(0.45) : Theme.hairline))
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: 200)
-        .layoutPriority(-1)
         .onHover { hovering = $0 }
         .help("Switch or create a branch")
-        .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+        .popover(isPresented: $showingPopover, arrowEdge: .trailing) {
             popoverContent
         }
     }
@@ -690,26 +733,31 @@ struct BranchPicker: View {
 /// Standard / Advanced. Standard is the essentials; Advanced adds pages and every metric.
 struct ModeSwitch: View {
     @Environment(AppPreferences.self) private var preferences
+    var compact = false
+
     var body: some View {
         HStack(spacing: 2) {
             option("Standard", selected: !preferences.advanced) { preferences.advanced = false }
             option("Advanced", selected: preferences.advanced) { preferences.advanced = true }
         }
         .padding(3)
-        .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous).strokeBorder(Theme.hairline))
-        .fixedSize()
+        .background(Theme.wash, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 1, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control + 1, style: .continuous).strokeBorder(Theme.hairline))
         .help("Standard shows the essentials. Advanced adds Statistics and every metric and control.")
     }
 
     private func option(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(selected ? Theme.onAccent : Theme.inkSoft)
-                .padding(.horizontal, 14).padding(.vertical, 5)
-                .background(selected ? Theme.accent : .clear,
-                            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .font(.system(size: compact ? 11 : 12, weight: .semibold))
+                .foregroundStyle(selected ? Theme.ink : Theme.inkMuted)
+                .frame(maxWidth: compact ? .infinity : nil)
+                .padding(.horizontal, compact ? 8 : 14)
+                .padding(.vertical, compact ? 5 : 5)
+                .background(selected ? Theme.raised : .clear,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.control - 1, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control - 1, style: .continuous)
+                    .strokeBorder(selected ? Theme.hairline : .clear, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -731,12 +779,13 @@ struct SidebarView: View {
                     .frame(width: 26, height: 26)
                     .background(Theme.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 Text("GitView").font(Theme.Text.title).foregroundStyle(Theme.ink)
+                Spacer()
             }
-            .padding(.top, 40)
+            .padding(.top, 38)
             .padding(.horizontal, Theme.Space.l)
-            .padding(.bottom, Theme.Space.l)
+            .padding(.bottom, Theme.Space.m)
 
-            repository
+            repositoryHeader
                 .padding(.horizontal, Theme.Space.m)
                 .padding(.bottom, Theme.Space.l)
 
@@ -758,12 +807,11 @@ struct SidebarView: View {
 
             Spacer()
 
-            VStack(alignment: .leading, spacing: 2) {
-                HairlineDivider().padding(.bottom, Theme.Space.s)
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                HairlineDivider().padding(.bottom, 2)
+                ModeSwitch(compact: true)
+                    .padding(.horizontal, Theme.Space.xs)
                 NavButton(title: "Settings", systemImage: "gearshape", selected: false) { openSettings() }
-                Text(preferences.advanced ? "Advanced · full git & telemetry" : "Standard · everyday git")
-                    .font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                    .padding(.horizontal, Theme.Space.m).padding(.top, 4)
             }
             .padding(.horizontal, Theme.Space.s)
             .padding(.bottom, Theme.Space.l)
@@ -774,24 +822,61 @@ struct SidebarView: View {
     private func sidebarHeading(_ text: String, topPadding: CGFloat) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.inkMuted)
+            .tracking(0.5)
             .padding(.horizontal, Theme.Space.m).padding(.top, topPadding).padding(.bottom, 4)
     }
 
     private func navButton(_ screen: NavigationStore.Screen) -> some View {
-        NavButton(
+        let info = badge(for: screen)
+        return NavButton(
             title: screen.displayTitle(advanced: preferences.advanced),
             systemImage: screen.symbol,
-            selected: session.navigation.screen == screen
+            selected: session.navigation.screen == screen,
+            badge: info.text,
+            badgeTint: info.tint
         ) {
             session.show(screen)
         }
     }
 
+    private func badge(for screen: NavigationStore.Screen) -> (text: String?, tint: Color) {
+        guard let analysis = session.analysis else { return (nil, Theme.inkSoft) }
+        switch screen {
+        case .changes:
+            if !analysis.workingState.conflicted.isEmpty {
+                return ("!", Theme.critical)
+            }
+            let count = analysis.workingState.files.count
+            return count > 0 ? ("\(count)", Theme.warning) : (nil, Theme.inkSoft)
+        case .branches:
+            guard preferences.advanced else { return (nil, Theme.inkSoft) }
+            if analysis.workingState.behind > 0 {
+                return ("↓\(analysis.workingState.behind)", Theme.warning)
+            }
+            if analysis.workingState.ahead > 0 {
+                return ("↑\(analysis.workingState.ahead)", Theme.good)
+            }
+            return (nil, Theme.inkSoft)
+        case .hotspots:
+            guard preferences.advanced else { return (nil, Theme.inkSoft) }
+            let attention = (session.risk.levelCounts[.critical] ?? 0) + (session.risk.levelCounts[.high] ?? 0)
+            return attention > 0 ? ("\(attention)", Theme.serious) : (nil, Theme.inkSoft)
+        default:
+            return (nil, Theme.inkSoft)
+        }
+    }
+
     @ViewBuilder
-    private var repository: some View {
-        if session.analysis == nil {
+    private var repositoryHeader: some View {
+        if let analysis = session.analysis {
+            VStack(spacing: Theme.Space.s) {
+                RepositoryPicker(analysis: analysis)
+                BranchPicker(analysis: analysis)
+            }
+        } else {
             Button("Choose repository…") { chooseRepository(into: session) }
                 .buttonStyle(SecondaryButtonStyle())
+                .frame(maxWidth: .infinity)
                 .disabled(session.isLoading)
         }
     }

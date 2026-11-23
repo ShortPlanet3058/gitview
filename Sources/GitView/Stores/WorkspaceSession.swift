@@ -204,6 +204,17 @@ public final class WorkspaceSession {
         if search.isSearching { search.clear() }
         navigation.clearDetailSelections()
         navigation.screen = screen
+        if screen == .changes, let analysis {
+            preselectChangesInlineDiffIfNeeded(for: analysis.workingState)
+        }
+    }
+
+    func preselectChangesInlineDiffIfNeeded(for state: WorkingState) {
+        if let first = WorkingCopyChangeEntry.ordered(in: state, advanced: preferences.advanced).first {
+            inspector.showInlineDiff(.workingTree(staged: first.staged), path: first.file.path, title: first.title)
+        } else {
+            inspector.clearInlineDiff()
+        }
     }
 
     @discardableResult
@@ -463,6 +474,9 @@ public final class WorkspaceSession {
                 navigation.compareTo = parts[1]
                 navigation.runComparison(in: analysis.root)
             }
+        }
+        if navigation.screen == .changes {
+            preselectChangesInlineDiffIfNeeded(for: analysis.workingState)
         }
     }
 
