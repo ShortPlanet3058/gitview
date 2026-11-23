@@ -65,6 +65,7 @@ public final class WorkspaceSession {
     @ObservationIgnored private var watcher: RepositoryWatcher?
     @ObservationIgnored private var refreshNoteTask: Task<Void, Never>?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var codeAnalysisTask: Task<Void, Never>?
     @ObservationIgnored private var lastAttempted: URL?
     @ObservationIgnored private var preferenceObserverID: UUID?
 
@@ -98,6 +99,9 @@ public final class WorkspaceSession {
             guard let self, case .loaded(var current) = self.state, current.root == root else { return }
             current.workingState = fresh
             self.state = .loaded(current)
+        }
+        workingCopy.onRefsMutated = { [weak self] in
+            self?.refreshRefsAndWorkingState()
         }
         workingCopy.onHistoryMutated = { [weak self] in
             self?.refresh()
@@ -141,6 +145,9 @@ public final class WorkspaceSession {
             case .environment:
                 self.inspector.ignoreWhitespace = self.preferences.diffIgnoreWhitespace
                 self.navigation.ensureVisibleScreen(advanced: self.preferences.advanced)
+                if self.preferences.advanced {
+                    self.ensureCodeAnalysisIfNeeded()
+                }
             }
         }
     }
@@ -279,6 +286,8 @@ public final class WorkspaceSession {
         loadStarted = Date()
         readiness = .factsOnly
         loadTask?.cancel()
+        codeAnalysisTask?.cancel()
+        codeAnalysisTask = nil
         state = .loading(LoadingProgress(stage: "Checking the repository"))
         risk.resetForOpen()
         navigation.clearForOpen()
@@ -289,9 +298,13 @@ public final class WorkspaceSession {
         recentActivityBuckets = []
         overviewMetrics = .empty
 
+        let includeCodeAnalysis = preferences.advanced
         loadTask = Task {
             do {
-                let analysis = try await Self.loadReportingTiming(root: url) { progress in
+                let analysis = try await Self.loadReportingTiming(
+                    root: url,
+                    includeCodeAnalysis: includeCodeAnalysis
+                ) { progress in
                     Task { @MainActor in
                         guard self.loadTask != nil else { return }
                         self.loadProgress = progress
@@ -342,6 +355,8 @@ public final class WorkspaceSession {
     func cancelLoading() {
         loadTask?.cancel()
         loadTask = nil
+        codeAnalysisTask?.cancel()
+        codeAnalysisTask = nil
         loadStarted = nil
         loadProgress = nil
         if !hasRepository { state = .idle }
@@ -352,17 +367,117 @@ public final class WorkspaceSession {
         open(url: lastAttempted)
     }
 
+    /// Lightweight refresh for ref-only operations (fetch, push, tags) that do not alter commits or files on disk.
+    public func refreshRefsAndWorkingState() {
+        guard case .loaded(let current) = state else { return }
+        let root = current.root
+        Task.detached(priority: .userInitiated) {
+            let repo = GitRepository(url: root)
+            let quick = repo.quickBranchRefs(validatedRoot: root)
+            let cachedDivergence = AnalysisCache.loadSnapshot(root: root, matchingHead: nil).branchDivergence
+            async let workingTask = (try? repo.workingState(validatedRoot: root)) ?? current.workingState
+            async let branchesTask = try? repo.branches(
+                validatedRoot: root,
+                defaultBranch: quick.defaultBranch,
+                currentBranch: quick.current,
+                cachedDivergence: cachedDivergence
+            )
+            async let tagsTask = (try? repo.tags(validatedRoot: root)) ?? current.tags
+            async let infoTask = try? repo.info(validatedRoot: root, quickBranches: quick)
+
+            let freshWorking = await workingTask
+            let branchScan = await branchesTask
+            let freshBranches = branchScan?.branches ?? current.branches
+            let freshTags = await tagsTask
+            let freshInfo = await infoTask ?? current.info
+            let computed = branchScan?.computedDivergence ?? [:]
+            if !computed.isEmpty {
+                Task.detached(priority: .utility) {
+                    AnalysisCache.saveBranchDivergence(computed, root: root)
+                }
+            }
+
+            await MainActor.run {
+                guard case .loaded(var latest) = self.state, latest.root == root else { return }
+                latest.workingState = freshWorking
+                latest.branches = freshBranches
+                latest.tags = freshTags
+                latest.info = freshInfo
+                self.state = .loaded(latest)
+                self.overviewMetrics = Self.computeOverviewMetrics(
+                    analysis: latest,
+                    contributors: self.contributors,
+                    hasHistory: self.readiness.hasHistory
+                )
+                self.workingCopy.refreshPushPlan()
+                self.workingCopy.refreshHeadCommitInfo()
+            }
+        }
+    }
+
+    /// Hydrates AST code units and risk scoring when the user enters Advanced mode after opening in Standard mode.
+    func ensureCodeAnalysisIfNeeded() {
+        guard preferences.advanced,
+              case .loaded(let current) = state,
+              !current.hasCodeUnits,
+              codeAnalysisTask == nil else { return }
+        let snapshot = current
+        codeAnalysisTask = Task {
+            do {
+                let hydrated = try await AnalysisService.loadCodeUnits(for: snapshot) { progress in
+                    Task { @MainActor in
+                        guard self.codeAnalysisTask != nil else { return }
+                        self.loadProgress = progress
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                if case .loaded(let active) = self.state,
+                   active.root == hydrated.root,
+                   active.commits.first?.sha == hydrated.commits.first?.sha {
+                    var merged = hydrated
+                    merged.workingState = active.workingState
+                    merged.branches = active.branches
+                    merged.tags = active.tags
+                    merged.info = active.info
+                    self.readiness = .complete
+                    self.loadProgress = nil
+                    self.unitsByID = Dictionary(uniqueKeysWithValues: merged.allUnits.map { ($0.id, $0) })
+                    self.state = .loaded(merged)
+                    self.search.updateContext(
+                        root: merged.root,
+                        commits: merged.commits,
+                        filePaths: merged.info.inventory.files.map(\.path),
+                        units: merged.allUnits,
+                        contributors: self.contributors,
+                        branches: merged.branches.map(\.name),
+                        tags: merged.tags.map(\.name)
+                    )
+                    self.risk.updateInBackground(analysis: merged, unitsByID: self.unitsByID, isComplete: true)
+                }
+            } catch {
+                self.loadProgress = nil
+            }
+            self.codeAnalysisTask = nil
+        }
+    }
+
     public func refresh() {
         guard case .loaded(let current) = state, !isRefreshing else { return }
         let root = current.root
         let keptScreen = navigation.screen
+        let includeCodeAnalysis = preferences.advanced
+        codeAnalysisTask?.cancel()
+        codeAnalysisTask = nil
         isRefreshing = true
         refreshError = nil
         loadStarted = Date()
         let note = outsideChange?.summary
         Task {
             do {
-                let analysis = try await Self.loadReportingTiming(root: root) { progress in
+                let analysis = try await Self.loadReportingTiming(
+                    root: root,
+                    includeCodeAnalysis: includeCodeAnalysis
+                ) { progress in
                     Task { @MainActor in
                         guard self.isRefreshing else { return }
                         self.loadProgress = progress
@@ -392,11 +507,17 @@ public final class WorkspaceSession {
 
     private static func loadReportingTiming(
         root: URL,
+        includeCodeAnalysis: Bool = true,
         progress: @escaping @Sendable (LoadingProgress) -> Void = { _ in },
         partial: @escaping @Sendable (RepositoryAnalysis, Readiness) -> Void = { _, _ in }
     ) async throws -> RepositoryAnalysis {
         let started = Date()
-        let analysis = try await AnalysisService.load(root: root, progress: progress, partial: partial)
+        let analysis = try await AnalysisService.load(
+            root: root,
+            includeCodeAnalysis: includeCodeAnalysis,
+            progress: progress,
+            partial: partial
+        )
         FileHandle.standardError.write(Data(
             String(format: "gitview: analysis %@ — history %.2fs, parse %.2fs, facts %.2fs, total %.2fs\n",
                    analysis.source.summary, analysis.historyDuration, analysis.parseDuration,
@@ -405,7 +526,7 @@ public final class WorkspaceSession {
     }
 
     private func adopt(_ analysis: RepositoryAnalysis, keptScreen: NavigationStore.Screen, preservingSelection: Bool) {
-        readiness = .complete
+        readiness = analysis.hasCodeUnits ? .complete : .withHistory
         loadProgress = nil
         inspector.setRepositoryRoot(analysis.root)
         self.unitsByID = Dictionary(uniqueKeysWithValues: analysis.allUnits.map { ($0.id, $0) })
@@ -444,7 +565,11 @@ public final class WorkspaceSession {
             branches: analysis.branches.map(\.name),
             tags: analysis.tags.map(\.name)
         )
-        risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: true)
+        if analysis.hasCodeUnits {
+            risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: true)
+        } else {
+            risk.updateLightweightSummary(analysis: analysis)
+        }
         workingCopy.refreshPushPlan()
         workingCopy.refreshHeadCommitInfo()
 

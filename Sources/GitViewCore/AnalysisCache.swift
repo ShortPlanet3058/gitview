@@ -283,7 +283,7 @@ public enum AnalysisCache {
         headSHA: String,
         createdAt: Date = Date(),
         commits: [Commit],
-        fileEntries: [CachedFileUnits],
+        fileEntries: [CachedFileUnits]?,
         root: URL
     ) -> Bool {
         writeLock.lock()
@@ -328,7 +328,7 @@ public enum AnalysisCache {
               writeMeta(db, key: "created_at", value: String(createdTimestamp)),
               upsertCommits(db, commits: commits),
               writeBranchHead(db, headSHA: headSHA, createdAt: createdTimestamp, commits: commits),
-              replaceFileUnits(db, entries: fileEntries),
+              fileEntries.map({ replaceFileUnits(db, entries: $0) }) ?? true,
               exec(db, "COMMIT;") else {
             _ = exec(db, "ROLLBACK;")
             return false

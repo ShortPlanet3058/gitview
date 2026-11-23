@@ -32,6 +32,7 @@ public final class WorkingCopyStore {
 
     @ObservationIgnored var rootProvider: () -> URL? = { nil }
     @ObservationIgnored var onWorkingStateRefreshed: (URL, WorkingState) -> Void = { _, _ in }
+    @ObservationIgnored var onRefsMutated: () -> Void = {}
     @ObservationIgnored var onHistoryMutated: () -> Void = {}
 
     public init() {}
@@ -85,6 +86,7 @@ public final class WorkingCopyStore {
     }
 
     private func perform(_ label: String, reloadHistory: Bool = false,
+                         refsOnly: Bool = false,
                          detectDivergence: Bool = false,
                          onSuccess: (@MainActor () -> Void)? = nil,
                          _ work: @escaping @Sendable (GitRepository) throws -> Void) {
@@ -105,6 +107,8 @@ public final class WorkingCopyStore {
             if failure == nil {
                 if reloadHistory {
                     self.onHistoryMutated()
+                } else if refsOnly {
+                    self.onRefsMutated()
                 } else {
                     self.refreshWorkingState()
                     self.refreshPushPlan()
@@ -221,13 +225,13 @@ public final class WorkingCopyStore {
 
     public func push() {
         guard let plan = pushPlan else { return }
-        perform("push", reloadHistory: true) {
+        perform("push", refsOnly: true) {
             try $0.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
         }
     }
 
     public func fetch() {
-        perform("fetch", reloadHistory: true) { try $0.fetch() }
+        perform("fetch", refsOnly: true) { try $0.fetch() }
     }
 
     public func pull() {
@@ -501,13 +505,13 @@ public final class WorkingCopyStore {
     }
 
     public func createTag(name: String, target: String = "HEAD", message: String? = nil) {
-        perform("create tag", reloadHistory: true) {
+        perform("create tag", refsOnly: true) {
             try $0.createTag(name: name, target: target, message: message)
         }
     }
 
     public func pushTag(name: String, remote: String = "origin") {
-        perform("push tag", reloadHistory: true) {
+        perform("push tag", refsOnly: true) {
             try $0.pushTag(remote: remote, name: name)
         }
     }
@@ -519,7 +523,7 @@ public final class WorkingCopyStore {
             confirmLabel: "Delete Tag",
             alternativeLabel: nil,
             perform: { [weak self] in
-                self?.perform("delete tag", reloadHistory: true) {
+                self?.perform("delete tag", refsOnly: true) {
                     try $0.deleteTag(name: tag.name)
                 }
             },

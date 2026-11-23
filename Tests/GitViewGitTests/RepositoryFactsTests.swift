@@ -165,4 +165,35 @@ final class RepositoryFactsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: nonRepo) }
         XCTAssertThrowsError(try GitRepository(url: nonRepo).validate())
     }
+
+    func testLoadAllBranchesCommitsIncludesDivergedBranches() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-all-branches-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-b", "main", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRoot)
+        try "root\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "a.txt"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-q", "-m", "Root commit"], in: tempRoot)
+
+        let repo = GitRepository(url: tempRoot)
+        try repo.createBranch(name: "feature-side", checkout: true)
+        try "side\n".write(to: tempRoot.appendingPathComponent("side.txt"), atomically: true, encoding: .utf8)
+        try repo.stage(paths: ["side.txt"])
+        _ = try repo.commit(subject: "Feature branch commit")
+
+        try repo.checkoutBranch("main", isRemote: false)
+        try "main\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try repo.stage(paths: ["a.txt"])
+        _ = try repo.commit(subject: "Main advance commit")
+
+        let all = try repo.loadAllBranchesCommits(limit: 100)
+        let subjects = Set(all.map(\.subject))
+        XCTAssertTrue(subjects.contains("Root commit"))
+        XCTAssertTrue(subjects.contains("Feature branch commit"))
+        XCTAssertTrue(subjects.contains("Main advance commit"))
+    }
 }

@@ -260,4 +260,41 @@ final class DiffParserTests: XCTestCase {
         let ignored = try repo.diff(.workingTree(staged: false), path: "file.swift", ignoreWhitespace: true)
         XCTAssertTrue(ignored.isEmpty)
     }
+
+    func testImageDiffReadsOldAndNewBinaryBytes() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-diff-img-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Test User"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "test@example.com"], in: tempRoot)
+
+        // Two distinct byte payloads stored with .png extension to verify raw binary retrieval across modes.
+        let v1Bytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03])
+        let v2Bytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x09, 0x08, 0x07, 0x06])
+
+        let imageURL = tempRoot.appendingPathComponent("icon.png")
+        try v1Bytes.write(to: imageURL)
+        _ = try GitProcess.capture(arguments: ["add", "icon.png"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "Add icon v1"], in: tempRoot)
+
+        try v2Bytes.write(to: imageURL)
+        let repo = GitRepository(url: tempRoot)
+
+        let unstaged = try XCTUnwrap(repo.imageDiff(.workingTree(staged: false), path: "icon.png"))
+        XCTAssertEqual(unstaged.oldData, v1Bytes)
+        XCTAssertEqual(unstaged.newData, v2Bytes)
+
+        try repo.stage(paths: ["icon.png"])
+        let staged = try XCTUnwrap(repo.imageDiff(.workingTree(staged: true), path: "icon.png"))
+        XCTAssertEqual(staged.oldData, v1Bytes)
+        XCTAssertEqual(staged.newData, v2Bytes)
+
+        let sha = try repo.commit(subject: "Update icon to v2")
+        let committed = try XCTUnwrap(repo.imageDiff(.commit(sha: sha), path: "icon.png"))
+        XCTAssertEqual(committed.oldData, v1Bytes)
+        XCTAssertEqual(committed.newData, v2Bytes)
+    }
 }

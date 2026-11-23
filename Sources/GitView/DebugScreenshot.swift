@@ -26,7 +26,10 @@ enum DebugScreenshot {
                     if case .failed = session.state { return true }
                     return false
                 }()
-                if isFailed || (session.readiness == .complete
+                let dataReady = session.preferences.advanced
+                    ? (session.readiness == .complete)
+                    : session.readiness.hasHistory
+                if isFailed || (dataReady
                                 && session.hasRepository
                                 && !session.risk.analysisRebuildInProgress
                                 && !session.risk.graphLayoutInProgress

@@ -181,6 +181,17 @@ public enum GitProcess {
         return String(decoding: box.get(), as: UTF8.self)
     }
 
+    /// Runs git and returns raw stdout bytes (for binary blobs such as images).
+    public static func captureData(
+        arguments: [String],
+        stdin: Data? = nil,
+        in directory: URL
+    ) throws -> Data {
+        let box = DataBox()
+        try stream(arguments: arguments, stdin: stdin, in: directory) { box.append($0) }
+        return box.get()
+    }
+
     /// Cancellable async variant of `stream(arguments:stdin:in:onOutput:)`.
     /// Cancelling the enclosing `Task` immediately terminates the child `git` process.
     public static func streamAsync(
