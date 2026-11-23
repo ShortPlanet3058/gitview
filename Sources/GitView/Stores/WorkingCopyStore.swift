@@ -94,22 +94,48 @@ public final class WorkingCopyStore {
     public func commitStaged() {
         let subject = commitSubject
         let body = commitBody
-        perform("commit", reloadHistory: true) { _ = try $0.commit(subject: subject, body: body) }
-        commitSubject = ""
-        commitBody = ""
+        perform("commit", reloadHistory: true, onSuccess: { [weak self] in
+            self?.commitSubject = ""
+            self?.commitBody = ""
+        }) {
+            _ = try $0.commit(subject: subject, body: body)
+        }
     }
 
     public func commitAndPush() {
         let subject = commitSubject
         let body = commitBody
-        perform("commit and push", reloadHistory: true) { repository in
-            _ = try repository.commit(subject: subject, body: body)
-            if let plan = try? repository.pushPlan() {
-                try repository.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+        guard let root = rootProvider(), !writeInFlight else { return }
+        writeInFlight = true
+        writeError = nil
+        Task {
+            let outcome: (committed: Bool, failure: String?) = await Task.detached(priority: .userInitiated) {
+                let repository = GitRepository(url: root)
+                do {
+                    _ = try repository.commit(subject: subject, body: body)
+                } catch {
+                    return (false, "\(error)")
+                }
+                do {
+                    if let plan = try repository.pushPlan() {
+                        try repository.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
+                    }
+                    return (true, nil)
+                } catch {
+                    return (true, "\(error)")
+                }
+            }.value
+            self.writeError = outcome.failure
+            self.writeInFlight = false
+            if outcome.committed {
+                self.commitSubject = ""
+                self.commitBody = ""
+                self.onHistoryMutated()
+            } else {
+                self.refreshWorkingState()
+                self.refreshPushPlan()
             }
         }
-        commitSubject = ""
-        commitBody = ""
     }
 
     public func sync() {
@@ -127,8 +153,11 @@ public final class WorkingCopyStore {
 
     public func stashEverything(includeUntracked: Bool) {
         let message = stashMessage
-        perform("stash") { try $0.stashPush(message: message, includeUntracked: includeUntracked) }
-        stashMessage = ""
+        perform("stash", onSuccess: { [weak self] in
+            self?.stashMessage = ""
+        }) {
+            try $0.stashPush(message: message, includeUntracked: includeUntracked)
+        }
     }
 
     public func applyStash(_ ref: String, removing: Bool) {

@@ -98,9 +98,17 @@ public struct GitViewCommands: Commands {
 
         CommandGroup(after: .textEditing) {
             Button("Command Palette…") {
+                session?.navigation.isShortcutsSheetPresented = false
                 session?.navigation.isCommandPalettePresented.toggle()
             }
             .keyboardShortcut("k")
+            .disabled(session == nil)
+
+            Button("Keyboard Shortcuts…") {
+                session?.navigation.isCommandPalettePresented = false
+                session?.navigation.isShortcutsSheetPresented.toggle()
+            }
+            .keyboardShortcut("/")
             .disabled(session == nil)
 
             Button("Find…") {
@@ -108,10 +116,12 @@ public struct GitViewCommands: Commands {
                 let localScreens: Set<NavigationStore.Screen> = [
                     .files, .commits, .hotspots, .branches, .contributors, .releases
                 ]
+                let showingInlineDiff = session.navigation.screen == .changes
+                    && session.inspector.inlineDiffRequest != nil
                 let usesLocalFind = session.inspector.diffRequest != nil
                     || (!session.search.isSearching
                         && session.inspector.fileHistoryPath == nil
-                        && localScreens.contains(session.navigation.screen))
+                        && (showingInlineDiff || localScreens.contains(session.navigation.screen)))
                 if usesLocalFind {
                     session.navigation.focusLocalFindRequest += 1
                 } else {

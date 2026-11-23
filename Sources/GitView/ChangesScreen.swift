@@ -50,29 +50,45 @@ struct ChangesScreen: View {
     @Environment(AppPreferences.self) private var preferences
     @Environment(WorkingCopyStore.self) private var workingCopy
     @Environment(\.staticRendering) private var staticRendering
+    @AppStorage("gitview.changesPaneWidth") private var changesPaneWidth: Double = 364
     @State private var selectedEntryID: String?
     @State private var stashesExpanded = false
+    @State private var fileFilter = ""
+    @State private var filterFieldFocused = false
+    @FocusState private var commitInputFocused: Bool
 
     private var state: WorkingState { session.analysis?.workingState ?? .clean }
 
+    private var trimmedFilter: String {
+        fileFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func matching(_ files: [WorkingState.FileStatus]) -> [WorkingState.FileStatus] {
+        guard !trimmedFilter.isEmpty else { return files }
+        return files.filter { $0.path.localizedCaseInsensitiveContains(trimmedFilter) }
+    }
+
     private var standardTrackedFiles: [WorkingState.FileStatus] {
-        state.files.filter { !$0.isUntracked && !$0.isConflicted }
+        matching(state.files.filter { !$0.isUntracked && !$0.isConflicted })
     }
 
     private var orderedEntries: [WorkingCopyChangeEntry] {
-        WorkingCopyChangeEntry.ordered(in: state, advanced: preferences.advanced)
+        let all = WorkingCopyChangeEntry.ordered(in: state, advanced: preferences.advanced)
+        guard !trimmedFilter.isEmpty else { return all }
+        return all.filter { $0.file.path.localizedCaseInsensitiveContains(trimmedFilter) }
     }
 
     var body: some View {
         let entries = orderedEntries
         let activeEntry = entries.first(where: { $0.id == selectedEntryID }) ?? entries.first
+        let clampedLeft = min(max(changesPaneWidth, 280), 520)
 
         HStack(spacing: 0) {
             leftPane(entries: entries, activeID: activeEntry?.id)
-                .frame(width: 364)
+                .frame(width: clampedLeft)
                 .background(Theme.sidebar.opacity(0.45))
 
-            Rectangle().fill(Theme.hairline).frame(width: 1)
+            VerticalPaneResizer(width: $changesPaneWidth, range: 280...520, invertDrag: false)
 
             rightPane(activeEntry: activeEntry)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,23 +103,41 @@ struct ChangesScreen: View {
         .onChange(of: preferences.advanced) {
             syncSelectionAndInlineDiff(entries: entries)
         }
+        .onChange(of: fileFilter) {
+            syncSelectionAndInlineDiff(entries: entries)
+        }
         .onChange(of: selectedEntryID) {
             syncSelectionAndInlineDiff(entries: entries)
         }
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.downArrow) {
+            guard !commitInputFocused, !filterFieldFocused else { return .ignored }
             selectedEntryID = NavigationStore.stepSelection(
                 in: entries.map(\.id), current: activeEntry?.id, delta: 1)
             return .handled
         }
         .onKeyPress(.upArrow) {
+            guard !commitInputFocused, !filterFieldFocused else { return .ignored }
             selectedEntryID = NavigationStore.stepSelection(
                 in: entries.map(\.id), current: activeEntry?.id, delta: -1)
             return .handled
         }
+        .onKeyPress(.space) {
+            guard !commitInputFocused, !filterFieldFocused,
+                  let activeEntry,
+                  !activeEntry.file.isConflicted,
+                  !workingCopy.writeInFlight else { return .ignored }
+            if activeEntry.staged {
+                workingCopy.unstage([activeEntry.file.path])
+            } else {
+                workingCopy.stage([activeEntry.file.path])
+            }
+            return .handled
+        }
         .onKeyPress(.return) {
-            guard let chosen = activeEntry else { return .ignored }
+            guard !commitInputFocused, !filterFieldFocused,
+                  let chosen = activeEntry else { return .ignored }
             selectedEntryID = chosen.id
             session.inspector.showDiff(.workingTree(staged: chosen.staged), path: chosen.file.path, title: chosen.title)
             return .handled
@@ -156,49 +190,79 @@ struct ChangesScreen: View {
 
             HairlineDivider()
 
+            if !state.isClean {
+                SearchField(
+                    text: $fileFilter,
+                    prompt: "Filter changed files…",
+                    focusTrigger: session.navigation.focusLocalFindRequest,
+                    onFocusChange: { filterFieldFocused = $0 }
+                )
+                .padding(.horizontal, Theme.Space.m)
+                .padding(.top, Theme.Space.s)
+            }
+
+            let visibleConflicted = matching(state.conflicted)
+            let visibleStaged = matching(state.staged)
+            let visibleUnstaged = matching(state.unstaged)
+            let visibleUntracked = matching(state.untracked)
+            let visibleStandardTracked = standardTrackedFiles
+
             ScrollColumn {
                 VStack(alignment: .leading, spacing: Theme.Space.m) {
                     if let error = workingCopy.writeError { errorBanner(error) }
                     if let operation = state.operation { operationBanner(operation) }
 
-                    if !state.conflicted.isEmpty {
-                        conflictsSection(state.conflicted, activeID: activeID)
+                    if !visibleConflicted.isEmpty {
+                        conflictsSection(visibleConflicted, activeID: activeID)
                     }
 
                     if preferences.advanced {
-                        if !state.staged.isEmpty {
-                            fileSection("Staged", state.staged, tint: Theme.good, staged: true,
+                        if !visibleStaged.isEmpty {
+                            fileSection("Staged", visibleStaged, tint: Theme.good, staged: true,
                                         sectionPrefix: "staged", activeID: activeID)
                         }
-                        if !state.unstaged.isEmpty {
-                            fileSection("Changed", state.unstaged, tint: Theme.warning, staged: false,
+                        if !visibleUnstaged.isEmpty {
+                            fileSection("Changed", visibleUnstaged, tint: Theme.warning, staged: false,
                                         sectionPrefix: "unstaged", activeID: activeID)
                         }
-                        if !state.untracked.isEmpty {
-                            fileSection("Untracked", state.untracked, tint: Theme.inkMuted, staged: false,
+                        if !visibleUntracked.isEmpty {
+                            fileSection("Untracked", visibleUntracked, tint: Theme.inkMuted, staged: false,
                                         sectionPrefix: "untracked", activeID: activeID)
                         }
                     } else {
-                        if !standardTrackedFiles.isEmpty {
-                            standardModifiedSection(standardTrackedFiles, activeID: activeID)
+                        if !visibleStandardTracked.isEmpty {
+                            standardModifiedSection(visibleStandardTracked, activeID: activeID)
                         }
-                        if !state.untracked.isEmpty {
-                            fileSection("New files", state.untracked, tint: Theme.inkMuted, staged: false,
+                        if !visibleUntracked.isEmpty {
+                            fileSection("New files", visibleUntracked, tint: Theme.inkMuted, staged: false,
                                         sectionPrefix: "untracked", activeID: activeID)
                         }
                     }
 
                     if entries.isEmpty && workingCopy.writeError == nil && state.operation == nil {
-                        HStack(spacing: Theme.Space.s) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.good)
-                            Text("No local file changes")
-                                .font(Theme.Text.body)
-                                .foregroundStyle(Theme.inkSoft)
+                        if !trimmedFilter.isEmpty && !state.isClean {
+                            HStack(spacing: Theme.Space.s) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.inkMuted)
+                                Text("No files matching “\(trimmedFilter)”")
+                                    .font(Theme.Text.body)
+                                    .foregroundStyle(Theme.inkMuted)
+                            }
+                            .padding(.horizontal, Theme.Space.s)
+                            .padding(.vertical, Theme.Space.m)
+                        } else {
+                            HStack(spacing: Theme.Space.s) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.good)
+                                Text("No local file changes")
+                                    .font(Theme.Text.body)
+                                    .foregroundStyle(Theme.inkSoft)
+                            }
+                            .padding(.horizontal, Theme.Space.s)
+                            .padding(.vertical, Theme.Space.m)
                         }
-                        .padding(.horizontal, Theme.Space.s)
-                        .padding(.vertical, Theme.Space.m)
                     }
 
                     if preferences.advanced {
@@ -208,17 +272,17 @@ struct ChangesScreen: View {
                 .padding(Theme.Space.m)
             }
 
-            if showBottomDock(entries: entries) {
+            if showBottomDock(hasFiles: !state.isClean) {
                 HairlineDivider()
-                bottomDock(hasFiles: !entries.isEmpty)
+                bottomDock(hasFiles: !state.isClean)
                     .padding(Theme.Space.m)
                     .background(Theme.surface.opacity(0.65))
             }
         }
     }
 
-    private func showBottomDock(entries: [WorkingCopyChangeEntry]) -> Bool {
-        if !entries.isEmpty || !workingCopy.commitSubject.isEmpty { return true }
+    private func showBottomDock(hasFiles: Bool) -> Bool {
+        if hasFiles || !workingCopy.commitSubject.isEmpty { return true }
         if let plan = workingCopy.pushPlan, !plan.isEmpty { return true }
         return !preferences.advanced && state.behind > 0
     }
@@ -558,12 +622,18 @@ struct ChangesScreen: View {
         let canCommit = !state.staged.isEmpty
             && !workingCopy.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingCopy.writeInFlight
+        let subjectLength = workingCopy.commitSubject.count
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             if hasFiles || !workingCopy.commitSubject.isEmpty {
-                HStack {
+                HStack(spacing: Theme.Space.s) {
                     Text(preferences.advanced ? "Commit" : "Save changes")
                         .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
                     Spacer()
+                    if subjectLength > 0 {
+                        Text("\(subjectLength)/72")
+                            .font(.system(size: 10, weight: .medium).monospacedDigit())
+                            .foregroundStyle(subjectLength > 72 ? Theme.critical : (subjectLength > 50 ? Theme.warning : Theme.inkMuted))
+                    }
                     Text(preferences.advanced ? "\(state.staged.count) staged" : "\(state.staged.count) included")
                         .font(Theme.Text.caption.monospacedDigit())
                         .foregroundStyle(state.staged.isEmpty ? Theme.inkMuted : Theme.good)
@@ -588,12 +658,14 @@ struct ChangesScreen: View {
                     TextField(preferences.advanced ? "Summary" : "What did you change?", text: $workingCopy.commitSubject)
                         .textFieldStyle(.plain)
                         .font(Theme.Text.body)
+                        .focused($commitInputFocused)
                         .padding(.horizontal, 9).padding(.vertical, 6)
                         .background(Theme.page, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                             .strokeBorder(Theme.hairline))
                     TextEditor(text: $workingCopy.commitBody)
                         .font(Theme.Text.body).frame(height: 52).scrollContentBackground(.hidden)
+                        .focused($commitInputFocused)
                         .padding(6)
                         .background(Theme.page, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
@@ -616,6 +688,7 @@ struct ChangesScreen: View {
                         Button("Commit & Push") { workingCopy.commitAndPush() }
                             .buttonStyle(PrimaryButtonStyle())
                             .frame(maxWidth: .infinity)
+                            .keyboardShortcut(.return, modifiers: .command)
                             .disabled(!canCommit)
                     } else {
                         Button("Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
@@ -623,6 +696,7 @@ struct ChangesScreen: View {
                         }
                         .buttonStyle(PrimaryButtonStyle())
                         .frame(maxWidth: .infinity)
+                        .keyboardShortcut(.return, modifiers: .command)
                         .disabled(!canCommit)
                     }
                 }

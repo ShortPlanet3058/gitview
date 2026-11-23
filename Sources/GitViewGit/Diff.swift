@@ -304,21 +304,27 @@ public enum DiffSource: Hashable, Sendable {
 }
 
 extension GitRepository {
-    public func diff(_ source: DiffSource, path: String, context: Int = 3, maxLines: Int = 3000) throws -> FileDiff {
+    public func diff(_ source: DiffSource, path: String, context: Int = 3,
+                     ignoreWhitespace: Bool = false, maxLines: Int = 3000) throws -> FileDiff {
         let root = try validate()
         var arguments: [String]
         switch source {
         case .commit(let sha):
             // `--format=` suppresses the commit message, leaving only the patch.
             arguments = ["show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
-                         "--find-renames", "--unified=\(context)", sha]
+                         "--find-renames", "--unified=\(context)"]
+            if ignoreWhitespace { arguments.append("-w") }
+            arguments.append(sha)
         case .workingTree(let staged):
             arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
                          "--find-renames", "--unified=\(context)"]
+            if ignoreWhitespace { arguments.append("-w") }
             if staged { arguments.append("--cached") }
         case .range(let from, let to):
             arguments = ["diff", "--no-color", "--no-ext-diff", "--no-textconv",
-                         "--find-renames", "--unified=\(context)", "\(from)..\(to)"]
+                         "--find-renames", "--unified=\(context)"]
+            if ignoreWhitespace { arguments.append("-w") }
+            arguments.append("\(from)..\(to)")
         }
         arguments += ["--", path]
         let output = (try? GitProcess.capture(arguments: arguments, in: root)) ?? ""

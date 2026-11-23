@@ -46,6 +46,13 @@ public enum ExternalTerminal: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum DiffLayoutMode: String, CaseIterable, Identifiable, Sendable {
+    case unified = "Unified"
+    case sideBySide = "Side by side"
+
+    public var id: String { rawValue }
+}
+
 /// Persisted application-wide settings shared across windows and observed by sessions.
 @MainActor
 @Observable
@@ -146,6 +153,20 @@ public final class AppPreferences {
         }
     }
 
+    public var diffLayoutMode: DiffLayoutMode {
+        didSet {
+            defaults.set(diffLayoutMode.rawValue, forKey: "diffLayoutMode")
+            notify(.environment)
+        }
+    }
+
+    public var diffIgnoreWhitespace: Bool {
+        didSet {
+            defaults.set(diffIgnoreWhitespace, forKey: "diffIgnoreWhitespace")
+            notify(.environment)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.advanced = defaults.bool(forKey: "advancedMode")
@@ -165,6 +186,9 @@ public final class AppPreferences {
             .flatMap(ExternalEditor.init(rawValue:)) ?? .auto
         self.preferredTerminal = defaults.string(forKey: "preferredTerminal")
             .flatMap(ExternalTerminal.init(rawValue:)) ?? .terminal
+        self.diffLayoutMode = defaults.string(forKey: "diffLayoutMode")
+            .flatMap(DiffLayoutMode.init(rawValue:)) ?? .unified
+        self.diffIgnoreWhitespace = defaults.bool(forKey: "diffIgnoreWhitespace")
     }
 
     @discardableResult

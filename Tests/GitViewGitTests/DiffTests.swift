@@ -236,4 +236,28 @@ final class DiffParserTests: XCTestCase {
         XCTAssertTrue(binaryDiff.isBinary)
         XCTAssertTrue(binaryDiff.hunks.isEmpty)
     }
+
+    func testDiffIgnoreWhitespaceSkipsWhitespaceOnlyEdits() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-diff-ws-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Test User"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "test@example.com"], in: tempRoot)
+        try "func run() {\n    return\n}\n".write(to: tempRoot.appendingPathComponent("file.swift"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "file.swift"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "initial"], in: tempRoot)
+
+        // Pure indentation change.
+        try "func run() {\n        return\n}\n".write(to: tempRoot.appendingPathComponent("file.swift"), atomically: true, encoding: .utf8)
+
+        let repo = GitRepository(url: tempRoot)
+        let normal = try repo.diff(.workingTree(staged: false), path: "file.swift", ignoreWhitespace: false)
+        XCTAssertFalse(normal.isEmpty)
+
+        let ignored = try repo.diff(.workingTree(staged: false), path: "file.swift", ignoreWhitespace: true)
+        XCTAssertTrue(ignored.isEmpty)
+    }
 }

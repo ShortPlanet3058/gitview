@@ -126,6 +126,15 @@ struct CommandPaletteOverlay: View {
                 perform: { session.refresh() }
             ))
             items.append(CommandPaletteEntry(
+                id: "action:shortcuts",
+                title: "Keyboard Shortcuts",
+                subtitle: "Show all keyboard shortcuts (⌘/)",
+                category: "Action",
+                symbol: "keyboard",
+                keywords: "shortcuts help keys keybindings",
+                perform: { session.navigation.isShortcutsSheetPresented = true }
+            ))
+            items.append(CommandPaletteEntry(
                 id: "action:mode",
                 title: advanced ? "Switch to Standard Mode" : "Switch to Advanced Mode",
                 subtitle: "Toggle between everyday Git and full analysis views",

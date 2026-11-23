@@ -185,8 +185,12 @@ final class StoreAndPerformanceTests: XCTestCase {
         prefs.identityEmail = "dev@example.com"
         prefs.preferredEditor = .cursor
         prefs.preferredTerminal = .ghostty
+        prefs.diffLayoutMode = .sideBySide
+        prefs.diffIgnoreWhitespace = true
 
-        XCTAssertEqual(events, [.riskModel, .coupling, .identity, .environment, .environment])
+        XCTAssertEqual(events, [
+            .riskModel, .coupling, .identity, .environment, .environment, .environment, .environment
+        ])
 
         let reloaded = AppPreferences(defaults: defaults)
         XCTAssertEqual(reloaded.halfLifeDays, 180)
@@ -194,6 +198,8 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertEqual(reloaded.identityEmail, "dev@example.com")
         XCTAssertEqual(reloaded.preferredEditor, .cursor)
         XCTAssertEqual(reloaded.preferredTerminal, .ghostty)
+        XCTAssertEqual(reloaded.diffLayoutMode, .sideBySide)
+        XCTAssertTrue(reloaded.diffIgnoreWhitespace)
     }
 
     @MainActor
@@ -393,5 +399,37 @@ final class StoreAndPerformanceTests: XCTestCase {
         store.resetForOpen()
         XCTAssertNil(store.diffRequest)
         XCTAssertNil(store.inlineDiffRequest)
+    }
+
+    @MainActor
+    func testWorkingCopyStorePreservesCommitMessageOnFailure() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-wc-fail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        _ = try GitProcess.capture(arguments: ["init", "-q"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Test User"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "test@example.com"], in: tempRoot)
+        try "one\n".write(to: tempRoot.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = try GitProcess.capture(arguments: ["add", "a.txt"], in: tempRoot)
+        _ = try GitProcess.capture(arguments: ["commit", "-qm", "initial"], in: tempRoot)
+
+        let store = WorkingCopyStore()
+        store.rootProvider = { tempRoot }
+        store.commitSubject = "Important feature message"
+        store.commitBody = "Detailed context that must not vanish"
+
+        // Nothing is staged, so git commit will fail.
+        store.commitStaged()
+        let deadline = Date().addingTimeInterval(3.0)
+        while store.writeInFlight && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertFalse(store.writeInFlight)
+        XCTAssertNotNil(store.writeError)
+        XCTAssertEqual(store.commitSubject, "Important feature message")
+        XCTAssertEqual(store.commitBody, "Detailed context that must not vanish")
     }
 }

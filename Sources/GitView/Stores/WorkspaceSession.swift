@@ -75,6 +75,7 @@ public final class WorkspaceSession {
         self.workingCopy = WorkingCopyStore()
         self.search = SearchStore()
         self.inspector = InspectorStore()
+        self.inspector.ignoreWhitespace = preferences.diffIgnoreWhitespace
 
         wireCallbacks()
 
@@ -138,6 +139,7 @@ public final class WorkspaceSession {
             case .identity:
                 self.rebuildCatchUp()
             case .environment:
+                self.inspector.ignoreWhitespace = self.preferences.diffIgnoreWhitespace
                 self.navigation.ensureVisibleScreen(advanced: self.preferences.advanced)
             }
         }
@@ -191,6 +193,7 @@ public final class WorkspaceSession {
 
     var canGoBack: Bool {
         navigation.isCommandPalettePresented
+            || navigation.isShortcutsSheetPresented
             || inspector.diffRequest != nil
             || inspector.fileHistoryPath != nil
             || search.isSearching
@@ -199,6 +202,7 @@ public final class WorkspaceSession {
 
     func show(_ screen: NavigationStore.Screen) {
         navigation.isCommandPalettePresented = false
+        navigation.isShortcutsSheetPresented = false
         inspector.diffRequest = nil
         inspector.fileHistoryPath = nil
         if search.isSearching { search.clear() }
@@ -220,6 +224,7 @@ public final class WorkspaceSession {
     @discardableResult
     func goBack() -> Bool {
         if navigation.isCommandPalettePresented { navigation.isCommandPalettePresented = false; return true }
+        if navigation.isShortcutsSheetPresented { navigation.isShortcutsSheetPresented = false; return true }
         if inspector.diffRequest != nil { inspector.diffRequest = nil; return true }
         if inspector.fileHistoryPath != nil { inspector.fileHistoryPath = nil; return true }
         if search.isSearching { search.clear(); return true }

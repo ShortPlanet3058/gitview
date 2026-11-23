@@ -100,6 +100,7 @@ public final class NavigationStore {
     public var focusSearchRequest: Int = 0
     public var focusLocalFindRequest: Int = 0
     public var isCommandPalettePresented: Bool = false
+    public var isShortcutsSheetPresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
     public var compareFrom: String = ""
@@ -123,6 +124,7 @@ public final class NavigationStore {
     public func clearForOpen() {
         clearDetailSelections()
         isCommandPalettePresented = false
+        isShortcutsSheetPresented = false
         comparison = nil
         comparisonInFlight = false
     }

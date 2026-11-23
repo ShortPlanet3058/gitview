@@ -134,6 +134,7 @@ struct SearchField: View {
     @Binding var text: String
     let prompt: String
     var focusTrigger: Int = 0
+    var onFocusChange: ((Bool) -> Void)? = nil
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -163,6 +164,9 @@ struct SearchField: View {
             .strokeBorder(isFocused ? Theme.accent.opacity(0.6) : Theme.hairline))
         .onChange(of: focusTrigger) { _, newValue in
             if newValue > 0 { isFocused = true }
+        }
+        .onChange(of: isFocused) { _, focused in
+            onFocusChange?(focused)
         }
     }
 }
