@@ -161,6 +161,26 @@ struct CommandPaletteOverlay: View {
                 keywords: "advanced standard mode",
                 perform: { session.preferences.advanced.toggle() }
             ))
+            if advanced {
+                items.append(CommandPaletteEntry(
+                    id: "action:reflog",
+                    title: "Reflog Recovery…",
+                    subtitle: "Inspect recent HEAD movements and recover commits",
+                    category: "Action",
+                    symbol: "clock.arrow.2.circlepath",
+                    keywords: "reflog undo recover reset time machine",
+                    perform: { session.navigation.isReflogSheetPresented = true }
+                ))
+                items.append(CommandPaletteEntry(
+                    id: "action:manageRepo",
+                    title: "Manage Remotes & Worktrees…",
+                    subtitle: "Configure remotes and linked working trees",
+                    category: "Action",
+                    symbol: "externaldrive.connected.to.line.below",
+                    keywords: "remote url origin worktree add remove",
+                    perform: { session.navigation.isManageRepoSheetPresented = true }
+                ))
+            }
             if analysis.info.remoteURL != nil || session.workingCopy.pushPlan != nil {
                 if advanced {
                     items.append(CommandPaletteEntry(

@@ -565,4 +565,59 @@ public final class WorkingCopyStore {
             },
             alternative: nil)
     }
+
+    public func cherryPick(sha: String) {
+        perform("cherry-pick", reloadHistory: true) {
+            try $0.cherryPick(sha: sha)
+        }
+    }
+
+    public func resetSoft(to rev: String, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("soft reset", reloadHistory: true, onSuccess: onSuccess) {
+            try $0.resetSoft(to: rev)
+        }
+    }
+
+    public func addWorktree(path: URL, branch: String, createBranch: Bool, startPoint: String? = nil,
+                            onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("add worktree", refsOnly: true, onSuccess: onSuccess) {
+            try $0.addWorktree(path: path, branch: branch, createBranch: createBranch, startPoint: startPoint)
+        }
+    }
+
+    public func removeWorktree(path: String, force: Bool = false, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("remove worktree", refsOnly: true, onSuccess: onSuccess) {
+            try $0.removeWorktree(path: path, force: force)
+        }
+    }
+
+    public func pruneWorktrees(onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("prune worktrees", refsOnly: true, onSuccess: onSuccess) {
+            try $0.pruneWorktrees()
+        }
+    }
+
+    public func addRemote(name: String, url: String, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("add remote", refsOnly: true, onSuccess: onSuccess) {
+            try $0.addRemote(name: name, url: url)
+        }
+    }
+
+    public func setRemoteURL(name: String, url: String, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("update remote url", refsOnly: true, onSuccess: onSuccess) {
+            try $0.setRemoteURL(name: name, url: url)
+        }
+    }
+
+    public func renameRemote(from oldName: String, to newName: String, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("rename remote", refsOnly: true, onSuccess: onSuccess) {
+            try $0.renameRemote(from: oldName, to: newName)
+        }
+    }
+
+    public func removeRemote(name: String, onSuccess: (@MainActor () -> Void)? = nil) {
+        perform("remove remote", refsOnly: true, onSuccess: onSuccess) {
+            try $0.removeRemote(name: name)
+        }
+    }
 }

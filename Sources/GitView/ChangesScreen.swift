@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import GitViewCore
 import GitViewGit
 
@@ -348,12 +349,25 @@ struct ChangesScreen: View {
         }
     }
 
+    private var activeBranchPR: PullRequestSummary? {
+        guard let branch = state.branch else { return nil }
+        return session.pullRequestsByBranch[branch]
+    }
+
+    private var createPullRequestURL: URL? {
+        guard let branch = state.branch,
+              let info = session.analysis?.info,
+              let web = info.remoteWebURL else { return nil }
+        return GitHubBridge.createPRURL(remoteWebURL: web, branch: branch, defaultBranch: info.defaultBranch)
+    }
+
     private func showBottomDock(hasFiles: Bool) -> Bool {
         if hasFiles || !workingCopy.commitSubject.isEmpty || workingCopy.amendLastCommit { return true }
         if workingCopy.headCommitInfo?.hasParent == true && workingCopy.headCommitInfo?.isPushedToUpstream == false {
             return true
         }
         if let plan = workingCopy.pushPlan, !plan.isEmpty { return true }
+        if activeBranchPR != nil || createPullRequestURL != nil { return true }
         return !preferences.advanced && state.behind > 0
     }
 
@@ -1014,6 +1028,36 @@ struct ChangesScreen: View {
                     Button("Sync") { workingCopy.sync() }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                         .disabled(workingCopy.writeInFlight)
+                }
+                .padding(.top, 2)
+            }
+
+            if let pr = activeBranchPR {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: pr.checkStatus == .failing ? "exclamationmark.circle.fill" : "arrow.triangle.pull")
+                        .font(.system(size: 11))
+                        .foregroundStyle(pr.checkStatus == .passing ? Theme.good : (pr.checkStatus == .failing ? Theme.critical : Theme.accent))
+                    Text("PR #\(pr.number) · \(pr.title)")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkSoft)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Open PR") { NSWorkspace.shared.open(pr.url) }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+                .padding(.top, 2)
+            } else if let createURL = createPullRequestURL, (workingCopy.pushPlan?.commits.isEmpty ?? true) {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: "arrow.triangle.pull")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.inkMuted)
+                    Text("Ready to open a pull request from \(state.branch ?? "branch")")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkSoft)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Create PR") { NSWorkspace.shared.open(createURL) }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                 }
                 .padding(.top, 2)
             }

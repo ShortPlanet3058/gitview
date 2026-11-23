@@ -591,6 +591,88 @@ extension GitRepository {
         }
         try write(["push", trimmedRemote, "refs/tags/\(trimmedName)"])
     }
+
+    // MARK: - Recovery, Worktrees & Remotes
+
+    /// Moves HEAD softly to `rev` (`git reset --soft`), keeping index and working tree intact.
+    public func resetSoft(to rev: String) throws {
+        let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "reset --soft", message: "Target revision cannot be empty.")
+        }
+        try write(["reset", "--soft", trimmed])
+    }
+
+    /// Creates a new linked worktree at `path`.
+    public func addWorktree(path: URL, branch: String, createBranch: Bool, startPoint: String? = nil) throws {
+        let trimmedBranch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBranch.isEmpty else {
+            throw GitWriteError(command: "worktree add", message: "Branch name cannot be empty.")
+        }
+        var args = ["worktree", "add"]
+        if createBranch {
+            args += ["-b", trimmedBranch, path.path]
+            if let startPoint {
+                let trimmedStart = startPoint.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedStart.isEmpty { args.append(trimmedStart) }
+            }
+        } else {
+            args += [path.path, trimmedBranch]
+        }
+        try write(args)
+    }
+
+    /// Removes a linked worktree (`git worktree remove`).
+    public func removeWorktree(path: String, force: Bool = false) throws {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GitWriteError(command: "worktree remove", message: "Worktree path cannot be empty.")
+        }
+        var args = ["worktree", "remove"]
+        if force { args.append("--force") }
+        args.append(trimmed)
+        try write(args)
+    }
+
+    /// Cleans stale administrative files for deleted worktrees (`git worktree prune`).
+    public func pruneWorktrees() throws {
+        try write(["worktree", "prune"])
+    }
+
+    public func addRemote(name: String, url: String) throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, !trimmedURL.isEmpty else {
+            throw GitWriteError(command: "remote add", message: "Remote name and URL cannot be empty.")
+        }
+        try write(["remote", "add", trimmedName, trimmedURL])
+    }
+
+    public func setRemoteURL(name: String, url: String) throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, !trimmedURL.isEmpty else {
+            throw GitWriteError(command: "remote set-url", message: "Remote name and URL cannot be empty.")
+        }
+        try write(["remote", "set-url", trimmedName, trimmedURL])
+    }
+
+    public func renameRemote(from oldName: String, to newName: String) throws {
+        let trimmedOld = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNew = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOld.isEmpty, !trimmedNew.isEmpty else {
+            throw GitWriteError(command: "remote rename", message: "Remote names cannot be empty.")
+        }
+        try write(["remote", "rename", trimmedOld, trimmedNew])
+    }
+
+    public func removeRemote(name: String) throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw GitWriteError(command: "remote remove", message: "Remote name cannot be empty.")
+        }
+        try write(["remote", "remove", trimmedName])
+    }
 }
 
 public enum ConflictBlockChoice: Sendable, Hashable {
