@@ -62,14 +62,20 @@ public final class WorkspaceSession {
     private(set) var recentActivityBuckets: [ActivityBucket] = []
     private(set) var overviewMetrics: OverviewMetrics = .empty
     public private(set) var pullRequestsByBranch: [String: PullRequestSummary] = [:]
+    public private(set) var lastAutoFetchDate: Date?
 
     @ObservationIgnored private var watcher: RepositoryWatcher?
     @ObservationIgnored private var refreshNoteTask: Task<Void, Never>?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var codeAnalysisTask: Task<Void, Never>?
     @ObservationIgnored private var prFetchTask: Task<Void, Never>?
+    @ObservationIgnored private nonisolated(unsafe) var autoFetchTask: Task<Void, Never>?
     @ObservationIgnored private var lastAttempted: URL?
     @ObservationIgnored private var preferenceObserverID: UUID?
+
+    deinit {
+        autoFetchTask?.cancel()
+    }
 
     public init(preferences: AppPreferences = .shared, consumeLaunchArgumentsIfAvailable: Bool = false) {
         self.preferences = preferences
@@ -151,6 +157,7 @@ public final class WorkspaceSession {
                 if self.preferences.advanced {
                     self.ensureCodeAnalysisIfNeeded()
                 }
+                self.restartAutoFetchIfNeeded()
             }
         }
     }
@@ -293,12 +300,18 @@ public final class WorkspaceSession {
         codeAnalysisTask = nil
         prFetchTask?.cancel()
         prFetchTask = nil
+        autoFetchTask?.cancel()
+        autoFetchTask = nil
+        lastAutoFetchDate = nil
         pullRequestsByBranch = [:]
         state = .loading(LoadingProgress(stage: "Checking the repository"))
         risk.resetForOpen()
         navigation.clearForOpen()
         inspector.resetForOpen()
         workingCopy.clear()
+        workingCopy.restoreDraft(for: url)
+        workingCopy.reloadCommandLog(for: url)
+        workingCopy.refreshCommitMetadata(for: url)
         search.reset()
         ownership = nil
         recentActivityBuckets = []
@@ -600,7 +613,9 @@ public final class WorkspaceSession {
         }
         workingCopy.refreshPushPlan()
         workingCopy.refreshHeadCommitInfo()
+        workingCopy.refreshCommitMetadata(for: analysis.root)
         refreshPullRequests()
+        restartAutoFetchIfNeeded()
 
         if let term = navigation.pendingSearch {
             navigation.pendingSearch = nil
@@ -764,6 +779,7 @@ public final class WorkspaceSession {
         workingCopy.refreshWorkingState()
         workingCopy.refreshPushPlan()
         workingCopy.refreshHeadCommitInfo()
+        workingCopy.refreshCommitMetadata(for: analysis.root)
         refreshPullRequests()
 
         guard let knownHead = analysis.commits.first?.sha else { return }
@@ -813,5 +829,43 @@ public final class WorkspaceSession {
 
     func dismissOutsideChange() {
         outsideChange = nil
+    }
+
+    private func restartAutoFetchIfNeeded() {
+        autoFetchTask?.cancel()
+        autoFetchTask = nil
+
+        let interval = preferences.autoFetchInterval
+        guard interval != .off,
+              case .loaded(let current) = state else {
+            return
+        }
+        let hasRemote = current.info.remoteURL != nil
+            || !current.info.remotes.isEmpty
+            || current.branches.contains(where: \.isRemote)
+        guard hasRemote else { return }
+
+        let root = current.root
+        autoFetchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval.rawValue))
+                guard !Task.isCancelled, let self else { break }
+                guard case .loaded(let active) = self.state,
+                      active.root == root,
+                      !self.isRefreshing,
+                      !self.workingCopy.writeInFlight else {
+                    continue
+                }
+                let ok = await Task.detached(priority: .utility) {
+                    (try? GitProcess.capture(arguments: ["fetch", "--all", "--prune"], in: root)) != nil
+                }.value
+                guard !Task.isCancelled, ok else { continue }
+                self.lastAutoFetchDate = Date()
+                self.workingCopy.refreshWorkingState()
+                self.workingCopy.refreshPushPlan()
+                self.refreshPullRequests()
+                self.refreshRefsAndWorkingState()
+            }
+        }
     }
 }

@@ -10,6 +10,19 @@ public struct GitWriteError: Error, CustomStringConvertible {
     }
 }
 
+/// A previously authored commit message offered for quick reuse in the commit composer.
+public struct CommitMessageHistoryItem: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let subject: String
+    public let body: String
+
+    public init(id: String, subject: String, body: String) {
+        self.id = id
+        self.subject = subject
+        self.body = body
+    }
+}
+
 /// Operations that change the repository.
 ///
 /// Deliberately absent: `push --force`, `reset --hard`, and amending a commit that has
@@ -18,14 +31,46 @@ public struct GitWriteError: Error, CustomStringConvertible {
 extension GitRepository {
 
     @discardableResult
-    private func write(_ arguments: [String], stdin: Data? = nil) throws -> String {
+    func write(
+        _ arguments: [String],
+        stdin: Data? = nil,
+        environmentOverrides: [String: String] = [:]
+    ) throws -> String {
         let root = try validate()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let elapsed: () -> TimeInterval = {
+            Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000.0
+        }
         do {
-            return try GitProcess.capture(arguments: arguments, stdin: stdin, in: root)
+            let result = try GitProcess.captureDetailed(
+                arguments: arguments,
+                stdin: stdin,
+                environmentOverrides: environmentOverrides,
+                in: root
+            )
+            GitCommandRecorder.shared.record(GitCommandRecord(
+                directory: root,
+                arguments: arguments,
+                duration: elapsed(),
+                exitCode: 0,
+                stdout: result.stdout,
+                stderr: result.stderr
+            ))
+            return result.stdout
         } catch let error as GitError {
-            if case .failed(let command, _, let stderr) = error {
-                throw GitWriteError(command: command,
-                                    message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            if case .failed(let command, let code, let stderr) = error {
+                GitCommandRecorder.shared.record(GitCommandRecord(
+                    directory: root,
+                    arguments: arguments,
+                    duration: elapsed(),
+                    exitCode: code,
+                    stdout: "",
+                    stderr: stderr
+                ))
+                throw GitWriteError(
+                    command: command,
+                    message: stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
             }
             throw error
         }
@@ -51,16 +96,74 @@ extension GitRepository {
     }
 
     /// Commits what is staged. Returns the new commit's id.
-    public func commit(subject: String, body: String = "") throws -> String {
+    public func commit(
+        subject: String,
+        body: String = "",
+        sign: Bool = false,
+        noVerify: Bool = false
+    ) throws -> String {
         let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw GitWriteError(command: "commit", message: "A commit needs a message.")
         }
-        var arguments = ["commit", "-m", trimmed]
+        var arguments = ["commit"]
+        if sign { arguments.append("-S") }
+        if noVerify { arguments.append("--no-verify") }
+        arguments += ["-m", trimmed]
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedBody.isEmpty { arguments += ["-m", trimmedBody] }
         try write(arguments)
         return try headSHA()
+    }
+
+    public func recentCommitMessages(limit: Int = 15) throws -> [CommitMessageHistoryItem] {
+        let root = try validate()
+        guard let output = try? GitProcess.capture(
+            arguments: ["log", "-n", "\(max(1, limit))", "--format=%H%x1f%s%x1e%b%x1d"],
+            in: root
+        ) else {
+            return []
+        }
+        return output
+            .split(separator: "\u{1d}", omittingEmptySubsequences: true)
+            .compactMap { chunk -> CommitMessageHistoryItem? in
+                let trimmedChunk = String(chunk).trimmingCharacters(in: .newlines)
+                let sections = trimmedChunk.split(separator: "\u{1e}", maxSplits: 1, omittingEmptySubsequences: false)
+                guard let header = sections.first else { return nil }
+                let fields = String(header).split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard fields.count == 2 else { return nil }
+                let sha = fields[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                let subject = fields[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !sha.isEmpty, !subject.isEmpty else { return nil }
+                let body = sections.count > 1
+                    ? String(sections[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                return CommitMessageHistoryItem(id: sha, subject: subject, body: body)
+            }
+    }
+
+    public func commitTemplate() -> String? {
+        guard let root = try? validate(),
+              let rawPath = (try? GitProcess.capture(arguments: ["config", "--get", "commit.template"], in: root))?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawPath.isEmpty else {
+            return nil
+        }
+        let expanded = (rawPath as NSString).expandingTildeInPath
+        let templateURL = expanded.hasPrefix("/")
+            ? URL(fileURLWithPath: expanded)
+            : root.appendingPathComponent(expanded)
+        guard let rawText = try? String(contentsOf: templateURL, encoding: .utf8) else {
+            return nil
+        }
+        let nonCommentLines = rawText
+            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
+        let cleaned = nonCommentLines
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .newlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Metadata about HEAD used to safely gate Undo Last Commit and Amend actions.
@@ -121,7 +224,13 @@ extension GitRepository {
     }
 
     /// Amends HEAD with staged changes and an updated commit message.
-    public func amendCommit(subject: String, body: String = "", allowPublished: Bool = false) throws -> String {
+    public func amendCommit(
+        subject: String,
+        body: String = "",
+        allowPublished: Bool = false,
+        sign: Bool = false,
+        noVerify: Bool = false
+    ) throws -> String {
         let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw GitWriteError(command: "commit --amend", message: "A commit needs a message.")
@@ -135,7 +244,10 @@ extension GitRepository {
                 message: "The latest commit is already pushed to its upstream branch."
             )
         }
-        var arguments = ["commit", "--amend", "-m", trimmed]
+        var arguments = ["commit", "--amend"]
+        if sign { arguments.append("-S") }
+        if noVerify { arguments.append("--no-verify") }
+        arguments += ["-m", trimmed]
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedBody.isEmpty { arguments += ["-m", trimmedBody] }
         try write(arguments)
@@ -278,13 +390,33 @@ extension GitRepository {
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Publishes commits. Never forced: a rejected push means the remote has work this
-    /// checkout has not seen, and the answer to that is to pull, not to overwrite it.
-    public func push(remote: String, branch: String, setUpstream: Bool) throws {
+    /// Publishes commits. Uses `--force-with-lease` only when explicitly confirmed after rewriting history.
+    public func push(
+        remote: String,
+        branch: String,
+        setUpstream: Bool,
+        forceWithLease: Bool = false
+    ) throws {
         var arguments = ["push"]
+        if forceWithLease { arguments.append("--force-with-lease") }
         if setUpstream { arguments.append("--set-upstream") }
         arguments += [remote, branch]
         try write(arguments)
+    }
+
+    public static func isProtectedBranch(_ branch: String, defaultBranch: String?) -> Bool {
+        let normalized = branch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        if normalized == "main" || normalized == "master" {
+            return true
+        }
+        if let defaultBranch {
+            let normalizedDefault = defaultBranch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !normalizedDefault.isEmpty && normalized == normalizedDefault {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Sync & Branches

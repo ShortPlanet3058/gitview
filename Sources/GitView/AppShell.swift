@@ -116,6 +116,10 @@ struct AppShell: View {
             RepositoryManagementSheet()
                 .withWorkspaceEnvironment(session)
         }
+        .sheet(isPresented: $navigation.isCommandLogSheetPresented) {
+            GitCommandLogSheet()
+                .withWorkspaceEnvironment(session)
+        }
     }
 
     @ViewBuilder
@@ -612,6 +616,24 @@ struct TopBar: View {
                             }
                         }
                     }
+
+                    Button {
+                        session.navigation.isCommandLogSheetPresented = true
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "apple.terminal")
+                                .font(.system(size: 12, weight: .medium))
+                            if workingCopy.hasRecentFailure {
+                                Circle()
+                                    .fill(Theme.critical)
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
+                    }
+                    .buttonStyle(GhostIconButtonStyle())
+                    .help("Git Command Log (⌘⇧L)")
+                    .accessibilityLabel("Git Command Log")
 
                     Button { session.refresh() } label: {
                         Image(systemName: "arrow.clockwise")
@@ -1201,6 +1223,7 @@ struct KeyboardShortcutsOverlay: View {
             ("⌘=", "Larger code & diff font"),
             ("⌘−", "Smaller code & diff font"),
             ("⌘0", "Reset code & diff font"),
+            ("⌘⇧L", "Open Git Command Log"),
             ("⌘O", "Open another repository"),
             ("⌘,", "Open Settings"),
             ("⌘/", "Show or hide this shortcuts guide"),

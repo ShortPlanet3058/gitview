@@ -108,6 +108,7 @@ public final class NavigationStore {
     public var isInitSheetPresented: Bool = false
     public var isReflogSheetPresented: Bool = false
     public var isManageRepoSheetPresented: Bool = false
+    public var isCommandLogSheetPresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
     public var compareFrom: String = ""

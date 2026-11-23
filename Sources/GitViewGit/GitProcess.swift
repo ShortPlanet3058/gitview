@@ -57,17 +57,27 @@ public enum GitProcess {
     }
 
     /// Builds a configured `Process` for `git` without starting it.
-    public static func makeProcess(arguments: [String], in directory: URL) throws -> Process {
+    public static func makeProcess(
+        arguments: [String],
+        environmentOverrides: [String: String] = [:],
+        in directory: URL
+    ) throws -> Process {
         let executable = gitPath
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw GitError.gitNotExecutable(executable)
         }
-        return configuredProcess(executable: executable, arguments: arguments, directory: directory)
+        return configuredProcess(
+            executable: executable,
+            arguments: arguments,
+            environmentOverrides: environmentOverrides,
+            directory: directory
+        )
     }
 
     private static func configuredProcess(
         executable: String,
         arguments: [String],
+        environmentOverrides: [String: String] = [:],
         directory: URL
     ) -> Process {
         _ = ignoreSigpipeOnce
@@ -81,6 +91,9 @@ public enum GitProcess {
         env["GIT_EDITOR"] = "true"
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["LC_ALL"] = "C"
+        for (key, value) in environmentOverrides {
+            env[key] = value
+        }
         process.environment = env
         return process
     }
@@ -102,15 +115,37 @@ public enum GitProcess {
     public static func stream(
         arguments: [String],
         stdin: Data? = nil,
+        environmentOverrides: [String: String] = [:],
         in directory: URL,
         onOutput: @escaping @Sendable (Data) -> Void
     ) throws {
+        _ = try streamWithStderr(
+            arguments: arguments,
+            stdin: stdin,
+            environmentOverrides: environmentOverrides,
+            in: directory,
+            onOutput: onOutput
+        )
+    }
+
+    private static func streamWithStderr(
+        arguments: [String],
+        stdin: Data? = nil,
+        environmentOverrides: [String: String] = [:],
+        in directory: URL,
+        onOutput: @escaping @Sendable (Data) -> Void
+    ) throws -> String {
         let executable = gitPath
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw GitError.gitNotExecutable(executable)
         }
 
-        let process = configuredProcess(executable: executable, arguments: arguments, directory: directory)
+        let process = configuredProcess(
+            executable: executable,
+            arguments: arguments,
+            environmentOverrides: environmentOverrides,
+            directory: directory
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -160,13 +195,32 @@ public enum GitProcess {
         errGroup.wait()
         process.waitUntilExit()
 
+        let stderr = String(decoding: stderrBox.get(), as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw GitError.failed(
                 command: arguments.joined(separator: " "),
                 code: process.terminationStatus,
-                stderr: String(decoding: stderrBox.get(), as: UTF8.self)
+                stderr: stderr
             )
         }
+        return stderr
+    }
+
+    /// Runs git and returns both stdout and stderr. Only for small, bounded outputs.
+    public static func captureDetailed(
+        arguments: [String],
+        stdin: Data? = nil,
+        environmentOverrides: [String: String] = [:],
+        in directory: URL
+    ) throws -> (stdout: String, stderr: String) {
+        let box = DataBox()
+        let stderr = try streamWithStderr(
+            arguments: arguments,
+            stdin: stdin,
+            environmentOverrides: environmentOverrides,
+            in: directory
+        ) { box.append($0) }
+        return (String(decoding: box.get(), as: UTF8.self), stderr)
     }
 
     /// Runs git and returns its complete stdout. Only for small, bounded outputs.

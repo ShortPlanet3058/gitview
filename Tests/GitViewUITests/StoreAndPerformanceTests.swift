@@ -615,4 +615,52 @@ final class StoreAndPerformanceTests: XCTestCase {
         nav.clearForOpen()
         XCTAssertNil(nav.selectedFilePath)
     }
+
+    @MainActor
+    func testAutoFetchPreferenceDraftsCoAuthorAndCommandLogStore() throws {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        XCTAssertEqual(prefs.autoFetchInterval, .off)
+        prefs.autoFetchInterval = .fifteenMinutes
+        let reloaded = AppPreferences(defaults: defaults)
+        XCTAssertEqual(reloaded.autoFetchInterval, .fifteenMinutes)
+
+        let tempRepo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitview-draft-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRepo, withIntermediateDirectories: true)
+        defer {
+            GitCommandRecorder.shared.clear(for: tempRepo)
+            try? FileManager.default.removeItem(at: tempRepo)
+        }
+        _ = try GitProcess.capture(arguments: ["init", "-q", "-b", "main"], in: tempRepo)
+        _ = try GitProcess.capture(arguments: ["config", "user.name", "Alice"], in: tempRepo)
+        _ = try GitProcess.capture(arguments: ["config", "user.email", "alice@example.com"], in: tempRepo)
+        try "hello\n".write(to: tempRepo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+
+        let store = WorkingCopyStore(defaults: defaults)
+        store.rootProvider = { tempRepo }
+        store.restoreDraft(for: tempRepo)
+        store.commitSubject = "WIP subject"
+        store.appendCoAuthor(name: "Bob", email: "bob@example.com")
+        store.appendCoAuthor(name: "Bob Duplicate", email: "BOB@example.com")
+        XCTAssertEqual(store.commitBody, "Co-authored-by: Bob <bob@example.com>")
+
+        let restored = WorkingCopyStore(defaults: defaults)
+        restored.restoreDraft(for: tempRepo)
+        XCTAssertEqual(restored.commitSubject, "WIP subject")
+        XCTAssertEqual(restored.commitBody, "Co-authored-by: Bob <bob@example.com>")
+
+        restored.clearDraft()
+        let cleared = WorkingCopyStore(defaults: defaults)
+        cleared.restoreDraft(for: tempRepo)
+        XCTAssertEqual(cleared.commitSubject, "")
+
+        let repo = GitRepository(url: tempRepo)
+        try repo.stage(paths: ["a.txt"])
+        store.reloadCommandLog(for: tempRepo)
+        XCTAssertFalse(store.commandLog.isEmpty)
+        XCTAssertFalse(store.hasRecentFailure)
+    }
 }

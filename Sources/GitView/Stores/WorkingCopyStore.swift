@@ -19,10 +19,29 @@ public struct DestructiveConfirmation: Identifiable {
 @MainActor
 @Observable
 public final class WorkingCopyStore {
-    public var commitSubject = ""
-    public var commitBody = ""
+    private static let draftsDefaultsKey = "gitview.commitDrafts"
+
+    public var commitSubject = "" {
+        didSet {
+            guard !isRestoringDraft else { return }
+            saveDraft()
+        }
+    }
+    public var commitBody = "" {
+        didSet {
+            guard !isRestoringDraft else { return }
+            saveDraft()
+        }
+    }
     public var stashMessage = ""
     public var amendLastCommit = false
+    public var signCommit = false
+    public var skipHooks = false
+    public private(set) var recentMessages: [CommitMessageHistoryItem] = []
+    public private(set) var commitTemplateText: String?
+    public private(set) var commandLog: [GitCommandRecord] = []
+    public var hasRecentFailure: Bool { !(commandLog.first?.succeeded ?? true) }
+    public private(set) var lastPushRejectedNonFastForward = false
     public private(set) var writeInFlight = false
     public var writeError: String?
     public var confirmation: DestructiveConfirmation?
@@ -37,16 +56,129 @@ public final class WorkingCopyStore {
     @ObservationIgnored var onRefsMutated: () -> Void = {}
     @ObservationIgnored var onHistoryMutated: () -> Void = {}
 
-    public init() {}
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var activeDraftRoot: URL?
+    @ObservationIgnored private var isRestoringDraft = false
+    @ObservationIgnored private nonisolated(unsafe) var recorderObserverID: UUID?
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.recorderObserverID = GitCommandRecorder.shared.addObserver { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.reloadCommandLog()
+            }
+        }
+    }
+
+    deinit {
+        if let recorderObserverID {
+            GitCommandRecorder.shared.removeObserver(recorderObserverID)
+        }
+    }
 
     public func clear() {
+        activeDraftRoot = nil
+        isRestoringDraft = true
+        commitSubject = ""
+        commitBody = ""
+        isRestoringDraft = false
+        amendLastCommit = false
+        signCommit = false
+        skipHooks = false
+        recentMessages = []
+        commitTemplateText = nil
+        commandLog = []
+        lastPushRejectedNonFastForward = false
         writeError = nil
         confirmation = nil
         pushPlan = nil
         headCommitInfo = nil
-        amendLastCommit = false
         divergedPullPrompt = false
         worktreeTick = 0
+    }
+
+    public func reloadCommandLog(for root: URL? = nil) {
+        guard let target = root ?? activeDraftRoot ?? rootProvider() else {
+            commandLog = []
+            return
+        }
+        commandLog = GitCommandRecorder.shared.records(for: target)
+    }
+
+    public func clearCommandLog() {
+        let target = activeDraftRoot ?? rootProvider()
+        GitCommandRecorder.shared.clear(for: target)
+        commandLog = []
+    }
+
+    public func saveDraft() {
+        guard !amendLastCommit, let root = activeDraftRoot ?? rootProvider() else { return }
+        let key = Self.draftStorageKey(for: root)
+        var stored = defaults.dictionary(forKey: Self.draftsDefaultsKey) as? [String: [String: String]] ?? [:]
+        if commitSubject.isEmpty && commitBody.isEmpty {
+            stored.removeValue(forKey: key)
+        } else {
+            stored[key] = ["subject": commitSubject, "body": commitBody]
+        }
+        defaults.set(stored, forKey: Self.draftsDefaultsKey)
+    }
+
+    public func restoreDraft(for root: URL) {
+        activeDraftRoot = root
+        let key = Self.draftStorageKey(for: root)
+        let stored = defaults.dictionary(forKey: Self.draftsDefaultsKey) as? [String: [String: String]]
+        let draft = stored?[key]
+        isRestoringDraft = true
+        commitSubject = draft?["subject"] ?? ""
+        commitBody = draft?["body"] ?? ""
+        isRestoringDraft = false
+    }
+
+    public func clearDraft() {
+        guard let root = activeDraftRoot ?? rootProvider() else { return }
+        let key = Self.draftStorageKey(for: root)
+        var stored = defaults.dictionary(forKey: Self.draftsDefaultsKey) as? [String: [String: String]] ?? [:]
+        stored.removeValue(forKey: key)
+        defaults.set(stored, forKey: Self.draftsDefaultsKey)
+    }
+
+    public func appendCoAuthor(name: String, email: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, !trimmedEmail.isEmpty else { return }
+        let trailer = "Co-authored-by: \(trimmedName) <\(trimmedEmail)>"
+        let existingLower = commitBody.lowercased()
+        if existingLower.contains("co-authored-by:") && existingLower.contains("<\(trimmedEmail.lowercased())>") {
+            return
+        }
+        let trimmedBody = commitBody.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
+        if trimmedBody.isEmpty {
+            commitBody = trailer
+        } else if trimmedBody.lowercased().contains("co-authored-by:") {
+            commitBody = trimmedBody + "\n" + trailer
+        } else {
+            commitBody = trimmedBody + "\n\n" + trailer
+        }
+    }
+
+    public func refreshCommitMetadata(for root: URL? = nil) {
+        guard let target = root ?? activeDraftRoot ?? rootProvider() else { return }
+        let standardized = target.standardizedFileURL
+        Task.detached(priority: .utility) {
+            let repo = GitRepository(url: target)
+            let messages = (try? repo.recentCommitMessages(limit: 15)) ?? []
+            let template = repo.commitTemplate()
+            await MainActor.run {
+                let current = (self.activeDraftRoot ?? self.rootProvider())?.standardizedFileURL
+                guard current == standardized else { return }
+                self.recentMessages = messages
+                self.commitTemplateText = template
+            }
+        }
+    }
+
+    private static func draftStorageKey(for root: URL) -> String {
+        root.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     public func refreshWorkingState(notifyWorktreeTick: Bool = false) {
@@ -91,9 +223,18 @@ public final class WorkingCopyStore {
             || lower.contains("can't be fast-forwarded")
     }
 
+    private static func isNonFastForwardPushFailure(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("non-fast-forward")
+            || lower.contains("fetch first")
+            || lower.contains("failed to push some refs")
+            || lower.contains("[rejected]")
+    }
+
     private func perform(_ label: String, reloadHistory: Bool = false,
                          refsOnly: Bool = false,
                          detectDivergence: Bool = false,
+                         detectNonFastForwardPush: Bool = false,
                          onSuccess: (@MainActor () -> Void)? = nil,
                          _ work: @escaping @Sendable (GitRepository) throws -> Void) {
         guard let root = rootProvider(), !writeInFlight else { return }
@@ -109,7 +250,11 @@ public final class WorkingCopyStore {
             } else {
                 self.writeError = failure
             }
+            if let failure, detectNonFastForwardPush, Self.isNonFastForwardPushFailure(failure) {
+                self.lastPushRejectedNonFastForward = true
+            }
             self.writeInFlight = false
+            self.reloadCommandLog()
             if failure == nil {
                 if reloadHistory {
                     self.onHistoryMutated()
@@ -138,8 +283,10 @@ public final class WorkingCopyStore {
         if amendLastCommit,
            commitSubject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let info = headCommitInfo {
+            isRestoringDraft = true
             commitSubject = info.subject
             commitBody = info.body
+            isRestoringDraft = false
         }
     }
 
@@ -147,15 +294,34 @@ public final class WorkingCopyStore {
         let subject = commitSubject
         let body = commitBody
         let amending = amendLastCommit
+        let sign = signCommit
+        let noVerify = skipHooks
         perform(amending ? "amend commit" : "commit", reloadHistory: true, onSuccess: { [weak self] in
-            self?.commitSubject = ""
-            self?.commitBody = ""
-            self?.amendLastCommit = false
+            guard let self else { return }
+            self.isRestoringDraft = true
+            self.commitSubject = ""
+            self.commitBody = ""
+            self.isRestoringDraft = false
+            self.amendLastCommit = false
+            self.skipHooks = false
+            self.clearDraft()
+            self.refreshCommitMetadata()
         }) { repository in
             if amending {
-                _ = try repository.amendCommit(subject: subject, body: body, allowPublished: allowPublishedAmend)
+                _ = try repository.amendCommit(
+                    subject: subject,
+                    body: body,
+                    allowPublished: allowPublishedAmend,
+                    sign: sign,
+                    noVerify: noVerify
+                )
             } else {
-                _ = try repository.commit(subject: subject, body: body)
+                _ = try repository.commit(
+                    subject: subject,
+                    body: body,
+                    sign: sign,
+                    noVerify: noVerify
+                )
             }
         }
     }
@@ -164,6 +330,8 @@ public final class WorkingCopyStore {
         let subject = commitSubject
         let body = commitBody
         let amending = amendLastCommit
+        let sign = signCommit
+        let noVerify = skipHooks
         guard let root = rootProvider(), !writeInFlight else { return }
         writeInFlight = true
         writeError = nil
@@ -172,9 +340,20 @@ public final class WorkingCopyStore {
                 let repository = GitRepository(url: root)
                 do {
                     if amending {
-                        _ = try repository.amendCommit(subject: subject, body: body, allowPublished: allowPublishedAmend)
+                        _ = try repository.amendCommit(
+                            subject: subject,
+                            body: body,
+                            allowPublished: allowPublishedAmend,
+                            sign: sign,
+                            noVerify: noVerify
+                        )
                     } else {
-                        _ = try repository.commit(subject: subject, body: body)
+                        _ = try repository.commit(
+                            subject: subject,
+                            body: body,
+                            sign: sign,
+                            noVerify: noVerify
+                        )
                     }
                 } catch {
                     return (false, "\(error)")
@@ -189,11 +368,22 @@ public final class WorkingCopyStore {
                 }
             }.value
             self.writeError = outcome.failure
+            if let failure = outcome.failure, Self.isNonFastForwardPushFailure(failure) {
+                self.lastPushRejectedNonFastForward = true
+            } else if outcome.committed && outcome.failure == nil {
+                self.lastPushRejectedNonFastForward = false
+            }
             self.writeInFlight = false
+            self.reloadCommandLog()
             if outcome.committed {
+                self.isRestoringDraft = true
                 self.commitSubject = ""
                 self.commitBody = ""
+                self.isRestoringDraft = false
                 self.amendLastCommit = false
+                self.skipHooks = false
+                self.clearDraft()
+                self.refreshCommitMetadata()
                 self.onHistoryMutated()
             } else {
                 self.refreshWorkingState()
@@ -204,7 +394,9 @@ public final class WorkingCopyStore {
     }
 
     public func sync() {
-        perform("sync", reloadHistory: true, detectDivergence: true) { repository in
+        perform("sync", reloadHistory: true, detectDivergence: true, detectNonFastForwardPush: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) { repository in
             try repository.fetch(prune: true)
             let fresh = try repository.workingState()
             if fresh.behind > 0 {
@@ -261,9 +453,48 @@ public final class WorkingCopyStore {
 
     public func push() {
         guard let plan = pushPlan else { return }
-        perform("push", refsOnly: true) {
+        perform("push", refsOnly: true, detectNonFastForwardPush: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) {
             try $0.push(remote: plan.remote, branch: plan.branch, setUpstream: !plan.hasUpstream)
         }
+    }
+
+    public func pushWithForceLease() {
+        guard let plan = pushPlan else { return }
+        perform("force push with lease", refsOnly: true, detectNonFastForwardPush: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) {
+            try $0.push(
+                remote: plan.remote,
+                branch: plan.branch,
+                setUpstream: !plan.hasUpstream,
+                forceWithLease: true
+            )
+        }
+    }
+
+    public func confirmForcePushWithLease(defaultBranch: String?, allowProtected: Bool = false) {
+        guard let plan = pushPlan else { return }
+        let isProtected = GitRepository.isProtectedBranch(plan.branch, defaultBranch: defaultBranch)
+        if isProtected && !allowProtected {
+            writeError = "Force-pushing protected branch “\(plan.branch)” is disabled in Standard mode."
+            return
+        }
+        let warningNote = isProtected
+            ? "WARNING: “\(plan.branch)” is a protected shared branch. Rewriting its history affects everyone on the team.\n\n"
+            : ""
+        confirmation = DestructiveConfirmation(
+            title: "Force-push “\(plan.branch)” with --force-with-lease?",
+            message: warningNote
+                + "Updates \(plan.remote)/\(plan.branch) to match your local branch only if nobody else has pushed new commits since your last fetch.",
+            confirmLabel: "Force Push (with lease)",
+            alternativeLabel: nil,
+            perform: { [weak self] in
+                self?.pushWithForceLease()
+            },
+            alternative: nil
+        )
     }
 
     public func fetch() {
@@ -271,15 +502,21 @@ public final class WorkingCopyStore {
     }
 
     public func pull() {
-        perform("pull", reloadHistory: true, detectDivergence: true) { try $0.pullFastForwardOnly() }
+        perform("pull", reloadHistory: true, detectDivergence: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) { try $0.pullFastForwardOnly() }
     }
 
     public func pullRebase() {
-        perform("pull --rebase", reloadHistory: true) { try $0.pullRebase() }
+        perform("pull --rebase", reloadHistory: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) { try $0.pullRebase() }
     }
 
     public func pullMerge() {
-        perform("pull merge", reloadHistory: true) { try $0.pullMerge() }
+        perform("pull merge", reloadHistory: true, onSuccess: { [weak self] in
+            self?.lastPushRejectedNonFastForward = false
+        }) { try $0.pullMerge() }
     }
 
     public func confirmUndoLastCommit() {
