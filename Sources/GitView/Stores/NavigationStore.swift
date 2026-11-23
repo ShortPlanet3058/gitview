@@ -101,6 +101,8 @@ public final class NavigationStore {
     public var focusLocalFindRequest: Int = 0
     public var isCommandPalettePresented: Bool = false
     public var isShortcutsSheetPresented: Bool = false
+    public var isCloneSheetPresented: Bool = false
+    public var isInitSheetPresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
     public var compareFrom: String = ""

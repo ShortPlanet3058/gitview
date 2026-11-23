@@ -282,7 +282,10 @@ struct ChangesScreen: View {
     }
 
     private func showBottomDock(hasFiles: Bool) -> Bool {
-        if hasFiles || !workingCopy.commitSubject.isEmpty { return true }
+        if hasFiles || !workingCopy.commitSubject.isEmpty || workingCopy.amendLastCommit { return true }
+        if workingCopy.headCommitInfo?.hasParent == true && workingCopy.headCommitInfo?.isPushedToUpstream == false {
+            return true
+        }
         if let plan = workingCopy.pushPlan, !plan.isEmpty { return true }
         return !preferences.advanced && state.behind > 0
     }
@@ -326,31 +329,44 @@ struct ChangesScreen: View {
                     }
 
                     if let head = session.analysis?.commits.first {
-                        Button {
-                            session.navigation.selectedCommitSHA = head.sha
-                        } label: {
-                            Card(padding: Theme.Space.l) {
-                                HStack(spacing: Theme.Space.m) {
-                                    Avatar(name: head.author, size: 30)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Latest commit").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                                        Text(head.subject.isEmpty ? "(no message)" : head.subject)
-                                            .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
-                                        Text("\(head.author) · \(RiskExplanation.relative(head.date, now: Date()))")
-                                            .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                        Card(padding: Theme.Space.l) {
+                            HStack(spacing: Theme.Space.m) {
+                                Button {
+                                    session.navigation.selectedCommitSHA = head.sha
+                                } label: {
+                                    HStack(spacing: Theme.Space.m) {
+                                        Avatar(name: head.author, size: 30)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Latest commit").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                                            Text(head.subject.isEmpty ? "(no message)" : head.subject)
+                                                .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink).lineLimit(1)
+                                            Text("\(head.author) · \(RiskExplanation.relative(head.date, now: Date()))")
+                                                .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                                        }
+                                        Spacer(minLength: Theme.Space.s)
+                                        if preferences.advanced {
+                                            ShaChip(sha: head.sha)
+                                        }
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(Theme.inkMuted)
                                     }
-                                    Spacer()
-                                    if preferences.advanced {
-                                        ShaChip(sha: head.sha)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                if let info = workingCopy.headCommitInfo, info.hasParent, !info.isPushedToUpstream {
+                                    Rectangle().fill(Theme.hairline).frame(width: 1, height: 28)
+                                    Button("Undo") {
+                                        workingCopy.confirmUndoLastCommit()
                                     }
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(Theme.inkMuted)
+                                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                                    .disabled(workingCopy.writeInFlight)
+                                    .help("Undo last commit and keep changes staged (git reset --soft HEAD~1)")
                                 }
                             }
-                            .frame(maxWidth: 520)
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: 560)
                     }
                     Spacer(minLength: Theme.Space.xl)
                 }
@@ -394,10 +410,12 @@ struct ChangesScreen: View {
     }
 
     private func operationBanner(_ operation: WorkingState.Operation) -> some View {
-        Card(padding: Theme.Space.m) {
+        let readyToContinue = state.conflicted.isEmpty && operation != .bisect
+        return Card(padding: Theme.Space.m) {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 HStack(spacing: Theme.Space.s) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                    Image(systemName: readyToContinue ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(readyToContinue ? Theme.good : Theme.warning)
                     Text(operation.label).font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
                     Spacer()
                     Button(abortButtonTitle(operation)) {
@@ -405,10 +423,29 @@ struct ChangesScreen: View {
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                     .disabled(workingCopy.writeInFlight)
+                    if readyToContinue {
+                        Button(continueButtonTitle(operation)) {
+                            workingCopy.continueOperation(operation)
+                        }
+                        .buttonStyle(PrimaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                    }
                 }
-                Text("Resolve conflicts below, then stage to continue or safely abort.")
+                Text(readyToContinue
+                     ? "All conflicts are resolved — continue to finish."
+                     : "Resolve conflicts below, then continue or safely abort.")
                     .font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
             }
+        }
+    }
+
+    private func continueButtonTitle(_ operation: WorkingState.Operation) -> String {
+        switch operation {
+        case .merge: return "Continue Merge"
+        case .rebase: return "Continue Rebase"
+        case .cherryPick: return "Continue Cherry-pick"
+        case .revert: return "Continue Revert"
+        case .bisect: return "Continue"
         }
     }
 
@@ -619,14 +656,20 @@ struct ChangesScreen: View {
     @ViewBuilder
     private func bottomDock(hasFiles: Bool) -> some View {
         @Bindable var workingCopy = workingCopy
-        let canCommit = !state.staged.isEmpty
+        let amending = workingCopy.amendLastCommit
+        let canCommit = (!state.staged.isEmpty || amending)
             && !workingCopy.commitSubject.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingCopy.writeInFlight
         let subjectLength = workingCopy.commitSubject.count
+        let showEditor = hasFiles || !workingCopy.commitSubject.isEmpty || amending
+        let headInfo = workingCopy.headCommitInfo
+        let canAmend = headInfo != nil && (!(headInfo?.isPushedToUpstream ?? true) || preferences.advanced)
+        let canUndo = headInfo?.hasParent == true && headInfo?.isPushedToUpstream == false
+
         VStack(alignment: .leading, spacing: Theme.Space.s) {
-            if hasFiles || !workingCopy.commitSubject.isEmpty {
+            if showEditor {
                 HStack(spacing: Theme.Space.s) {
-                    Text(preferences.advanced ? "Commit" : "Save changes")
+                    Text(amending ? "Amend last commit" : (preferences.advanced ? "Commit" : "Save changes"))
                         .font(Theme.Text.bodyBold).foregroundStyle(Theme.ink)
                     Spacer()
                     if subjectLength > 0 {
@@ -637,6 +680,40 @@ struct ChangesScreen: View {
                     Text(preferences.advanced ? "\(state.staged.count) staged" : "\(state.staged.count) included")
                         .font(Theme.Text.caption.monospacedDigit())
                         .foregroundStyle(state.staged.isEmpty ? Theme.inkMuted : Theme.good)
+                }
+
+                if canAmend || canUndo {
+                    HStack(spacing: Theme.Space.s) {
+                        if canAmend {
+                            Button {
+                                workingCopy.toggleAmend()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: amending ? "checkmark.square.fill" : "square")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(amending ? Theme.accent : Theme.inkMuted)
+                                    Text("Amend previous")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(Theme.inkSoft)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer()
+                        if canUndo && !amending {
+                            Button("Undo last commit") {
+                                workingCopy.confirmUndoLastCommit()
+                            }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                            .disabled(workingCopy.writeInFlight)
+                        }
+                    }
+                }
+
+                if amending && headInfo?.isPushedToUpstream == true && preferences.advanced {
+                    Text("Latest commit is already pushed — amending rewrites history.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.warning)
                 }
 
                 if staticRendering {
@@ -681,23 +758,43 @@ struct ChangesScreen: View {
 
                 HStack(spacing: Theme.Space.s) {
                     if !preferences.advanced, workingCopy.pushPlan != nil || session.analysis?.info.remoteURL != nil {
-                        Button("Commit") { workingCopy.commitStaged() }
-                            .buttonStyle(SecondaryButtonStyle())
-                            .frame(maxWidth: .infinity)
-                            .disabled(!canCommit)
-                        Button("Commit & Push") { workingCopy.commitAndPush() }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .frame(maxWidth: .infinity)
-                            .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(!canCommit)
-                    } else {
-                        Button("Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
-                            workingCopy.commitStaged()
+                        Button(amending ? "Amend" : "Commit") {
+                            workingCopy.commitStaged(allowPublishedAmend: preferences.advanced)
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .frame(maxWidth: .infinity)
+                        .disabled(!canCommit)
+                        Button(amending ? "Amend & Push" : "Commit & Push") {
+                            workingCopy.commitAndPush(allowPublishedAmend: preferences.advanced)
                         }
                         .buttonStyle(PrimaryButtonStyle())
                         .frame(maxWidth: .infinity)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(!canCommit)
+                    } else {
+                        Button(amending
+                               ? "Amend Commit"
+                               : "Commit \(state.staged.count) file\(state.staged.count == 1 ? "" : "s")") {
+                            workingCopy.commitStaged(allowPublishedAmend: preferences.advanced)
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .frame(maxWidth: .infinity)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!canCommit)
+                    }
+                }
+            } else if canAmend || canUndo {
+                HStack(spacing: Theme.Space.s) {
+                    if canAmend {
+                        Button("Amend last commit") { workingCopy.toggleAmend() }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            .disabled(workingCopy.writeInFlight)
+                    }
+                    Spacer()
+                    if canUndo {
+                        Button("Undo last commit") { workingCopy.confirmUndoLastCommit() }
+                            .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                            .disabled(workingCopy.writeInFlight)
                     }
                 }
             }
@@ -818,12 +915,29 @@ private struct ConflictFileRow: View {
 
     @State private var expanded = false
     @State private var versions: GitRepository.ConflictFileVersions?
+    @State private var blocks: [ConflictBlock] = []
     @State private var loading = false
 
     private var fileURL: URL? {
         guard let root else { return nil }
         let url = root.appendingPathComponent(file.path)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func loadConflictData() {
+        guard let root else { return }
+        loading = true
+        let path = file.path
+        Task.detached(priority: .userInitiated) {
+            let repo = GitRepository(url: root)
+            let loadedVersions = try? repo.conflictVersions(path: path)
+            let loadedBlocks = (try? repo.conflictBlocks(path: path)) ?? []
+            await MainActor.run {
+                self.versions = loadedVersions
+                self.blocks = loadedBlocks
+                self.loading = false
+            }
+        }
     }
 
     var body: some View {
@@ -840,15 +954,13 @@ private struct ConflictFileRow: View {
             }
 
             HStack(spacing: Theme.Space.xs) {
-                if preferences.advanced {
-                    Button(expanded ? "Hide Sides" : "Sides") {
-                        expanded.toggle()
-                    }
-                    .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                Button(expanded ? "Hide Blocks" : (preferences.advanced ? "Blocks" : "Resolve")) {
+                    expanded.toggle()
                 }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
                 if let url = fileURL {
                     Button("Open") {
-                        openInEditor(url, line: versions?.firstConflictLine)
+                        openInEditor(url, line: blocks.first?.startLine ?? versions?.firstConflictLine)
                     }
                     .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
                 }
@@ -870,11 +982,17 @@ private struct ConflictFileRow: View {
                 .disabled(workingCopy.writeInFlight)
             }
 
-            if preferences.advanced && expanded {
-                if loading && versions == nil {
+            if expanded {
+                if loading && versions == nil && blocks.isEmpty {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Loading conflict stages…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                        Text("Loading conflict sections…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+                    }
+                } else if !blocks.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.Space.s) {
+                        ForEach(blocks) { block in
+                            conflictBlockCard(block)
+                        }
                     }
                 } else if let versions {
                     VStack(alignment: .leading, spacing: Theme.Space.s) {
@@ -889,16 +1007,59 @@ private struct ConflictFileRow: View {
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .contextMenu { PathActions(path: file.path) }
         .task(id: expanded) {
-            guard expanded, versions == nil, let root else { return }
-            loading = true
-            let path = file.path
-            let loaded = await Task.detached(priority: .userInitiated) {
-                try? GitRepository(url: root).conflictVersions(path: path)
-            }.value
-            guard !Task.isCancelled else { return }
-            versions = loaded
-            loading = false
+            guard expanded else { return }
+            loadConflictData()
         }
+    }
+
+    private func conflictBlockCard(_ block: ConflictBlock) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            HStack(spacing: Theme.Space.xs) {
+                Text("Conflict \(block.id + 1) · Line \(block.startLine)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.inkSoft)
+                Spacer()
+                Button(preferences.advanced ? "Ours" : "Mine") {
+                    workingCopy.resolveConflictBlock(path: file.path, blockIndex: block.id, choice: .ours) {
+                        loadConflictData()
+                        session.inspector.reloadInlineDiff()
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                .disabled(workingCopy.writeInFlight)
+
+                Button(preferences.advanced ? "Theirs" : "Incoming") {
+                    workingCopy.resolveConflictBlock(path: file.path, blockIndex: block.id, choice: .theirs) {
+                        loadConflictData()
+                        session.inspector.reloadInlineDiff()
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                .disabled(workingCopy.writeInFlight)
+
+                Button("Both") {
+                    workingCopy.resolveConflictBlock(path: file.path, blockIndex: block.id, choice: .both) {
+                        loadConflictData()
+                        session.inspector.reloadInlineDiff()
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle()).controlSize(.mini)
+                .disabled(workingCopy.writeInFlight)
+            }
+            conflictSidePreview(
+                title: block.oursLabel.isEmpty ? "Current changes" : block.oursLabel,
+                content: block.oursText,
+                tint: Theme.accent
+            )
+            conflictSidePreview(
+                title: block.theirsLabel.isEmpty ? "Incoming changes" : block.theirsLabel,
+                content: block.theirsText,
+                tint: Theme.tint(.violet)
+            )
+        }
+        .padding(Theme.Space.s)
+        .background(Theme.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.hairline))
     }
 
     private func conflictSidePreview(title: String, content: String?, tint: Color) -> some View {

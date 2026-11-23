@@ -60,6 +60,16 @@ public struct GitViewCommands: Commands {
             .keyboardShortcut("o")
             .disabled(session == nil)
 
+            Button("Clone Repository…") {
+                session?.navigation.isCloneSheetPresented = true
+            }
+            .disabled(session == nil)
+
+            Button("New Repository…") {
+                session?.navigation.isInitSheetPresented = true
+            }
+            .disabled(session == nil)
+
             Menu("Open Recent") {
                 ForEach(RecentRepositories.all(), id: \.path) { url in
                     Button(url.lastPathComponent) { session?.open(url: url) }

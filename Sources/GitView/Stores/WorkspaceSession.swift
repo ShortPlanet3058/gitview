@@ -336,6 +336,7 @@ public final class WorkspaceSession {
         )
         risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: false)
         workingCopy.refreshPushPlan()
+        workingCopy.refreshHeadCommitInfo()
     }
 
     func cancelLoading() {
@@ -445,6 +446,7 @@ public final class WorkspaceSession {
         )
         risk.updateInBackground(analysis: analysis, unitsByID: unitsByID, isComplete: true)
         workingCopy.refreshPushPlan()
+        workingCopy.refreshHeadCommitInfo()
 
         if let term = navigation.pendingSearch {
             navigation.pendingSearch = nil
@@ -596,6 +598,7 @@ public final class WorkspaceSession {
         guard case .loaded(let analysis) = state, !isRefreshing, !workingCopy.writeInFlight else { return }
         workingCopy.refreshWorkingState()
         workingCopy.refreshPushPlan()
+        workingCopy.refreshHeadCommitInfo()
 
         guard let knownHead = analysis.commits.first?.sha else { return }
         let root = analysis.root

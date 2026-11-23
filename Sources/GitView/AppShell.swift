@@ -13,6 +13,7 @@ struct AppShell: View {
 
     var body: some View {
         @Bindable var workingCopy = workingCopy
+        @Bindable var navigation = session.navigation
         let clampedSidebar = min(max(sidebarWidth, 200), 320)
         let clampedDetail = min(max(detailWidth, 340), 620)
         HStack(spacing: 0) {
@@ -91,6 +92,21 @@ struct AppShell: View {
                          primaryButton: .destructive(Text(confirmation.confirmLabel),
                                                      action: confirmation.perform),
                          secondaryButton: .cancel())
+        }
+        .alert("Branch has diverged", isPresented: $workingCopy.divergedPullPrompt) {
+            Button("Rebase my commits on top") { workingCopy.pullRebase() }
+            Button("Merge incoming changes") { workingCopy.pullMerge() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your local branch and its remote tracking branch have different commits, so a fast-forward pull isn't possible.")
+        }
+        .sheet(isPresented: $navigation.isCloneSheetPresented) {
+            CloneRepositorySheet()
+                .environment(session)
+        }
+        .sheet(isPresented: $navigation.isInitSheetPresented) {
+            InitRepositorySheet()
+                .environment(session)
         }
     }
 
@@ -1019,6 +1035,14 @@ struct WelcomeScreen: View {
                 Button("Choose a repository…") { chooseRepository(into: session) }
                     .buttonStyle(PrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
+                HStack(spacing: Theme.Space.s) {
+                    Button("Clone URL…") { session.navigation.isCloneSheetPresented = true }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .controlSize(.small)
+                    Button("New Repository…") { session.navigation.isInitSheetPresented = true }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .controlSize(.small)
+                }
                 Text("or drop a project folder here").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                 ModeSwitch()
                 Text(session.preferences.advanced
@@ -1234,5 +1258,187 @@ struct KeyboardShortcutsOverlay: View {
 
     private func dismiss() {
         session.navigation.isShortcutsSheetPresented = false
+    }
+}
+
+struct CloneRepositorySheet: View {
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(\.dismiss) private var dismiss
+    @State private var remoteURL = ""
+    @State private var parentFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Developer")
+    @State private var folderName = ""
+    @State private var inFlight = false
+    @State private var errorMessage: String?
+
+    private var inferredName: String {
+        let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let last = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        return last.hasSuffix(".git") ? String(last.dropLast(4)) : last
+    }
+
+    private var effectiveName: String {
+        let manual = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return manual.isEmpty ? inferredName : manual
+    }
+
+    private var destinationURL: URL {
+        parentFolder.appendingPathComponent(effectiveName.isEmpty ? "Repository" : effectiveName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
+            Text("Clone Repository").font(Theme.Text.title).foregroundStyle(Theme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Repository URL").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                TextField("https://github.com/owner/repo.git", text: $remoteURL)
+                    .textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Folder name").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                TextField(inferredName.isEmpty ? "repo" : inferredName, text: $folderName)
+                    .textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Save inside").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                HStack(spacing: Theme.Space.s) {
+                    Text(destinationURL.path)
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Choose…") { pickParentFolder() }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.critical)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if inFlight {
+                    ProgressView().controlSize(.small)
+                    Text("Cloning…").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(inFlight)
+                Button("Clone") { performClone() }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || effectiveName.isEmpty || inFlight)
+            }
+        }
+        .padding(Theme.Space.xl)
+        .frame(width: 440)
+        .background(Theme.surface)
+    }
+
+    private func pickParentFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url {
+            parentFolder = url
+        }
+    }
+
+    private func performClone() {
+        let urlString = remoteURL
+        let destination = destinationURL
+        inFlight = true
+        errorMessage = nil
+        Task {
+            do {
+                let root = try await GitRepository.clone(remoteURL: urlString, into: destination)
+                await MainActor.run {
+                    inFlight = false
+                    dismiss()
+                    session.open(url: root)
+                }
+            } catch {
+                await MainActor.run {
+                    inFlight = false
+                    errorMessage = "\(error)"
+                }
+            }
+        }
+    }
+}
+
+struct InitRepositorySheet: View {
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(\.dismiss) private var dismiss
+    @State private var folderURL: URL?
+    @State private var initialBranch = "main"
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
+            Text("New Repository").font(Theme.Text.title).foregroundStyle(Theme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Project folder").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                HStack(spacing: Theme.Space.s) {
+                    Text(folderURL?.path ?? "Choose a folder to initialize…")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(folderURL == nil ? Theme.inkMuted : Theme.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Choose…") { pickFolder() }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Default branch").font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
+                TextField("main", text: $initialBranch)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.critical)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Create Repository") { createRepo() }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(folderURL == nil)
+            }
+        }
+        .padding(Theme.Space.xl)
+        .frame(width: 420)
+        .background(Theme.surface)
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        if panel.runModal() == .OK {
+            folderURL = panel.url
+        }
+    }
+
+    private func createRepo() {
+        guard let folderURL else { return }
+        do {
+            let root = try GitRepository.initRepository(at: folderURL, initialBranch: initialBranch)
+            dismiss()
+            session.open(url: root)
+        } catch {
+            errorMessage = "\(error)"
+        }
     }
 }

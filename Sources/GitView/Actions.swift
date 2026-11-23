@@ -170,6 +170,7 @@ struct PathActions: View {
 struct CommitActions: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
+    @Environment(WorkingCopyStore.self) private var workingCopy
     let commit: Commit
 
     var body: some View {
@@ -184,6 +185,17 @@ struct CommitActions: View {
                 session.navigation.compareTo = selected
                 session.navigation.runComparison(in: root)
             }
+        }
+        Divider()
+        Button("Revert Commit…") {
+            workingCopy.confirmRevertCommit(commit)
+        }
+        .disabled(workingCopy.writeInFlight)
+        if preferences.advanced {
+            Button("Cherry-pick onto Current Branch") {
+                workingCopy.cherryPick(commit: commit)
+            }
+            .disabled(workingCopy.writeInFlight)
         }
         Divider()
         if preferences.advanced {

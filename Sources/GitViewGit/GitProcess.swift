@@ -78,6 +78,7 @@ public enum GitProcess {
         // Keep git's output stable regardless of the user's global config.
         var env = ProcessInfo.processInfo.environment
         env["GIT_PAGER"] = "cat"
+        env["GIT_EDITOR"] = "true"
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["LC_ALL"] = "C"
         process.environment = env

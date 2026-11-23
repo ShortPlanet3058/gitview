@@ -9,7 +9,14 @@ struct CommitDetailPanel: View {
     @Environment(AppPreferences.self) private var preferences
     @Environment(RiskStore.self) private var risk
     @Environment(InspectorStore.self) private var inspector
+    @Environment(WorkingCopyStore.self) private var workingCopy
     let commit: Commit
+
+    @State private var showingBranchPopover = false
+    @State private var newBranchName = ""
+    @State private var showingTagPopover = false
+    @State private var newTagName = ""
+    @State private var newTagMessage = ""
 
     private var detail: CommitDetail? {
         inspector.commitDetails[commit.sha]
@@ -97,15 +104,51 @@ struct CommitDetailPanel: View {
                     }
                 }
             }
-            if preferences.advanced || session.analysis?.info.remoteWebURL != nil {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Theme.Space.s) {
+                    Button("Revert…") {
+                        workingCopy.confirmRevertCommit(commit)
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+
                     if preferences.advanced {
+                        Button("Cherry-pick") {
+                            workingCopy.cherryPick(commit: commit)
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                    }
+
+                    Button("New branch…") {
+                        newBranchName = ""
+                        showingBranchPopover = true
+                    }
+                    .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                    .disabled(workingCopy.writeInFlight)
+                    .popover(isPresented: $showingBranchPopover, arrowEdge: .bottom) {
+                        newBranchHerePopover
+                    }
+
+                    if preferences.advanced {
+                        Button("New tag…") {
+                            newTagName = ""
+                            newTagMessage = ""
+                            showingTagPopover = true
+                        }
+                        .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
+                        .disabled(workingCopy.writeInFlight)
+                        .popover(isPresented: $showingTagPopover, arrowEdge: .bottom) {
+                            newTagHerePopover
+                        }
+
                         Button("Copy SHA") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(commit.sha, forType: .string)
                         }
                         .buttonStyle(SecondaryButtonStyle()).controlSize(.small)
                     }
+
                     if let web = session.analysis?.info.remoteWebURL {
                         Button("View on \(web.host ?? "remote")") {
                             NSWorkspace.shared.open(web.appendingPathComponent("commit").appendingPathComponent(commit.sha))
@@ -118,6 +161,54 @@ struct CommitDetailPanel: View {
         .padding(Theme.Space.l).padding(.top, Theme.Space.xl)
         .background(Theme.raised)
         .overlay(alignment: .bottom) { HairlineDivider() }
+    }
+
+    private var newBranchHerePopover: some View {
+        let trimmed = newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: Theme.Space.m) {
+            Text("Create Branch at \(String(commit.sha.prefix(7)))")
+                .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            TextField("feature/branch-name", text: $newBranchName)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { showingBranchPopover = false }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Create & Switch") {
+                    workingCopy.createBranch(name: trimmed, startPoint: commit.sha)
+                    showingBranchPopover = false
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(trimmed.isEmpty || workingCopy.writeInFlight)
+            }
+        }
+        .padding(Theme.Space.l)
+        .frame(width: 280)
+    }
+
+    private var newTagHerePopover: some View {
+        let trimmed = newTagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: Theme.Space.m) {
+            Text("Create Tag at \(String(commit.sha.prefix(7)))")
+                .font(Theme.Text.heading).foregroundStyle(Theme.ink)
+            TextField("v1.0.0", text: $newTagName)
+                .textFieldStyle(.roundedBorder)
+            TextField("Annotation message (optional)", text: $newTagMessage)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { showingTagPopover = false }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Create Tag") {
+                    workingCopy.createTag(name: trimmed, target: commit.sha, message: newTagMessage)
+                    showingTagPopover = false
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(trimmed.isEmpty || workingCopy.writeInFlight)
+            }
+        }
+        .padding(Theme.Space.l)
+        .frame(width: 300)
     }
 
     private func bodyCard(_ messageBody: String) -> some View {
