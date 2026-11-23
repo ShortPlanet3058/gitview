@@ -262,4 +262,81 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertTrue(hull.contains(CGPoint(x: 0, y: 0)))
         XCTAssertTrue(hull.contains(CGPoint(x: 10, y: 10)))
     }
+
+    @MainActor
+    func testRiskStoreUpdateInBackgroundPopulatesRowsAndDefersGraphLayout() async throws {
+        let (suite, defaults) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AppPreferences(defaults: defaults)
+        prefs.minSharedCommits = 2
+        let store = RiskStore(preferences: prefs)
+        let unitA = CodeUnit(filePath: "Sources/A/One.swift", name: "one()", kind: .function,
+                             lineRange: 1...10, complexity: 5, nestingDepth: 1, lineCount: 10, language: "swift")
+        let unitB = CodeUnit(filePath: "Sources/B/Two.swift", name: "two()", kind: .function,
+                             lineRange: 1...10, complexity: 7, nestingDepth: 2, lineCount: 10, language: "swift")
+        let now = Date()
+        let commits = [0, 1].map { idx in
+            Commit(
+                sha: "sha\(idx)",
+                author: "Alice",
+                date: now.addingTimeInterval(TimeInterval(-idx * 3600)),
+                subject: "Shared edit \(idx)",
+                fileChanges: [
+                    FileChange(path: unitA.filePath, hunks: [Hunk(oldStart: 1, oldLineCount: 1, newStart: 1, newLineCount: 2)]),
+                    FileChange(path: unitB.filePath, hunks: [Hunk(oldStart: 1, oldLineCount: 1, newStart: 1, newLineCount: 2)]),
+                ]
+            )
+        }
+        let files = [
+            FileInventory.TrackedFile(path: unitA.filePath, bytes: 200, modified: now),
+            FileInventory.TrackedFile(path: unitB.filePath, bytes: 250, modified: now),
+        ]
+        var analysis = makeAnalysis(units: [unitA, unitB], files: files)
+        analysis = RepositoryAnalysis(
+            root: analysis.root,
+            info: analysis.info,
+            branches: analysis.branches,
+            tags: analysis.tags,
+            commits: commits,
+            allUnits: [unitA, unitB],
+            filesParsed: 2,
+            filesFailed: [],
+            generatedFiles: [],
+            historyDuration: 0,
+            parseDuration: 0,
+            factsDuration: 0,
+            attribution: AttributionStats(matchedHunks: 2, unmatchedHunks: 0, unresolvedHunks: 0),
+            source: .cached,
+            workingState: .clean
+        )
+
+        store.updateInBackground(analysis: analysis, unitsByID: [unitA.id: unitA, unitB.id: unitB], isComplete: true)
+        XCTAssertTrue(store.analysisRebuildInProgress)
+
+        let deadline = Date().addingTimeInterval(3.0)
+        while store.analysisRebuildInProgress && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertFalse(store.analysisRebuildInProgress)
+        XCTAssertEqual(store.rows.count, 2)
+        XCTAssertNotNil(store.health)
+        XCTAssertNotNil(store.fileTree)
+        XCTAssertEqual(store.couplingRows.count, 1)
+
+        // Graph layout must remain deferred while in list mode.
+        XCTAssertNil(store.graph)
+        XCTAssertFalse(store.graphLayoutInProgress)
+
+        // Switching to graph mode triggers lazy graph build & layout.
+        store.couplingViewMode = .graph
+        XCTAssertNotNil(store.graph)
+        let graphDeadline = Date().addingTimeInterval(3.0)
+        while store.graphLayoutInProgress && Date() < graphDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(store.graphLayoutInProgress)
+        XCTAssertEqual(store.graphPositions.count, 2)
+    }
 }

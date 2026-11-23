@@ -64,7 +64,14 @@ struct CouplingScreen: View {
     @ViewBuilder
     private var graph: some View {
         @Bindable var navigation = navigation
-        if let graph = risk.graph, !graph.nodes.isEmpty {
+        if risk.graphLayoutInProgress && risk.graph == nil {
+            VStack(spacing: Theme.Space.s) {
+                ProgressView().controlSize(.small)
+                Text("Preparing graph layout…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { risk.ensureGraphLayoutIfNeeded() }
+        } else if let graph = risk.graph, !graph.nodes.isEmpty {
             CouplingGraphView(
                 graph: graph,
                 positions: risk.graphPositions,
@@ -76,9 +83,16 @@ struct CouplingScreen: View {
             )
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.hairline))
-        } else {
+        } else if risk.couplingRows.isEmpty {
             Text("No pairs in this scope to draw.").font(Theme.Text.body).foregroundStyle(Theme.inkMuted)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: Theme.Space.s) {
+                ProgressView().controlSize(.small)
+                Text("Laying out nodes…").font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { risk.ensureGraphLayoutIfNeeded() }
         }
     }
 }

@@ -177,7 +177,10 @@ extension GitRepository {
     /// Reads the current checkout state. Cheap — a handful of instant commands — so it is
     /// refreshed on every look rather than cached.
     public func workingState() throws -> WorkingState {
-        let root = try validate()
+        try workingState(validatedRoot: try validate())
+    }
+
+    public func workingState(validatedRoot root: URL) throws -> WorkingState {
         let porcelain = try GitProcess.capture(
             arguments: ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"], in: root)
         let stashes = (try? GitProcess.capture(
@@ -188,10 +191,17 @@ extension GitRepository {
 
     /// Detects a half-finished operation from the marker files git leaves in `.git`.
     static func operation(in root: URL) -> WorkingState.Operation? {
-        let gitDir = (try? GitProcess.capture(arguments: ["rev-parse", "--absolute-git-dir"], in: root))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let gitDir, !gitDir.isEmpty else { return nil }
-        let base = URL(fileURLWithPath: gitDir)
+        let directGitDir = root.appendingPathComponent(".git", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        let base: URL
+        if FileManager.default.fileExists(atPath: directGitDir.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            base = directGitDir
+        } else {
+            guard let resolved = (try? GitProcess.capture(arguments: ["rev-parse", "--absolute-git-dir"], in: root))?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !resolved.isEmpty else { return nil }
+            base = URL(fileURLWithPath: resolved)
+        }
         let exists = { (name: String) in FileManager.default.fileExists(atPath: base.appendingPathComponent(name).path) }
         if exists("rebase-merge") || exists("rebase-apply") { return .rebase }
         if exists("CHERRY_PICK_HEAD") { return .cherryPick }

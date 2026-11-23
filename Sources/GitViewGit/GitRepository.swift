@@ -11,12 +11,24 @@ public struct GitRepository: Sendable {
 
     /// Verifies the path is inside a work tree and returns the repository root.
     public func validate() throws -> URL {
-        let inside = try GitProcess.capture(arguments: ["rev-parse", "--is-inside-work-tree"], in: url)
-        guard inside.trimmingCharacters(in: .whitespacesAndNewlines) == "true" else {
+        let output: String
+        do {
+            output = try GitProcess.capture(
+                arguments: ["rev-parse", "--is-inside-work-tree", "--show-toplevel"],
+                in: url
+            )
+        } catch let GitError.failed(_, _, stderr)
+            where stderr.contains("not a git repository") || stderr.contains("must be run in a work tree") {
             throw GitError.notARepository(url.path)
         }
-        let root = try GitProcess.capture(arguments: ["rev-parse", "--show-toplevel"], in: url)
-        return URL(fileURLWithPath: root.trimmingCharacters(in: .whitespacesAndNewlines))
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard lines.count >= 2, lines[0] == "true" else {
+            throw GitError.notARepository(url.path)
+        }
+        return URL(fileURLWithPath: lines[1])
     }
 
     /// One repo-wide `git log` covering the whole reachable history of HEAD.

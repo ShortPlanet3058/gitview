@@ -63,7 +63,10 @@ extension GitRepository {
     /// commit's subject. All 188 of swift-nio's tags are lightweight, so this is the normal
     /// case, not the exception.
     public func tags(limit: Int = 1000) throws -> [TagInfo] {
-        let root = try validate()
+        try tags(validatedRoot: try validate(), limit: limit)
+    }
+
+    public func tags(validatedRoot root: URL, limit: Int = 1000) throws -> [TagInfo] {
         let format = [
             "%(refname:short)", "%(objecttype)", "%(objectname)", "%(*objectname)",
             "%(creatordate:iso-strict)", "%(taggername)", "%(contents:subject)",
@@ -101,9 +104,13 @@ extension GitRepository {
 
     /// The nearest reachable tag on HEAD and how many commits sit ahead of it.
     public func unreleasedSummary() -> UnreleasedSummary? {
-        guard let root = try? validate(),
-              let output = try? GitProcess.capture(
-                  arguments: ["describe", "--tags", "--long", "--match", "*", "HEAD"], in: root)
+        guard let root = try? validate() else { return nil }
+        return unreleasedSummary(validatedRoot: root)
+    }
+
+    public func unreleasedSummary(validatedRoot root: URL) -> UnreleasedSummary? {
+        guard let output = try? GitProcess.capture(
+            arguments: ["describe", "--tags", "--long", "--match", "*", "HEAD"], in: root)
         else { return nil }
         return TagParser.parseDescribeLong(output)
     }
