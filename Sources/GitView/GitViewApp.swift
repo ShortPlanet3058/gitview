@@ -26,7 +26,38 @@ public extension View {
     }
 }
 
+@MainActor
+final class ExternalOpenRouter {
+    static let shared = ExternalOpenRouter()
+    static let openNotification = Notification.Name("GitViewOpenRepositoryURL")
+
+    private var pendingURL: URL?
+
+    private init() {}
+
+    func enqueue(_ urls: [URL]) {
+        guard let first = urls.first, let target = Self.repositoryDirectoryURL(from: first) else { return }
+        pendingURL = target
+        NotificationCenter.default.post(name: Self.openNotification, object: nil)
+    }
+
+    func consumePendingURL() -> URL? {
+        defer { pendingURL = nil }
+        return pendingURL
+    }
+
+    static func repositoryDirectoryURL(from url: URL) -> URL? {
+        let standardized = url.standardizedFileURL
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: standardized.path, isDirectory: &isDir) {
+            return isDir.boolValue ? standardized : standardized.deletingLastPathComponent()
+        }
+        return standardized
+    }
+}
+
 public struct WorkspaceWindowView: View {
+    @Environment(\.controlActiveState) private var controlActiveState
     @State private var session: WorkspaceSession
 
     public init(preferences: AppPreferences) {
@@ -40,6 +71,25 @@ public struct WorkspaceWindowView: View {
         AppShell()
             .withWorkspaceEnvironment(session)
             .focusedSceneValue(\.workspaceSession, session)
+            .onAppear {
+                if let url = ExternalOpenRouter.shared.consumePendingURL() {
+                    session.open(url: url)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: ExternalOpenRouter.openNotification)) { _ in
+                if controlActiveState == .key {
+                    if let url = ExternalOpenRouter.shared.consumePendingURL() {
+                        session.open(url: url)
+                    }
+                } else {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(40))
+                        if let url = ExternalOpenRouter.shared.consumePendingURL() {
+                            session.open(url: url)
+                        }
+                    }
+                }
+            }
     }
 }
 
@@ -104,6 +154,17 @@ public struct GitViewCommands: Commands {
 
             Toggle("Advanced Mode", isOn: $preferences.advanced)
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button("Larger Code Font") { preferences.increaseCodeFontSize() }
+                .keyboardShortcut("=", modifiers: .command)
+
+            Button("Smaller Code Font") { preferences.decreaseCodeFontSize() }
+                .keyboardShortcut("-", modifiers: .command)
+
+            Button("Reset Code Font Size") { preferences.resetCodeFontSize() }
+                .keyboardShortcut("0", modifiers: .command)
         }
 
         CommandGroup(after: .textEditing) {
@@ -170,6 +231,10 @@ public final class GitViewAppDelegate: NSObject, NSApplicationDelegate {
         guard Bundle.main.bundleIdentifier == nil else { return }
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    public func application(_ application: NSApplication, open urls: [URL]) {
+        ExternalOpenRouter.shared.enqueue(urls)
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

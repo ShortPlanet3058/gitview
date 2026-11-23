@@ -1183,6 +1183,9 @@ struct KeyboardShortcutsOverlay: View {
             ("⌘⏎", "Commit included changes"),
         ]),
         ShortcutGroup(id: "app", title: "Application", items: [
+            ("⌘=", "Larger code & diff font"),
+            ("⌘−", "Smaller code & diff font"),
+            ("⌘0", "Reset code & diff font"),
             ("⌘O", "Open another repository"),
             ("⌘,", "Open Settings"),
             ("⌘/", "Show or hide this shortcuts guide"),

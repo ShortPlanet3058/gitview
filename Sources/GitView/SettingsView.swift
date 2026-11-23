@@ -30,6 +30,38 @@ public struct SettingsView: View {
                     }
                 }
 
+                Card {
+                    VStack(alignment: .leading, spacing: Theme.Space.m) {
+                        CardHeader(title: "Appearance")
+                        SegmentPicker(
+                            options: AppearanceMode.allCases.map { ($0, $0.title) },
+                            selection: $preferences.appearanceMode
+                        )
+                        HStack(spacing: Theme.Space.m) {
+                            Text("Code & diff font size")
+                                .font(Theme.Text.body)
+                                .foregroundStyle(Theme.ink)
+                            Spacer()
+                            Stepper(
+                                "\(Int(preferences.codeFontSize)) pt",
+                                value: $preferences.codeFontSize,
+                                in: AppPreferences.codeFontSizeRange,
+                                step: 1
+                            )
+                            .font(Theme.Text.body.monospacedDigit())
+                            Button("Reset") {
+                                preferences.resetCodeFontSize()
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .controlSize(.small)
+                            .disabled(preferences.codeFontSize == AppPreferences.defaultCodeFontSize)
+                        }
+                        Text("Use ⌘= / ⌘− / ⌘0 anytime to adjust code and diff text size.")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(Theme.inkMuted)
+                    }
+                }
+
                 if preferences.advanced {
                     Card {
                         VStack(alignment: .leading, spacing: Theme.Space.m) {

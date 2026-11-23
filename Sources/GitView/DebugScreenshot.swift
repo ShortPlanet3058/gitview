@@ -57,9 +57,16 @@ enum DebugScreenshot {
             .environment(\.staticRendering, true)
             .frame(width: 1380, height: height)
             .background(Theme.page)
-        let appearance = NSApplication.shared.effectiveAppearance
-        let scheme: ColorScheme = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
-        appearance.performAsCurrentDrawingAppearance {
+        let systemAppearance = NSApplication.shared.effectiveAppearance
+        let scheme: ColorScheme
+        switch session.preferences.appearanceMode {
+        case .light: scheme = .light
+        case .dark: scheme = .dark
+        case .system:
+            scheme = systemAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
+        }
+        let targetAppearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua) ?? systemAppearance
+        targetAppearance.performAsCurrentDrawingAppearance {
             let renderer = ImageRenderer(content: content.environment(\.colorScheme, scheme))
             renderer.scale = 2
             guard let image = renderer.nsImage,
