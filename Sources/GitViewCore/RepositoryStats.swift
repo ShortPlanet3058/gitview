@@ -141,13 +141,71 @@ public enum ChangeFrequency {
 public struct RepositoryHealth: Hashable, Sendable {
     public enum Status: Hashable, Sendable { case good, warning, bad }
 
+    public struct Band: Hashable, Sendable, Identifiable {
+        public var id: String { label }
+        public let label: String
+        public let rangeText: String
+        public let minScore: Int
+        public let maxScore: Int
+        public let status: Status
+
+        public func contains(_ score: Int) -> Bool {
+            score >= minScore && score <= maxScore
+        }
+    }
+
+    public static let bands: [Band] = [
+        Band(label: "Good", rangeText: "80–100", minScore: 80, maxScore: 100, status: .good),
+        Band(label: "Fair", rangeText: "60–79", minScore: 60, maxScore: 79, status: .warning),
+        Band(label: "Needs attention", rangeText: "<60", minScore: 0, maxScore: 59, status: .bad),
+    ]
+
     public struct Item: Hashable, Sendable, Identifiable {
-        public var id: String { title }
+        public enum Check: String, Hashable, Sendable, CaseIterable {
+            case recentActivity
+            case activeContributors
+            case branchHygiene
+            case largeFiles
+            case complexCodeChurn
+
+            public var name: String {
+                switch self {
+                case .recentActivity: return "Recent activity"
+                case .activeContributors: return "Active contributors"
+                case .branchHygiene: return "Branch hygiene"
+                case .largeFiles: return "Large files"
+                case .complexCodeChurn: return "Complex code under change"
+                }
+            }
+        }
+
+        public var id: String { check.rawValue }
+        public let check: Check
         public let title: String
         public let detail: String
+        public let criteria: String
         public let status: Status
         public let points: Int
         public let maxPoints: Int
+
+        public var fraction: Double {
+            maxPoints > 0 ? Double(points) / Double(maxPoints) : 0
+        }
+
+        public var pointsText: String {
+            "\(points)/\(maxPoints)"
+        }
+
+        public init(check: Check, title: String, detail: String, criteria: String,
+                    status: Status, points: Int, maxPoints: Int) {
+            self.check = check
+            self.title = title
+            self.detail = detail
+            self.criteria = criteria
+            self.status = status
+            self.points = points
+            self.maxPoints = maxPoints
+        }
     }
 
     /// A function at or above this many decision points counts as complex. Ten, not twenty:
@@ -194,6 +252,18 @@ public struct RepositoryHealth: Hashable, Sendable {
     public let score: Int
     public let items: [Item]
 
+    public var maxScore: Int {
+        items.reduce(0) { $0 + $1.maxPoints }
+    }
+
+    public var bandStatus: Status {
+        score >= 80 ? .good : score >= 60 ? .warning : .bad
+    }
+
+    public var pointsEquation: String {
+        items.map { "\($0.points)" }.joined(separator: " + ")
+    }
+
     public var label: String {
         switch score {
         case 80...: return "Good"
@@ -224,8 +294,10 @@ public struct RepositoryHealth: Hashable, Sendable {
         default: activityPoints = 0
         }
         items.append(Item(
+            check: .recentActivity,
             title: "Recent activity",
             detail: inputs.lastCommit.map { "Last commit \(RiskExplanation.relative($0, now: inputs.now))" } ?? "No commits",
+            criteria: "≤7d = 25 · ≤30d = 20 · ≤90d = 12 · ≤1y = 5 · >1y = 0",
             status: activityPoints >= 20 ? .good : activityPoints >= 5 ? .warning : .bad,
             points: activityPoints, maxPoints: 25))
 
@@ -239,9 +311,11 @@ public struct RepositoryHealth: Hashable, Sendable {
         default: contributorPoints = 0
         }
         items.append(Item(
+            check: .activeContributors,
             title: "Active contributors",
             detail: inputs.activeAuthors == 1 ? "1 person in the last 90 days"
                                               : "\(inputs.activeAuthors) people in the last 90 days",
+            criteria: "Human authors (90d): 5+ = 20 · 3–4 = 15 · 2 = 10 · 1 = 5 · 0 = 0",
             status: contributorPoints >= 15 ? .good : contributorPoints >= 5 ? .warning : .bad,
             points: contributorPoints, maxPoints: 20))
 
@@ -267,16 +341,22 @@ public struct RepositoryHealth: Hashable, Sendable {
                 ? "\(inputs.localBranches) local branches, none stale" + remoteNote
                 : "\(inputs.staleLocalBranches) local unmerged for 90+ days" + remoteNote
         }
-        items.append(Item(title: branchTitle, detail: branchDetail,
-                          status: branchPoints >= 10 ? .good : branchPoints >= 5 ? .warning : .bad,
-                          points: branchPoints, maxPoints: 15))
+        items.append(Item(
+            check: .branchHygiene,
+            title: branchTitle,
+            detail: branchDetail,
+            criteria: "Stale local branches (>90d): 0 = 15 · 1–2 = 10 · 3–5 = 5 · 6+ = 0 (remote not scored)",
+            status: branchPoints >= 10 ? .good : branchPoints >= 5 ? .warning : .bad,
+            points: branchPoints, maxPoints: 15))
 
         // Large files — 15
         let largePoints = inputs.largeFiles == 0 ? 15 : inputs.largeFiles <= 2 ? 8 : 0
         items.append(Item(
+            check: .largeFiles,
             title: inputs.largeFiles == 0 ? "No large files" : "Some large files",
             detail: inputs.largeFiles == 0 ? "Nothing over 10 MB tracked"
                                            : "\(inputs.largeFiles) file\(inputs.largeFiles == 1 ? "" : "s") over 10 MB",
+            criteria: "Tracked files >10 MB: 0 = 15 · 1–2 = 8 · 3+ = 0",
             status: largePoints == 15 ? .good : largePoints > 0 ? .warning : .bad,
             points: largePoints, maxPoints: 15))
 
@@ -298,8 +378,10 @@ public struct RepositoryHealth: Hashable, Sendable {
             complexDetail = "No code analysed"
         }
         items.append(Item(
+            check: .complexCodeChurn,
             title: "Complex code under change",
             detail: complexDetail,
+            criteria: "2y churn in complex functions (≥10 branches): <3% = 25 · <6% = 18 · <12% = 10 · ≥12% = 4",
             status: complexPoints >= 18 ? .good : complexPoints >= 10 ? .warning : .bad,
             points: complexPoints, maxPoints: 25))
 

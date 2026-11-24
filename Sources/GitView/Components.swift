@@ -401,48 +401,158 @@ struct Avatar: View {
     }
 }
 
-/// Score ring with the label inside; colour follows the status palette and is always
-/// accompanied by the number and word.
+/// Score ring showing `score / maxScore`; colour follows the status palette and is always
+/// paired with text labels.
 struct HealthRing: View {
     let health: RepositoryHealth
     var size: CGFloat = 96
 
     private var color: Color {
-        health.score >= 80 ? Theme.good : health.score >= 60 ? Theme.warning : Theme.critical
+        Theme.color(for: health.bandStatus)
+    }
+
+    private var lineWidth: CGFloat {
+        max(6, size * 0.085)
     }
 
     var body: some View {
         ZStack {
-            Circle().stroke(Theme.wash, lineWidth: 8)
+            Circle().stroke(Theme.wash, lineWidth: lineWidth)
             Circle()
-                .trim(from: 0, to: CGFloat(health.score) / 100)
-                .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .trim(from: 0, to: CGFloat(health.score) / CGFloat(max(health.maxScore, 1)))
+                .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            VStack(spacing: 0) {
-                Text("\(health.score)").font(.system(size: size * 0.3, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text(health.label).font(.system(size: size * 0.11)).foregroundStyle(color)
+            VStack(spacing: -1) {
+                Text("\(health.score)")
+                    .font(.system(size: size * 0.30, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.ink)
+                Text("/ \(health.maxScore)")
+                    .font(.system(size: size * 0.125, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Theme.inkMuted)
             }
         }
         .frame(width: size, height: size)
-        .accessibilityLabel("Health \(health.score), \(health.label)")
+        .accessibilityLabel("Health \(health.score) out of \(health.maxScore), \(health.label)")
+    }
+}
+
+struct HealthPointsBadge: View {
+    let points: Int
+    let maxPoints: Int
+    let status: RepositoryHealth.Status
+    var compact = false
+
+    private var tint: Color { Theme.color(for: status) }
+
+    var body: some View {
+        HStack(spacing: compact ? 0 : 2) {
+            Text("\(points)")
+                .font(.system(size: compact ? 10.5 : 12, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Theme.ink)
+            Text(compact ? "/\(maxPoints)" : "/ \(maxPoints)")
+                .font(.system(size: compact ? 10.5 : 11, weight: .medium).monospacedDigit())
+                .foregroundStyle(Theme.inkSoft)
+        }
+        .padding(.horizontal, compact ? 5 : 7)
+        .padding(.vertical, compact ? 1.5 : 2)
+        .background(tint.opacity(0.14),
+                    in: RoundedRectangle(cornerRadius: compact ? 4 : Theme.Radius.chip, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: compact ? 4 : Theme.Radius.chip, style: .continuous)
+                .strokeBorder(tint.opacity(0.28), lineWidth: 1)
+        )
+        .fixedSize()
+    }
+}
+
+struct HealthProgressBar: View {
+    let fraction: Double
+    let tint: Color
+
+    var body: some View {
+        let clamped = min(max(fraction, 0), 1)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.wash)
+                if clamped > 0 {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(4, geometry.size.width * CGFloat(clamped)))
+                }
+            }
+        }
+        .frame(height: 5)
+    }
+}
+
+struct HealthScoreBandsView: View {
+    let score: Int
+
+    var body: some View {
+        FlowRow(spacing: Theme.Space.s) {
+            ForEach(RepositoryHealth.bands) { band in
+                let active = band.contains(score)
+                let tint = Theme.color(for: band.status)
+                HStack(spacing: 5) {
+                    Circle().fill(tint).frame(width: 6, height: 6)
+                    Text(band.rangeText)
+                        .font(.system(size: 10.5, weight: active ? .semibold : .medium).monospacedDigit())
+                        .foregroundStyle(active ? Theme.ink : Theme.inkMuted)
+                    Text(band.label)
+                        .font(.system(size: 10.5, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? Theme.ink : Theme.inkSoft)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(active ? tint.opacity(0.12) : Theme.wash,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                        .strokeBorder(active ? tint.opacity(0.35) : .clear, lineWidth: 1)
+                )
+            }
+        }
     }
 }
 
 struct HealthItemRow: View {
     let item: RepositoryHealth.Item
+
     var body: some View {
-        HStack(spacing: Theme.Space.s) {
-            Image(systemName: item.status == .good ? "checkmark.circle.fill"
-                  : item.status == .warning ? "exclamationmark.circle.fill" : "xmark.circle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.color(for: item.status))
-            Text(item.title).font(Theme.Text.body).foregroundStyle(Theme.ink)
-            Spacer()
-            Text(item.detail).font(Theme.Text.caption).foregroundStyle(Theme.inkSoft)
-                .lineLimit(2).multilineTextAlignment(.trailing)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: item.status == .good ? "checkmark.circle.fill"
+                      : item.status == .warning ? "exclamationmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.color(for: item.status))
+                    .frame(width: 15)
+                Text(item.title)
+                    .font(Theme.Text.bodyBold)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
+                if item.title != item.check.name {
+                    Text("· \(item.check.name)")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Theme.Space.s)
+                HealthPointsBadge(points: item.points, maxPoints: item.maxPoints, status: item.status)
+            }
+            HealthProgressBar(fraction: item.fraction, tint: Theme.color(for: item.status))
+                .padding(.leading, 23)
+            Text(item.detail)
+                .font(Theme.Text.caption.weight(.medium))
+                .foregroundStyle(Theme.inkSoft)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 23)
+            Text(item.criteria)
+                .font(Theme.Text.caption.monospacedDigit())
+                .foregroundStyle(Theme.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 23)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 8)
     }
 }
 

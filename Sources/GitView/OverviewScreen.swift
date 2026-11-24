@@ -54,7 +54,7 @@ struct OverviewScreen: View {
                     numbersRow(analysis, narrow: narrow).frame(height: numbers, alignment: .top).clipped()
                     LanguageStrip(inventory: analysis.info.inventory)
                         .frame(height: languages, alignment: .top).clipped()
-                    bottomRow(analysis, compact: layout.isCompact, narrow: narrow)
+                    bottomRow(analysis, compact: layout.isCompact, narrow: narrow, bottomHeight: bottom)
                         .frame(height: bottom, alignment: .top).clipped()
                 }
                 .padding(.horizontal, Theme.Space.xl)
@@ -142,15 +142,16 @@ struct OverviewScreen: View {
         }
     }
 
-    private func bottomRow(_ analysis: RepositoryAnalysis, compact: Bool, narrow: Bool) -> some View {
-        HStack(spacing: narrow ? Theme.Space.s : gap) {
+    private func bottomRow(_ analysis: RepositoryAnalysis, compact: Bool, narrow: Bool, bottomHeight: CGFloat) -> some View {
+        let showHealthDetails = bottomHeight >= 255
+        return HStack(spacing: narrow ? Theme.Space.s : gap) {
             if preferences.advanced {
-                HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
+                HealthTile(checks: compact ? 1 : 3, showRowDetails: showHealthDetails).frame(maxWidth: .infinity)
                 HotspotsTile(limit: compact ? 2 : 4).frame(maxWidth: .infinity)
                 ActivityTile().frame(maxWidth: .infinity)
             } else {
                 RecentHistoryTile(limit: compact ? 3 : 5).frame(maxWidth: .infinity)
-                HealthTile(checks: compact ? 1 : 3).frame(maxWidth: .infinity)
+                HealthTile(checks: compact ? 1 : 3, showRowDetails: showHealthDetails).frame(maxWidth: .infinity)
             }
         }
     }
@@ -175,7 +176,7 @@ struct OverviewScreen: View {
 
 // MARK: - The tile
 
-/// A fixed-size dashboard tile that opens the tab holding the full version of itself.
+/// A fixed-size dashboard tile that opens the tab or sheet holding the full version of itself.
 struct DashTile<Content: View>: View {
     @Environment(WorkspaceSession.self) private var session
     @Environment(AppPreferences.self) private var preferences
@@ -183,6 +184,8 @@ struct DashTile<Content: View>: View {
     var subtitle: String? = nil
     var info: String? = nil
     var destination: NavigationStore.Screen? = nil
+    var action: (() -> Void)? = nil
+    var helpText: String? = nil
     var needs: KeyPath<Readiness, Bool>? = nil
     var waitingFor: String = "the commit history"
     @ViewBuilder let content: Content
@@ -190,6 +193,7 @@ struct DashTile<Content: View>: View {
     @State private var hovering = false
 
     private var ready: Bool { needs.map { session.readiness[keyPath: $0] } ?? true }
+    private var isInteractive: Bool { destination != nil || action != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
@@ -201,7 +205,7 @@ struct DashTile<Content: View>: View {
                     Text(subtitle).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
                         .lineLimit(1)
                 }
-                if destination != nil {
+                if isInteractive {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(hovering ? Theme.accent : Theme.inkMuted.opacity(0.5))
@@ -218,12 +222,18 @@ struct DashTile<Content: View>: View {
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .cardSurface(hovered: hovering && destination != nil)
+        .cardSurface(hovered: hovering && isInteractive)
         .contentShape(Rectangle())
-        .onTapGesture { if let destination { session.show(destination) } }
+        .onTapGesture {
+            if let action {
+                action()
+            } else if let destination {
+                session.show(destination)
+            }
+        }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(destination.map { "Open \($0.displayTitle(advanced: preferences.advanced))" } ?? "")
+        .help(helpText ?? destination.map { "Open \($0.displayTitle(advanced: preferences.advanced))" } ?? "")
     }
 }
 
@@ -482,18 +492,23 @@ struct LanguageStrip: View {
 
 struct HealthTile: View {
     @Environment(AppPreferences.self) private var preferences
+    @Environment(NavigationStore.self) private var navigation
     @Environment(RiskStore.self) private var risk
     var checks = 3
+    var showRowDetails = true
 
     var body: some View {
         DashTile(title: preferences.advanced ? "Repository health" : "Project health",
-                 info: preferences.advanced
-                     ? "Five checks, 100 points: recent activity (25), active contributors (20), branch "
-                         + "hygiene (15), large files (15), and complex code under change (25). The full "
-                         + "breakdown is on the Statistics tab; the score is a heuristic to start a "
-                         + "conversation, not a verdict."
-                     : "A quick summary of how active and tidy this repository is.",
-                 destination: preferences.advanced ? .statistics : nil,
+                 subtitle: risk.health != nil ? "Breakdown" : nil,
+                 info: "Five checks totaling 100 points: recent activity (25), active contributors (20), branch "
+                     + "hygiene (15), large files (15), and complex code under change (25). Click this tile "
+                     + "to inspect all 5 checks and scoring rules.",
+                 action: {
+                     if risk.health != nil {
+                         navigation.isHealthBreakdownSheetPresented = true
+                     }
+                 },
+                 helpText: "Open full health score breakdown",
                  needs: preferences.advanced ? \.hasUnits : \.hasHistory,
                  waitingFor: preferences.advanced ? "the source files" : "the commit history") {
             if let health = risk.health {
@@ -503,53 +518,105 @@ struct HealthTile: View {
                         // the first thing to go: the number is the information, the ring is
                         // the presentation of it.
                         if checks > 1 {
-                            HealthRing(health: health)
+                            HealthRing(health: health, size: showRowDetails ? 74 : 64)
                         } else {
-                            Text("\(health.score)").font(Theme.Text.display)
-                                .foregroundStyle(health.score >= 80 ? Theme.good
-                                                 : health.score >= 60 ? Theme.warning : Theme.critical)
+                            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                Text("\(health.score)")
+                                    .font(Theme.Text.display.monospacedDigit())
+                                    .foregroundStyle(Theme.color(for: health.bandStatus))
+                                Text("/\(health.maxScore)")
+                                    .font(Theme.Text.caption.weight(.semibold).monospacedDigit())
+                                    .foregroundStyle(Theme.inkMuted)
+                            }
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(health.label).font(Theme.Text.bodyBold)
-                                .foregroundStyle(health.score >= 80 ? Theme.good
-                                                 : health.score >= 60 ? Theme.warning : Theme.critical)
-                            Text(health.summary).font(Theme.Text.caption)
-                                .foregroundStyle(Theme.inkSoft).lineLimit(2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(health.label)
+                                    .font(Theme.Text.bodyBold)
+                                    .foregroundStyle(Theme.color(for: health.bandStatus))
+                                if checks > 1 {
+                                    Text("\(health.score) / \(health.maxScore)")
+                                        .font(Theme.Text.caption.weight(.semibold).monospacedDigit())
+                                        .foregroundStyle(Theme.inkSoft)
+                                }
+                            }
+                            Text(health.summary)
+                                .font(Theme.Text.caption)
+                                .foregroundStyle(Theme.inkSoft)
+                                .lineLimit(checks > 1 ? 2 : 1)
                         }
                         Spacer(minLength: 0)
                     }
-                    // Whatever is wrong, first — a checklist of five ticks is not worth the
-                    // space, and the one amber line is the whole reason to look.
-                    ForEach(ranked(health).prefix(checks)) { item in
-                        HStack(spacing: 6) {
-                            Circle().fill(colour(item.status)).frame(width: 6, height: 6)
-                            Text(item.title).font(Theme.Text.caption).foregroundStyle(Theme.ink).lineLimit(1)
-                            Spacer(minLength: Theme.Space.s)
-                            Text(item.detail).font(Theme.Text.caption).foregroundStyle(Theme.inkMuted)
-                                .lineLimit(1).truncationMode(.head)
+                    // Whatever needs attention most, first.
+                    VStack(alignment: .leading, spacing: showRowDetails && checks > 1 ? 6 : 4) {
+                        ForEach(Self.ranked(health).prefix(checks)) { item in
+                            if showRowDetails && checks > 1 {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Circle().fill(Theme.color(for: item.status)).frame(width: 6, height: 6)
+                                        Text(item.title)
+                                            .font(Theme.Text.caption.weight(.medium))
+                                            .foregroundStyle(Theme.ink)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        HealthPointsBadge(points: item.points,
+                                                          maxPoints: item.maxPoints,
+                                                          status: item.status,
+                                                          compact: true)
+                                    }
+                                    Text(item.detail)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(Theme.inkMuted)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .padding(.leading, 12)
+                                }
+                            } else {
+                                HStack(spacing: 6) {
+                                    Circle().fill(Theme.color(for: item.status)).frame(width: 6, height: 6)
+                                    Text(item.title)
+                                        .font(Theme.Text.caption.weight(.medium))
+                                        .foregroundStyle(Theme.ink)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    HealthPointsBadge(points: item.points,
+                                                      maxPoints: item.maxPoints,
+                                                      status: item.status,
+                                                      compact: true)
+                                }
+                                .frame(height: 18)
+                            }
                         }
-                        .frame(height: 16)
                     }
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 2)
+                    if checks > 1 {
+                        HStack(spacing: 4) {
+                            Text("All \(health.items.count) checks · \(health.score)/\(health.maxScore)")
+                                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                .foregroundStyle(Theme.inkMuted)
+                            Spacer(minLength: 0)
+                            Text("See breakdown")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func ranked(_ health: RepositoryHealth) -> [RepositoryHealth.Item] {
-        health.items.sorted { lhs, rhs in
-            func rank(_ status: RepositoryHealth.Status) -> Int {
-                switch status { case .bad: return 0; case .warning: return 1; case .good: return 2 }
-            }
-            return rank(lhs.status) < rank(rhs.status)
+    static func ranked(_ health: RepositoryHealth) -> [RepositoryHealth.Item] {
+        func rank(_ status: RepositoryHealth.Status) -> Int {
+            switch status { case .bad: return 0; case .warning: return 1; case .good: return 2 }
         }
-    }
-
-    private func colour(_ status: RepositoryHealth.Status) -> Color {
-        switch status {
-        case .good: return Theme.good
-        case .warning: return Theme.warning
-        case .bad: return Theme.critical
+        return health.items.sorted { lhs, rhs in
+            let lRank = rank(lhs.status)
+            let rRank = rank(rhs.status)
+            if lRank != rRank { return lRank < rRank }
+            let lLost = lhs.maxPoints - lhs.points
+            let rLost = rhs.maxPoints - rhs.points
+            if lLost != rLost { return lLost > rLost }
+            return lhs.maxPoints > rhs.maxPoints
         }
     }
 }

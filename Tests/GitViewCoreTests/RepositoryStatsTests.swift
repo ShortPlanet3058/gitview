@@ -191,4 +191,44 @@ final class RepositoryHealthTests: XCTestCase {
         XCTAssertEqual(RepositoryHealth.assess(inputs(share: 0.003, count: 6)).items[4].detail,
                        "0.3% of recent changes hit complex code")
     }
+
+    func testScoringMetadataAndEquationMatchItems() {
+        // 20 + 10 + 10 + 8 + 18 = 66
+        let health = RepositoryHealth.assess(inputs(lastDays: 20, authors: 2, staleLocal: 2, large: 1, share: 0.04))
+        XCTAssertEqual(health.maxScore, 100)
+        XCTAssertEqual(health.pointsEquation, "20 + 10 + 10 + 8 + 18")
+        XCTAssertEqual(health.items.map(\.check), [
+            .recentActivity,
+            .activeContributors,
+            .branchHygiene,
+            .largeFiles,
+            .complexCodeChurn,
+        ])
+        XCTAssertEqual(health.items.map(\.pointsText), ["20/25", "10/20", "10/15", "8/15", "18/25"])
+        for item in health.items {
+            XCTAssertFalse(item.criteria.isEmpty)
+            XCTAssertEqual(item.fraction, Double(item.points) / Double(item.maxPoints), accuracy: 1e-9)
+        }
+    }
+
+    func testHealthBandsAndBandStatusCoverBoundaryScores() {
+        XCTAssertEqual(RepositoryHealth.bands.map(\.label), ["Good", "Fair", "Needs attention"])
+        XCTAssertEqual(RepositoryHealth.bands.map(\.rangeText), ["80–100", "60–79", "<60"])
+
+        for score in [0, 59] {
+            let matches = RepositoryHealth.bands.filter { $0.contains(score) }
+            XCTAssertEqual(matches.map(\.status), [.bad])
+            XCTAssertEqual(RepositoryHealth(score: score, items: []).bandStatus, .bad)
+        }
+        for score in [60, 79] {
+            let matches = RepositoryHealth.bands.filter { $0.contains(score) }
+            XCTAssertEqual(matches.map(\.status), [.warning])
+            XCTAssertEqual(RepositoryHealth(score: score, items: []).bandStatus, .warning)
+        }
+        for score in [80, 100] {
+            let matches = RepositoryHealth.bands.filter { $0.contains(score) }
+            XCTAssertEqual(matches.map(\.status), [.good])
+            XCTAssertEqual(RepositoryHealth(score: score, items: []).bandStatus, .good)
+        }
+    }
 }

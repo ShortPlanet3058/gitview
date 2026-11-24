@@ -111,6 +111,7 @@ public final class NavigationStore {
     public var isCommandLogSheetPresented: Bool = false
     public var isPullRequestsSheetPresented: Bool = false
     public var isInteractiveRebaseSheetPresented: Bool = false
+    public var isHealthBreakdownSheetPresented: Bool = false
 
     // Comparing two points: releases or arbitrary refs.
     public var isCompareWorkspacePresented: Bool = false
@@ -142,6 +143,7 @@ public final class NavigationStore {
         compareSelectedFile = nil
         isPullRequestsSheetPresented = false
         isInteractiveRebaseSheetPresented = false
+        isHealthBreakdownSheetPresented = false
         comparison = nil
         comparisonInFlight = false
     }

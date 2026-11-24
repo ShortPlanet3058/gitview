@@ -16,35 +16,135 @@ enum ActivityRange: String, CaseIterable, Identifiable {
 
 
 
+struct HealthBreakdownContent: View {
+    let health: RepositoryHealth
+    var showStandardModeNote = false
+
+    private var hasUnanalysedCode: Bool {
+        health.items.contains { $0.check == .complexCodeChurn && $0.detail == "No code analysed" }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            HStack(alignment: .center, spacing: Theme.Space.l) {
+                HealthRing(health: health, size: 88)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                        Text(health.label)
+                            .font(Theme.Text.title)
+                            .foregroundStyle(Theme.color(for: health.bandStatus))
+                        Text("\(health.score) / \(health.maxScore) pts")
+                            .font(Theme.Text.heading.monospacedDigit())
+                            .foregroundStyle(Theme.ink)
+                    }
+                    Text(health.summary)
+                        .font(Theme.Text.body)
+                        .foregroundStyle(Theme.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HealthScoreBandsView(score: health.score)
+                }
+            }
+            HairlineDivider()
+            VStack(spacing: 0) {
+                ForEach(health.items) { item in
+                    HealthItemRow(item: item)
+                    if item.id != health.items.last?.id { HairlineDivider() }
+                }
+            }
+            HairlineDivider()
+            HStack(spacing: Theme.Space.s) {
+                Text("Total score")
+                    .font(Theme.Text.bodyBold)
+                    .foregroundStyle(Theme.ink)
+                Spacer()
+                Text("\(health.pointsEquation) = \(health.score) / \(health.maxScore)")
+                    .font(Theme.Text.bodyBold.monospacedDigit())
+                    .foregroundStyle(Theme.ink)
+            }
+            if showStandardModeNote && hasUnanalysedCode {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.inkMuted)
+                        .padding(.top, 1)
+                    Text("In Standard mode, function complexity isn't parsed yet, so Complex code under change is not penalized (25/25). Switch to Advanced mode (⇧⌘D) to include code complexity.")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 struct HealthCard: View {
     let health: RepositoryHealth
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 CardHeader(title: "Repository health",
+                           subtitle: "\(health.score) / \(health.maxScore) pts",
                            info: "Five checks, 100 points: recent activity (25), active contributors (20), branch "
                                + "hygiene (15), large files (15), and complex code under change (25) — the share of "
                                + "recent commits that landed in a function with 10 or more branch points. Branch "
                                + "hygiene counts local branches only; branches that exist just on the remote are "
-                               + "other people's pull requests. Each line shows what was measured; the score is a "
-                               + "heuristic to start a conversation, not a verdict.")
-                HStack(spacing: Theme.Space.l) {
-                    HealthRing(health: health)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(health.label).font(Theme.Text.title)
-                            .foregroundStyle(health.score >= 80 ? Theme.good : health.score >= 60 ? Theme.warning : Theme.critical)
-                        Text(health.summary).font(Theme.Text.body).foregroundStyle(Theme.inkSoft)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                VStack(spacing: 0) {
-                    ForEach(health.items) { item in
-                        HealthItemRow(item: item)
-                        if item.id != health.items.last?.id { HairlineDivider() }
-                    }
-                }
+                               + "other people's pull requests. Each line shows what was measured and how points are "
+                               + "scored; the total is a heuristic to start a conversation, not a verdict.")
+                HealthBreakdownContent(health: health, showStandardModeNote: false)
             }
         }
+    }
+}
+
+struct HealthBreakdownSheet: View {
+    @Environment(WorkspaceSession.self) private var session
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(RiskStore.self) private var risk
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Theme.Space.m) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(risk.health.map { Theme.color(for: $0.bandStatus) } ?? Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preferences.advanced ? "Repository Health Breakdown" : "Project Health Breakdown")
+                        .font(Theme.Text.title)
+                        .foregroundStyle(Theme.ink)
+                    Text("5 checks totaling 100 points — each check shows earned points, what was measured, and its scoring thresholds.")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.inkSoft)
+                }
+                Spacer()
+                if preferences.advanced {
+                    Button("Open Statistics") {
+                        dismiss()
+                        session.show(.statistics)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+                Button("Done") { dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(Theme.Space.l)
+            .background(Theme.raised)
+
+            HairlineDivider()
+
+            if let health = risk.health {
+                ScrollColumn {
+                    HealthBreakdownContent(health: health, showStandardModeNote: !preferences.advanced)
+                        .padding(Theme.Space.l)
+                }
+            } else {
+                StillReading(what: "repository health")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: 660, height: 660)
+        .background(Theme.surface)
     }
 }
 

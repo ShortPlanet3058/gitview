@@ -725,4 +725,42 @@ final class StoreAndPerformanceTests: XCTestCase {
         XCTAssertThrowsError(try CLILauncher.uninstall(from: foreign))
         XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
     }
+
+    @MainActor
+    func testHealthTileRankedSurfacesBadWarningAndLargestLossFirst() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // recentActivity: 25 (good, 0 lost)
+        // activeContributors: 5 (warning, 15 lost)
+        // branchHygiene: 10 (good, 5 lost)
+        // largeFiles: 8 (warning, 7 lost)
+        // complexCodeChurn: 4 (bad, 21 lost)
+        let health = RepositoryHealth.assess(.init(
+            lastCommit: now.addingTimeInterval(-1 * 86_400),
+            activeAuthors: 1,
+            staleLocalBranches: 1,
+            localBranches: 3,
+            staleRemoteBranches: 0,
+            largeFiles: 1,
+            complexChurnShare: 0.25,
+            complexFunctionsChanged: 4,
+            now: now
+        ))
+
+        let ranked = HealthTile.ranked(health)
+        XCTAssertEqual(ranked.map(\.check), [
+            .complexCodeChurn,   // bad (-21)
+            .activeContributors, // warning (-15)
+            .largeFiles,         // warning (-7)
+            .branchHygiene,      // good (-5)
+            .recentActivity,     // good (0)
+        ])
+    }
+
+    @MainActor
+    func testNavigationClearForOpenResetsHealthBreakdownSheet() {
+        let nav = NavigationStore()
+        nav.isHealthBreakdownSheetPresented = true
+        nav.clearForOpen()
+        XCTAssertFalse(nav.isHealthBreakdownSheetPresented)
+    }
 }

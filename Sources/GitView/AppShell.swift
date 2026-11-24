@@ -128,6 +128,10 @@ struct AppShell: View {
             InteractiveRebaseSheet()
                 .withWorkspaceEnvironment(session)
         }
+        .sheet(isPresented: $navigation.isHealthBreakdownSheetPresented) {
+            HealthBreakdownSheet()
+                .withWorkspaceEnvironment(session)
+        }
     }
 
     @ViewBuilder
